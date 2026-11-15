@@ -445,7 +445,7 @@ app.post('/api/brain/chat', async (req, res) => {
 
     const relevantMemories = db.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
 
-    const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("Nichts ist zufällig").
+    const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("BEYOND LIMITS").
 Zielgerät: iPhone 16 Pro Max. Budget-Regel: strikt 0 € laufende Kosten. Maximale Videolänge: 60 Sekunden (bevorzugt 55–60s).
 Antworte auf Deutsch, präzise, technisch ehrlich und ohne erfundene Fähigkeiten.
 Tatsächlich aktive kostenlose Module: ${availableModelsSummary}.
@@ -502,11 +502,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         .map((w) => ({ title: w.title || w.uri, uri: w.uri }));
 
       routingSteps = [
-        `ZERO CORE Router -> ${requestedModel} (0,00 € Free Cloud)`,
+        `ZERO CORE Router -> ${requestedModel} (Gemini Free Tier; Kontingent beachten)`,
         ...(useWebSearch ? [`Web Grounding aktiv (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
       ];
-    }
 
     const now = new Date().toISOString();
     db.chatHistory.push(
