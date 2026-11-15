@@ -15,7 +15,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          forbidden=$(git ls-files | grep -E '(^|/)(\.env($|\.)|zero-studio-db\.json|.*\.(pem|key|p12|pfx|sqlite|db))
+          forbidden="$(git ls-files | grep -E '(^|/)(\.env($|\.)|zero-studio-db\.json|.*\.(pem|key|p12|pfx|sqlite|db))$' || true)"
+          if [ -n "$forbidden" ]; then
+            printf 'Forbidden local data or secret files are tracked:\n%s\n' "$forbidden"
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
