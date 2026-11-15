@@ -88,10 +88,18 @@ export function BrainView({
     setWebgpuProgress({ progress: 0, text: 'Prüfe WebGPU-GPU-Adapter …' });
     try {
       await loadWebGPULocalModel(setWebgpuProgress);
+      const probe = await generateWebGPULocalChat([
+        { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
+      ]);
+      if (!probe.trim()) throw new Error('Das lokale Modell hat den Inferenztest nicht bestanden.');
+      await apiRequest<{ model: { id: string } }>('/api/models/webgpu/activate', {
+        method: 'POST',
+        body: JSON.stringify({ probeResponse: probe.slice(0, 1000) }),
+      });
       setWebgpuModelLoaded(true);
       setWebgpuProgress({
         progress: 1,
-        text: 'Llama 3.2 1B ist lokal geladen und einsatzbereit.',
+        text: 'Llama 3.2 1B ist lokal geladen, erfolgreich getestet und automatisch aktiviert.',
       });
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Lokales Modell konnte nicht geladen werden.');
