@@ -556,6 +556,9 @@ app.post('/api/brain/chat', async (req, res) => {
     const requestedModel = String(req.body?.modelId ?? '');
     const useWebSearch = Boolean(req.body?.useWebSearch);
     const projectId = req.body?.projectId ? String(req.body.projectId) : undefined;
+    const requestStartedAt = Date.now();
+    const isSimpleRequest = !useWebSearch && !projectId && message.length <= 180 && /^(hi|hallo|hey|moin|guten morgen|guten tag|guten abend|test|ping|danke|ok|okay|wer bist du|was kannst du|stelle dich vor)[.!?\s]*$/i.test(message);
+    const needsFullContext = !isSimpleRequest;
 
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
 
@@ -574,7 +577,7 @@ app.post('/api/brain/chat', async (req, res) => {
 
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
-      : database.projects[0];
+      : needsFullContext ? database.projects[0] : undefined;
 
     const availableModelsSummary = database.models
       .filter(
@@ -587,7 +590,9 @@ app.post('/api/brain/chat', async (req, res) => {
       .map((m) => `${m.name} [${m.executionMode}]`)
       .join(', ');
 
-    const relevantMemories = database.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
+    const relevantMemories = needsFullContext
+      ? database.memories.slice(0, 4).map((m) => `- ${m.title}: ${m.content}`).join('\n')
+      : '';
 
     const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("BEYOND LIMITS").
 Zielgerät: iPhone 16 Pro Max. Budget-Regel: strikt 0 € laufende Kosten. Maximale Videolänge: 60 Sekunden (bevorzugt 55–60s).
@@ -610,8 +615,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
-      const recentHistory = database.chatHistory
-        .slice(-8)
+      const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
         .join('\n\n');
@@ -655,7 +659,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
             : fullPrompt,
           config: {
             systemInstruction,
-            ...(selectedModel === 'gemini-3.8-flash'
+            ...(selectedModel === 'gemini-3.8-flash' && needsFullContext
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
               : {}),
           },
@@ -668,6 +672,8 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
         ...(useWebSearch ? [`Google Search über gemini-2.5-flash-lite Free Tier (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
+        `Kontextmodus: ${isSimpleRequest ? 'Schnellmodus' : 'Kontextmodus'}`,
+        `ZERO Antwortzeit: ${Date.now() - requestStartedAt} ms`,
       ];
 
     const now = new Date().toISOString();
@@ -693,6 +699,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       modelUsed: selectedModel,
       routingSteps,
       sources,
+      performance: { totalMs: Date.now() - requestStartedAt, contextMode: isSimpleRequest ? 'fast' : 'full' },
       messages: database.chatHistory,
     });
   } catch (err) {
