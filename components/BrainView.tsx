@@ -325,6 +325,7 @@ export function BrainView({
                       | 'gemini-3.8-flash'
                       | 'gemini-3.1-flash-lite'
                       | 'gpt-oss-20b-free'
+                      | 'webgpu-llama-3.2-1b'
                       | NativeIOSTextModelId
                   )
                 }
@@ -450,8 +451,8 @@ export function BrainView({
                   </div>
                 </div>
               )}
-              {!webgpuModelLoading && webgpuModelProgress && (
-                <div className="text-[10px] text-emerald-300">{webgpuModelProgress.text}</div>
+              {!webgpuModelLoading && webgpuProgress && (
+                <div className="text-[10px] text-emerald-300">{webgpuProgress.text}</div>
               )}
             </div>
           )}
