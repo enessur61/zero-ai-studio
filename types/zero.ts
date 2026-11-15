@@ -135,6 +135,7 @@ export interface FilmScene {
   imagePrompt: string;
   videoPrompt: string;
   imageUrl?: string;
+  videoUrl?: string;
   audioDataUrl?: string;
   status: 'Entwurf' | 'Bild bereit' | 'Audio bereit' | 'Szenenbereit';
 }
