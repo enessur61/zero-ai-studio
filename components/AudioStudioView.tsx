@@ -276,7 +276,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
             >
               {ttsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
-              WAV generieren (0 €)
+              WAV generieren (Free Tier)
             </button>
 
             <button
