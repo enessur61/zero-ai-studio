@@ -34,6 +34,14 @@ export function StatusLabel({ status }: { status: ModelStatus }) {
       </span>
     );
   }
+  if (status === 'BROWSER TEST ERFORDERLICH') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-300 whitespace-nowrap shrink-0">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+        BROWSER TEST ERFORDERLICH
+      </span>
+    );
+  }
   if (status === 'INSTALLATION ERFORDERLICH') {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400 whitespace-nowrap shrink-0">
