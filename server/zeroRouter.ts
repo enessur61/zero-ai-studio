@@ -108,6 +108,7 @@ export function chooseZeroMediaModel(
   task: ZeroMediaTask,
   availableLocalRuntimeModelIds: string[] = [],
   now = new Date(),
+  requestedModelId?: string,
 ): ZeroRouteDecision | null {
   const spec = MEDIA_TASKS[task];
   const today = now.toISOString().slice(0, 10);
@@ -127,7 +128,7 @@ export function chooseZeroMediaModel(
   });
 
   if (eligible.length === 0) return null;
-  const selected = eligible[0];
+  const selected = (requestedModelId ? eligible.find((model) => model.id === requestedModelId) : undefined) ?? eligible[0];
   return {
     modelId: selected.id,
     consideredModelIds: eligible.map((model) => model.id),
