@@ -78,8 +78,8 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
     def.id === 'sd-turbo-free' ||
     def.id === 'sana-free'
   ) {
-    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
-    prerequisites = 'Der bisherige anonyme Pollinations-Zugriff ist nicht mehr verfügbar. Authentifizierte Anfragen können Pollen-Guthaben verbrauchen; deshalb standardmäßig deaktiviert.';
+    freeTierType = 'DERZEIT NICHT VERFÜGBAR';
+    prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';
