@@ -64,7 +64,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 ## 2. Installation & Lokaler Start
 
 ### Voraussetzungen
-- **Node.js >= 22.18** (empfohlen: 22.23+ für native `.ts`-Ausführung mit `node server.ts`)
+- **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
 - **npm**
 - Kostenloser **Google Gemini API Key** (Free Tier in Google AI Studio)
 
@@ -103,7 +103,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 | Methode | Endpunkt | Funktion |
 | --- | --- | --- |
-| `GET` | `/api/health` | Systemstatus, Budget-Limit (`0 €`), aktive Adapter |
+| `GET` | `/api/health` | Minimaler öffentlicher Health-Check (keine privaten Projekt-/Kontodaten) |
 | `GET` | `/api/system/audit` | Ist-Zustand, 12-Phasen-Plan, Budget-Guard, Backups |
 | `POST` | `/api/system/backup` | Erstellt manuelles Datenbank-Backup in `data/backups/` |
 | `POST` | `/api/system/restore` | Stellt gespeichertes JSON-Backup wieder her |
@@ -116,12 +116,12 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 | `DELETE` | `/api/system/zip-backups/:id` | Löscht ausschließlich ungeschützte ZIP-Versionen |
 | `GET` | `/api/models` | Listet alle Modelle inkl. Kostenklasse, Voraussetzungen, RAM, Lizenz & iOS-Kompatibilität |
 | `GET` | `/api/models/coreml/llama-3.2` | Prüft CoreML Adapter-Paket für Llama 3.2 1B & 3B |
-| `GET` | `/api/models/ios-runtime` | Prüft Swift-Quellcode und die erwarteten Modellgewichte; ersetzt keinen Xcode-/Gerätetest |
+| `GET` | `/api/models/ios-runtime` | Prüft Quellcode und Modellgewichte; meldet niemals Deployment-Bereitschaft ohne native Runtime-Integration |
 | `POST` | `/api/models/test-all` | Prüft alle kompatiblen Adapter im Modellkatalog gebündelt (inkl. IP-Cooldown-Schutz) |
 | `POST` | `/api/models/:id/test` | Führt einen echten Live-Funktionstest für das jeweilige Modell aus |
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
-| `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.1-flash-lite`, `gpt-oss-20b-free`) |
-| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE mit verifizierten Google-Search-Quellen |
+| `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
+| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
 | `POST` | `/api/image/generate` | Bildgenerierung über (derzeit deaktiviert; kein verifizierter dauerhaft kostenloser Provider) |
 | `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
@@ -145,24 +145,26 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 ## 5. Ehrliche Dokumentation offener / externer Bestandteile
 
-1. **Keine Geheimnisse im Export**: `.env`, `node_modules/` und `dist/` sind aus Sicherheits- und Größengründen nicht im ZIP enthalten. Für den Betrieb werden `npm install` sowie ein eigener `GEMINI_API_KEY` in `.env` benötigt.
-2. **Benutzerverwaltung / Login**: In der aktuellen Ausbaustufe arbeitet ZERO AI STUDIO bewusst als lokales Einzelplatz-Studio ohne Multi-User-Authentifizierung, Passwort-Hashes oder Cloud-Account-Zwang (keine versteckten oder vorgetäuschten Zugangsdaten). Für eine spätere Mehrbenutzer-Umgebung müsste z. B. Firebase Auth oder ein lokaler JWT/Passkey-Layer ergänzt werden.
+1. **Keine Geheimnisse im Export**: `.env`, `node_modules/`, `dist/` und die lokale Datenbank gehören nicht in Git oder Projekt-Archive. Für Gemini-Free-Tier-Funktionen ist ein eigener `GEMINI_API_KEY` als Server-Secret erforderlich; ohne Key werden keine Gemini-Aufrufe ausgeführt.
+2. **Anmeldung**: In Produktion sind alle privaten `/api/*`-Routen mit einem Admin-Login geschützt. `npm start` aktiviert diesen Schutz standardmäßig. Der lokale Entwicklungsserver (`npm run dev`) deaktiviert den Login nur für lokale Entwicklung und darf nicht öffentlich bereitgestellt werden.
 3. **Native iOS-Modelle (Phase 12 – noch nicht einsatzbereit)**: Für acht lokale Modelle (Llama 3.2 1B/3B CoreML, Qwen 2.5 3B, DeepSeek-R1 1.5B, Gemma 3 4B, `whisper.cpp`, Piper ONNX DE, Kokoro-82M) liegt Swift-Adapter-Quellcode samt WKWebView-Bridge vor. Die Binärgewichte (ca. 0,07–2,6 GB) sind noch nicht im Repository enthalten; sie müssen in `ios/ZeroCoreML/Models/` bereitgestellt und in eine native iOS-App integriert werden. Der Swift-Paket-Build läuft in macOS-CI, bestätigt aber weder Modellgewichte noch einen echten iPhone-Gerätetest. Diese Modelle bleiben deshalb auf `INSTALLATION ERFORDERLICH`.
-4. **0 € Budget-Schutz**: Kostenpflichtige Gemini-Modelle (`gemini-4-argon`, `gemini-4-argon`, `gemini-3.1-flash-image`, `gemini-omni-1.1-flash`, `lyria-3-*`) sind serverseitig in `server/geminiClient.ts` fest gesperrt (`GESPERRT`).
+4. **0 € Budget-Schutz**: Kostenpflichtige oder nicht verifizierte Provider bleiben serverseitig gesperrt. Google Search Grounding wird bewusst über `gemini-2.5-flash-lite` ausgeführt, dessen offizieller Free-Tier Search-Grounding-Zugang begrenzt ist; ZERO setzt zusätzlich ein eigenes Tageslimit von 100. Der Suchaufruf wird nicht an Gemini 3.8 Flash angehängt, da dessen Free Tier Google Search Grounding nicht anbietet.
+5. **iOS-Adapterstatus**: Die Swift-Dateien enthalten teilweise Protokolle und Adapter-Gerüste, aber noch nicht alle echten Runtime-Backends/Tokenizer und kein vollständiges natives iOS-App-Target. Sie werden deshalb nicht als einsatzbereit oder „Ready for Deployment“ ausgegeben.
 
 
 ## 8. Produktionsschutz und Anmeldung
 
 In Produktion sind alle privaten `/api/*`-Routen (Projekte, Chats, Memory, Backups, Modellverwaltung und Studios) standardmäßig durch eine Anmeldung geschützt. Nur `/api/health` sowie die Auth-Status- und Login-Routen bleiben öffentlich erreichbar.
 
-Vor dem Start in einer Hosting-Umgebung müssen diese beiden Variablen als **Server-Secrets** gesetzt werden:
+Vor dem Start in einer Hosting-Umgebung müssen diese drei Variablen als **Server-Secrets** gesetzt werden:
 
+- `GEMINI_API_KEY`: eigener Google Gemini API-Key für die kostenlosen, kontingentbegrenzten Gemini-Funktionen
 - `ZERO_ADMIN_PASSWORD`: eigenes starkes Passwort mit mindestens 12 Zeichen
 - `ZERO_SESSION_SECRET`: zufälliger, geheimer Wert mit mindestens 32 Zeichen
 
-Beide Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
+Alle drei Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. Beim Google-Projekt keine kostenpflichtige Abrechnung aktivieren, wenn ZERO strikt bei 0 € bleiben soll. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
 
 Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält nur leere Platzhalter.
 
 
-`npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
+`npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für die tägliche Nutzung muss der Hoster `GEMINI_API_KEY`, `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` bereitstellen. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
