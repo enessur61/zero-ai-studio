@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'zero-ai-studio-';
 const CACHE_NAME = CACHE_PREFIX + 'shell-v1';
-const CORE_ASSETS = ['/', '/manifest.webmanifest', '/icons/zero-icon.svg'];
+const CORE_ASSETS = ['/', '/manifest.webmanifest', '/icons/zero-icon.svg', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
