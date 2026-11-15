@@ -1147,6 +1147,107 @@ app.get('/api/video/engine/status', async (_req, res) => {
   }
 });
 
+// Authenticated server-side proxy for the self-hosted Wan worker.
+// The browser never receives the worker URL or its bearer token.
+function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
+  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
+  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  if (!configuredUrl || !token) return null;
+  try {
+    const baseUrl = new URL(configuredUrl);
+    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    baseUrl.pathname = '/';
+    baseUrl.search = '';
+    baseUrl.hash = '';
+    return { baseUrl, headers: { Accept: 'application/json', Authorization: `Bearer ${token}` } };
+  } catch {
+    return null;
+  }
+}
+
+app.post('/api/video/engine/jobs', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+  const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
+  const seed = Number.isInteger(req.body?.seed) && req.body.seed >= 0 && req.body.seed <= 2147483647
+    ? req.body.seed
+    : undefined;
+  if (prompt.length < 8 || prompt.length > 1800) {
+    return res.status(400).json({ error: 'Der Wan-Prompt muss zwischen 8 und 1.800 Zeichen lang sein.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(new URL('/jobs', worker.baseUrl), {
+      method: 'POST',
+      headers: { ...worker.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }) }),
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
+    if (typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || payload.status !== 'queued') {
+      return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
+    }
+    return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.get('/api/video/engine/jobs/:id', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}`, worker.baseUrl), {
+      headers: worker.headers, signal: controller.signal, redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
+    return res.json({ job: payload, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}/video`, worker.baseUrl), {
+      headers: worker.headers, signal: controller.signal, redirect: 'error',
+    });
+    if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
+    const length = Number(response.headers.get('content-length') ?? 0);
+    if (length > 100 * 1024 * 1024) return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < 1024 || bytes.length > 100 * 1024 * 1024) return res.status(502).json({ error: 'Ungültige oder zu große MP4-Datei vom Wan-Worker.' });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="zero-wan-${id}.mp4"`);
+    res.setHeader('Content-Length', String(bytes.length));
+    return res.send(bytes);
+  } catch {
+    return res.status(503).json({ error: 'Wan-Video konnte nicht geladen werden.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
 app.post('/api/film/direct', async (req, res) => {
   const db = await loadDb();
