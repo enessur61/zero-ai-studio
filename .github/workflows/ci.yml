@@ -72,3 +72,12 @@ jobs:
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
 
+
+  ios-swift-package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Swift toolchain
+        run: swift --version
+      - name: Build iOS Swift package sources
+        run: swift build --package-path ios/ZeroCoreML
