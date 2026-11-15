@@ -1202,17 +1202,20 @@ app.post('/api/projects', async (req, res) => {
   const now = new Date().toISOString();
   const rawDuration = Number(req.body?.targetDurationSec ?? 58);
   const clampedDuration = Math.min(60, Math.max(10, rawDuration));
+  const scenes = Array.isArray(req.body?.scenes) ? clampScenesToMax60Seconds(req.body.scenes) : [];
+  const scenesDuration = scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
+  const projectDuration = Math.min(60, scenesDuration || clampedDuration);
   const newProject: StudioProject = {
     id: `proj-${Date.now()}`,
     title: String(req.body?.title || 'Unbenanntes Projekt').trim(),
     logline: String(req.body?.logline || '').trim(),
     genre: String(req.body?.genre || 'Drama / Thriller').trim(),
-    targetDurationSec: clampedDuration,
+    targetDurationSec: projectDuration,
     concept: String(req.body?.concept || ''),
     story: String(req.body?.story || ''),
     screenplay: String(req.body?.screenplay || ''),
     characterIds: Array.isArray(req.body?.characterIds) ? req.body.characterIds : [],
-    scenes: Array.isArray(req.body?.scenes) ? clampScenesToMax60Seconds(req.body.scenes) : [],
+    scenes,
     assets: [],
     snapshots: [
       {
@@ -1220,8 +1223,8 @@ app.post('/api/projects', async (req, res) => {
         version: 1,
         note: 'Projekt angelegt',
         createdAt: now,
-        sceneCount: 0,
-        totalDurationSec: clampedDuration,
+        sceneCount: scenes.length,
+        totalDurationSec: projectDuration,
       },
     ],
     status: 'Konzept',
