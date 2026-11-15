@@ -183,10 +183,11 @@ export function BrainView({
           modelId: selectedModel,
           prompt: promptText,
         });
-        if (selectedModel === 'apple-foundation-model' && res.text.trim()) {
+        const responseText = res.text ?? '';
+        if (selectedModel === 'apple-foundation-model' && responseText.trim()) {
           await apiRequest<{ model: { id: string } }>('/api/models/native/activate', {
             method: 'POST',
-            body: JSON.stringify({ probeResponse: res.text.slice(0, 1000) }),
+            body: JSON.stringify({ probeResponse: responseText.slice(0, 1000) }),
           });
         }
         const now = new Date().toISOString();
@@ -196,7 +197,7 @@ export function BrainView({
           {
             id: `msg-a-${Date.now() + 1}`,
             role: 'assistant',
-            content: res.text || '',
+            content: responseText,
             modelUsed: selectedModel,
             routingSteps: [
               `ZERO CORE -> native iOS (${selectedModel} · On-Device · 0,00 €)`,
