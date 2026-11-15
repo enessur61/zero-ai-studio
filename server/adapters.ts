@@ -341,6 +341,16 @@ export async function runLiveModelTest(
     }
   }
 
+  // Automatically enable only models that passed a real live probe and have a real adapter.
+  // A source-code stub, local model without weights, paid model, or failed/quota-limited endpoint stays disabled.
+  const verifiedRunnable =
+    model.testPassed &&
+    model.hasRealAdapter &&
+    !model.requiresPaidKey &&
+    !model.requiresExternalGpu &&
+    (model.status === 'FUNKTIONIERT' || model.status === 'LOKAL INSTALLIERT');
+  model.enabled = verifiedRunnable;
+
   model.lastTestedAt = now;
   model.lastTestLatencyMs = Date.now() - started;
   return model;
