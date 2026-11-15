@@ -148,8 +148,10 @@ export async function renderTimelineVideoMax60s(
     );
   }
 
-  const width = aspectRatio === '9:16' ? 540 : 960;
-  const height = aspectRatio === '9:16' ? 960 : 540;
+  // Full-HD master export. Keep the cinematic 24 fps cadence while rendering
+  // enough pixels for modern phone screens and high-quality social delivery.
+  const width = aspectRatio === '9:16' ? 1080 : 1920;
+  const height = aspectRatio === '9:16' ? 1920 : 1080;
   const fps = 24;
 
   onProgress?.(5, 'Lade Szenenbilder...');
@@ -256,7 +258,7 @@ export async function renderTimelineVideoMax60s(
     : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
   const mimeType = preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) || '';
   const recorder = mimeType
-    ? new MediaRecorder(finalStream, { mimeType, videoBitsPerSecond: 2_500_000 })
+    ? new MediaRecorder(finalStream, { mimeType, videoBitsPerSecond: 10_000_000 })
     : new MediaRecorder(finalStream);
 
   const chunks: BlobPart[] = [];
