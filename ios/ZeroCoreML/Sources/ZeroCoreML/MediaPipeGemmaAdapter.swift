@@ -115,7 +115,7 @@ public final class MediaPipeGemmaAdapter: @unchecked Sendable {
         let url = Self.locateTaskBundleURL(filename: config.taskBundleFilename)
         return GemmaDeploymentDiagnostics(
             modelId: config.modelId,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "MediaPipe Tasks GenAI iOS (Metal GPU · 4-bit Multimodal)",
             deviceModel: "iPhone 16 Pro Max (8 GB Unified RAM)",
             supportsVision: config.enableVisionModality,
