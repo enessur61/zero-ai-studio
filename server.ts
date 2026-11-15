@@ -12,7 +12,6 @@ import {
 } from './server/geminiClient.ts';
 import {
   generateFreeCloudImage,
-  generateFreeOpenText,
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
@@ -605,89 +604,11 @@ app.post('/api/web/research', async (req, res) => {
 
 // === ZERO IMAGE STUDIO ===
 app.post('/api/image/generate', async (req, res) => {
-  const db = await loadDb();
-  try {
-    const rawPrompt = String(req.body?.prompt ?? '').trim();
-    const model =
-      req.body?.model === 'turbo'
-        ? 'turbo'
-        : req.body?.model === 'sana'
-          ? 'sana'
-          : 'flux';
-    const aspectRatio = (req.body?.aspectRatio ?? '16:9') as '16:9' | '9:16' | '1:1' | '4:3';
-    const characterId = req.body?.characterId ? String(req.body.characterId) : '';
-    const style = String(req.body?.style ?? '').trim();
-
-    if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
-    return res.status(503).json({
-      error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
-    });
-
-    let finalPrompt = rawPrompt;
-    if (characterId) {
-      const char = db.characters.find((c) => c.id === characterId);
-      if (char) {
-        finalPrompt = `${char.consistencyPrompt}. Scene: ${rawPrompt}`;
-      }
-    }
-    if (style) {
-      finalPrompt = `${finalPrompt}, ${style}`;
-    }
-
-    // Optimize German prompts cleanly to English visual tags for FLUX/SD while preserving meaning
-    let englishPrompt = finalPrompt;
-    if (process.env.GEMINI_API_KEY && /[äöüß]|(\b(und|mit|eine|einer|stadt|nacht|regen)\b)/i.test(finalPrompt)) {
-      try {
-        assertZeroBudgetModelAllowed('gemini-3.1-flash-lite', 'IMAGE_PROMPT_TRANSLATE', db.budgetGuard, (e) =>
-          recordBudgetAudit(db, e)
-        );
-        const ai = getGeminiClient();
-        const tr = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents: `Translate and refine this image prompt into concise, vivid English photography/cinematography keywords (max 65 words, no quotes):\n${finalPrompt}`,
-        });
-        if (tr.text?.trim()) englishPrompt = tr.text.trim();
-      } catch {
-        // Safe fallback to original prompt
-      }
-    }
-
-    recordBudgetAudit(db, {
-      adapterId:
-        model === 'turbo'
-          ? 'pollinations-turbo-adapter'
-          : model === 'sana'
-            ? 'pollinations-sana-adapter'
-            : 'pollinations-flux-adapter',
-      modelId:
-        model === 'turbo'
-          ? 'sd-turbo-free'
-          : model === 'sana'
-            ? 'sana-free'
-            : 'flux-1-schnell-free',
-      action: 'IMAGE_GENERATE',
-      decision: 'ERLAUBT_0_EUR',
-      reason: 'Kostenlose Open-Source Free-Cloud Bildgenerierung (0,00 €).',
-      costEur: 0,
-    });
-
-    const result = await generateFreeCloudImage({
-      prompt: englishPrompt,
-      model,
-      aspectRatio,
-    });
-
-    await saveDb(db);
-    res.json({
-      ...result,
-      optimizedPrompt: englishPrompt,
-      costEur: 0,
-    });
-  } catch (err) {
-    res.status(502).json({
-      error: err instanceof Error ? err.message : 'Bildgenerierung fehlgeschlagen',
-    });
-  }
+  const rawPrompt = String(req.body?.prompt ?? '').trim();
+  if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
+  return res.status(503).json({
+    error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
+  });
 });
 
 app.post('/api/image/analyze', async (req, res) => {
