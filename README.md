@@ -163,3 +163,6 @@ Vor dem Start in einer Hosting-Umgebung müssen diese beiden Variablen als **Ser
 Beide Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
 
 Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält nur leere Platzhalter.
+
+
+`npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
