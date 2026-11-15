@@ -613,7 +613,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
 
       routingSteps = [
         `ZERO CORE Router -> ${requestedModel} (Gemini Free Tier; Kontingent beachten)`,
-        ...(useWebSearch ? [`Web Grounding aktiv (${sources.length} Quellen)`] : []),
+        ...(useWebSearch ? [`Google Search über gemini-2.5-flash-lite Free Tier (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
       ];
 
