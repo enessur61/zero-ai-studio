@@ -38,7 +38,7 @@ import {
   saveDb,
   toggleZipBackupProtection,
 } from './server/store.ts';
-import { chooseZeroChatModel } from './server/zeroRouter.ts';
+import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -862,12 +862,18 @@ app.post('/api/image/analyze', async (req, res) => {
 // === ZERO AUDIO STUDIO ===
 app.post('/api/audio/tts', async (req, res) => {
   const useExpressiveModel = Boolean(req.body?.expressive);
-  const modelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+  const preferredModelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+  let modelId = preferredModelId;
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
   try {
     const database = await loadDb();
     db = database;
+    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'text-to-speech', [], new Date(), preferredModelId);
+    if (!routeDecision) {
+      return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses TTS-Modell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
+    }
+    modelId = routeDecision.modelId;
     const text = String(req.body?.text ?? '').trim();
     const voiceName = String(req.body?.voiceName ?? 'Kore');
     const style = String(req.body?.style ?? 'Ruhige, klare deutsche Erzählstimme').trim();
@@ -944,6 +950,11 @@ app.post('/api/audio/transcribe', async (req, res) => {
   try {
     const database = await loadDb();
     db = database;
+    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'transcription');
+    if (!routeDecision) {
+      return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Transkriptionsmodell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
+    }
+    const selectedTranscriptionModel = routeDecision.modelId;
     const audioDataUrl = String(req.body?.audioDataUrl ?? '');
     const audio = parseBase64DataUrl(
       audioDataUrl,
@@ -967,14 +978,14 @@ app.post('/api/audio/transcribe', async (req, res) => {
       });
     }
 
-    assertZeroBudgetModelAllowed('gemini-3.5-transcribe', 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
+    assertZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
       recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.5-transcribe',
+        model: selectedTranscriptionModel,
         contents: [
           {
             role: 'user',
@@ -1008,7 +1019,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
     res.json({
       transcript: formattedTranscript,
       rawText: rawTranscript,
-      modelUsed: 'gemini-3.5-transcribe',
+      modelUsed: selectedTranscriptionModel,
       costEur: 0,
     });
   } catch (err) {
