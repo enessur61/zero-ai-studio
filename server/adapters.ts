@@ -329,7 +329,10 @@ export async function runLiveModelTest(
       model.status = 'FREE-TIER AUSGESCHÖPFT';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
-    } else if (cleanMsg.includes('GEMINI_API_KEY')) {
+    } else if (
+      cleanMsg.includes('GEMINI_API_KEY') ||
+      cleanMsg.includes('ZERO_GEMINI_FREE_TIER_ONLY')
+    ) {
       model.testPassed = false;
       model.status = 'INSTALLATION ERFORDERLICH';
       model.lastTestMessage = cleanMsg;
