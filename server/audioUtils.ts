@@ -4,8 +4,8 @@ export interface PcmWavOptions {
 }
 
 /**
- * Gemini speech generation returns raw 16-bit PCM, not a WAV container.
- * Wrap the PCM bytes in a valid RIFF/WAVE header before exposing an audio/wav URL.
+ * Preserve complete WAV responses from unary Gemini TTS calls. If a provider
+ * returns headerless 16-bit PCM instead, wrap it in a valid RIFF/WAVE container.
  */
 export function pcmBase64ToWavDataUrl(
   base64Pcm: string,
@@ -31,8 +31,8 @@ export function pcmBase64ToWavDataUrl(
     decoded.toString('ascii', 8, 12) === 'WAVE';
   if (hasWavHeader) return `data:audio/wav;base64,${base64Pcm}`;
 
-  const mimeRate = normalizedMime.match(/(?:rate|samplerate)=(\\d+)/)?.[1];
-  const mimeChannels = normalizedMime.match(/channels=(\\d+)/)?.[1];
+  const mimeRate = normalizedMime.match(/(?:rate|samplerate)=(\d+)/)?.[1];
+  const mimeChannels = normalizedMime.match(/channels=(\d+)/)?.[1];
   const sampleRate = options.sampleRate ?? (mimeRate ? Number(mimeRate) : 24_000);
   const channels = options.channels ?? (mimeChannels ? Number(mimeChannels) : 1);
   const bitsPerSample = 16;
