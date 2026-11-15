@@ -70,7 +70,7 @@ function hasValidSession(req: express.Request): boolean {
     ?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
 
-  const [expiresAt, signature] = decodeURIComponent(token).split('.');
+  const [expiresAt, signature] = token.split('.');
   if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) {
     return false;
   }
@@ -186,22 +186,12 @@ function clampScenesToMax60Seconds(scenes: FilmScene[]): FilmScene[] {
 }
 
 // === SYSTEM & AUDIT ===
-app.get('/api/health', async (_req, res) => {
-  const db = await loadDb();
-  const activeCount = db.models.filter(
-    (m) =>
-      m.enabled &&
-      (m.status === 'FUNKTIONIERT' || m.status === 'LOKAL INSTALLIERT')
-  ).length;
+app.get('/api/health', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     app: 'ZERO AI STUDIO',
     core: 'ZERO CORE',
-    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
-    budgetLimitEur: db.budgetGuard.budgetLimitEur,
-    totalSpentEur: db.budgetGuard.totalSpentEur,
-    activeFreeModels: activeCount,
-    totalModels: db.models.length,
     maxVideoDurationSec: 60,
   });
 });
