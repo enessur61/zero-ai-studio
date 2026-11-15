@@ -651,22 +651,38 @@ Langzeitgedächtnis:\n${relevantMemories}`;
           .map((web) => ({ title: web.title || web.uri, uri: web.uri }));
       }
 
-      const response = await withTransientRetry(() =>
-        ai.models.generateContent({
-          model: selectedModel,
-          contents: groundingContext
-            ? `${fullPrompt}\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n${groundingContext}\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.`
-            : fullPrompt,
-          config: {
-            systemInstruction,
-            ...(selectedModel === 'gemini-3.8-flash' && needsFullContext
-              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
-              : {}),
-          },
-        })
-      );
-
-      replyText = (response.text ?? 'Keine Antwort erhalten.').trim();
+      const streamContents = groundingContext
+        ? fullPrompt + '\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n' + groundingContext + '\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.'
+        : fullPrompt;
+      const streamConfig = {
+        systemInstruction,
+        ...(selectedModel === 'gemini-3.8-flash' && needsFullContext
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
+          : {}),
+      };
+      const wantsStream = req.headers.accept?.includes('text/event-stream') ?? false;
+      if (wantsStream) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
+      }
+      const responseStream = await ai.models.generateContentStream({
+        model: selectedModel,
+        contents: streamContents,
+        config: streamConfig,
+      });
+      for await (const chunk of responseStream) {
+        const piece = chunk.text ?? '';
+        if (!piece) continue;
+        replyText += piece;
+        if (wantsStream) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+        }
+      }
+      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
@@ -694,14 +710,19 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     }
     await saveDb(db);
 
-    res.json({
+    const chatResult = {
       reply: replyText,
       modelUsed: selectedModel,
       routingSteps,
       sources,
       performance: { totalMs: Date.now() - requestStartedAt, contextMode: isSimpleRequest ? 'fast' : 'full' },
       messages: database.chatHistory,
-    });
+    };
+    if (req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'done', ...chatResult }) + '\n\n');
+      return res.end();
+    }
+    return res.json(chatResult);
   } catch (err) {
     const requestedModel = routedModelId || String(req.body?.modelId ?? '');
     const quotaKeys = req.body?.useWebSearch
@@ -715,11 +736,14 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       }
       await saveDb(db);
     }
-    res.status(db ? 400 : 503).json({
-      error: db
-        ? formatGermanApiError(err)
-        : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.',
-    });
+    const errorMessage = db
+      ? formatGermanApiError(err)
+      : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.';
+    if (res.headersSent && req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'error', error: errorMessage }) + '\n\n');
+      return res.end();
+    }
+    return res.status(db ? 400 : 503).json({ error: errorMessage });
   }
 });
 
