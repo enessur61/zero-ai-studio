@@ -51,6 +51,8 @@ export function BrainView({
     | 'auto'
     | 'gemini-3.8-flash'
     | 'gemini-3.1-flash-lite'
+    | 'gemini-3.6-flash'
+    | 'gemini-3.5-flash-lite'
     | 'gpt-oss-20b-free'
     | 'webgpu-llama-3.2-1b'
     | NativeIOSTextModelId
@@ -341,6 +343,8 @@ export function BrainView({
                       | 'auto'
                       | 'gemini-3.8-flash'
                       | 'gemini-3.1-flash-lite'
+                      | 'gemini-3.6-flash'
+                      | 'gemini-3.5-flash-lite'
                       | 'gpt-oss-20b-free'
                       | 'webgpu-llama-3.2-1b'
                       | NativeIOSTextModelId
@@ -353,7 +357,7 @@ export function BrainView({
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Schnell · 0 €)</option>
                 <option value="gemini-3.6-flash">Gemini 3.6 Flash (Free-Tier)</option>
                 <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Free-Tier · Schnell)</option>
-                <option value="gpt-oss-20b-free">
+                <option value="gpt-oss-20b-free" disabled>
                   GPT-OSS 20B (Open Cloud · kein API-Key · 0 €)
                 </option>
                 <option value="llama-3.2-1b-coreml">
