@@ -31,8 +31,14 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard let body = message.body as? [String: Any],
+        // The native bridge is exposed only to the trusted ZERO web app's main frame.
+        // Never allow an embedded or foreign origin to invoke on-device model capabilities.
+        guard message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host == "zero-ai-studio.onrender.com",
+              let body = message.body as? [String: Any],
               let requestId = body["requestId"] as? String,
+              !requestId.isEmpty,
               let action = body["action"] as? String
         else { return }
 
