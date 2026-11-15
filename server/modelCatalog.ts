@@ -867,7 +867,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     ramRequirementGB: 0,
     iosCompatible: true,
     iosNotes: 'Echte Websuche mit verifizierten Quellenlinks (keine erfundenen URLs).',
-    provider: 'Google GenAI + Google Search',
+    provider: 'Google Search + Gemini 2.5 Flash-Lite (Free Tier)',
     adapterId: 'gemini-search-adapter',
     hasRealAdapter: true,
     requiresPaidKey: false,
@@ -880,6 +880,6 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     lastTestMessage: 'Noch nicht live getestet: eigener GEMINI_API_KEY im kostenlosen Free Tier erforderlich.',
     testPassed: false,
     version: '4.0-grounding',
-    limitations: 'Abhängig vom kostenlosen Search-Grounding-Kontingent.',
+    limitations: 'Nutzt gemini-2.5-flash-lite mit kostenlosem Google-Search-Grounding (providerseitig begrenzt); ZERO setzt zusätzlich ein eigenes Tageslimit von 100 Suchläufen. Kein kostenpflichtiger Gemini-3.8-Grounding-Aufruf.'
   },
 ];
