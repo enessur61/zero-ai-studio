@@ -120,14 +120,17 @@ export async function runLiveModelTest(
       reason: `Swift 6 iOS Adapter geprüft (${pkg.checkedFiles.filter((f) => f.exists).length}/${pkg.checkedFiles.length} Dateien, 0,00 €).`,
       costEur: 0,
     });
-    model.hasRealAdapter = pkg.readyForDeployment;
-    model.testPassed = pkg.readyForDeployment;
-    model.status = pkg.readyForDeployment ? 'Ready for Deployment' : 'ADAPTER FEHLT';
+    const swiftSourcesPresent = pkg.checkedFiles.every((file) => file.exists);
+    model.hasRealAdapter = swiftSourcesPresent;
+    model.testPassed = false;
+    model.status = !swiftSourcesPresent
+      ? 'ADAPTER FEHLT'
+      : pkg.readyForDeployment
+        ? 'Ready for Deployment'
+        : 'INSTALLATION ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
-    model.lastTestMessage = pkg.readyForDeployment
-      ? `Swift 6 Adapter bereit (${pkg.notes})`
-      : pkg.notes;
+    model.lastTestMessage = pkg.notes;
     return model;
   }
 
