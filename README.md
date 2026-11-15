@@ -101,7 +101,35 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 ---
 
-## 3. API-Schnittstellen (Express Backend)
+## 3. iPhone-PWA installieren
+
+ZERO kann als installierbare Web-App auf dem iPhone genutzt werden. Die PWA verwendet den eigenständigen Anzeige-Modus und registriert einen Service Worker für den App-Shell-Cache.
+
+### Auf dem iPhone installieren
+
+1. ZERO über die **HTTPS-Adresse der veröffentlichten Produktionsseite** in Safari öffnen.
+2. In Safari auf **Teilen** tippen.
+3. **Zum Home-Bildschirm** auswählen.
+4. Den Namen „ZERO AI“ bestätigen und auf **Hinzufügen** tippen.
+5. ZERO anschließend über das neue Home-Bildschirm-Symbol starten.
+
+Der Installationshinweis erscheint auf iPhones automatisch, solange ZERO noch nicht als eigenständige Home-Bildschirm-App läuft. Die PWA benötigt eine veröffentlichte HTTPS-Adresse; localhost auf dem Entwicklungsrechner ist keine nutzbare iPhone-Produktionsadresse.
+
+### Offline- und Datenschutzverhalten
+
+- Der Service Worker cached die App-Shell und statische Build-Assets, damit die Oberfläche nach einem vorherigen Online-Aufruf erneut geladen werden kann.
+- **API-Aufrufe werden ausdrücklich nicht gecached.** Projekte, Chats, Memory, Sitzungen und andere private Serverdaten landen dadurch nicht im Offline-Cache.
+- Anmeldung, Synchronisierung, KI-Provider und serverseitige Studios benötigen weiterhin eine erreichbare ZERO-Serverinstanz und gegebenenfalls gültige Zugangsdaten.
+- Ein Offline-Start kann die Oberfläche anzeigen, bedeutet aber nicht, dass serverabhängige Funktionen offline arbeiten.
+- Nach einem neuen Deployment wird der Service Worker durch eine neue Shell-Version aktualisiert.
+
+### Produktionsvoraussetzungen
+
+Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner dist/ inklusive manifest.webmanifest, sw.js und icons/ ausliefern und die Express-API unter derselben Origin bereitstellen oder korrekt weiterleiten. Eine iPhone-Installation und echte Safari-Funktionstests sind nach dem Deployment auf dem Gerät zu prüfen.
+
+---
+
+## 4. API-Schnittstellen (Express Backend)
 
 | Methode | Endpunkt | Funktion |
 | --- | --- | --- |
