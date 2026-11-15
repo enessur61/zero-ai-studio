@@ -556,6 +556,9 @@ app.post('/api/brain/chat', async (req, res) => {
     const requestedModel = String(req.body?.modelId ?? '');
     const useWebSearch = Boolean(req.body?.useWebSearch);
     const projectId = req.body?.projectId ? String(req.body.projectId) : undefined;
+    const requestStartedAt = Date.now();
+    const isSimpleRequest = !useWebSearch && !projectId && message.length <= 180 && /^(hi|hallo|hey|moin|guten morgen|guten tag|guten abend|test|ping|danke|ok|okay|wer bist du|was kannst du|stelle dich vor)[.!?\s]*$/i.test(message);
+    const needsFullContext = !isSimpleRequest;
 
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
 
@@ -574,7 +577,7 @@ app.post('/api/brain/chat', async (req, res) => {
 
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
-      : database.projects[0];
+      : undefined;
 
     const availableModelsSummary = database.models
       .filter(
@@ -587,7 +590,9 @@ app.post('/api/brain/chat', async (req, res) => {
       .map((m) => `${m.name} [${m.executionMode}]`)
       .join(', ');
 
-    const relevantMemories = database.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
+    const relevantMemories = needsFullContext
+      ? database.memories.slice(0, 4).map((m) => `- ${m.title}: ${m.content}`).join('\n')
+      : '';
 
     const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("BEYOND LIMITS").
 Zielgerät: iPhone 16 Pro Max. Budget-Regel: strikt 0 € laufende Kosten. Maximale Videolänge: 60 Sekunden (bevorzugt 55–60s).
@@ -610,8 +615,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
-      const recentHistory = database.chatHistory
-        .slice(-8)
+      const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
         .join('\n\n');
@@ -647,27 +651,45 @@ Langzeitgedächtnis:\n${relevantMemories}`;
           .map((web) => ({ title: web.title || web.uri, uri: web.uri }));
       }
 
-      const response = await withTransientRetry(() =>
-        ai.models.generateContent({
-          model: selectedModel,
-          contents: groundingContext
-            ? `${fullPrompt}\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n${groundingContext}\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.`
-            : fullPrompt,
-          config: {
-            systemInstruction,
-            ...(selectedModel === 'gemini-3.8-flash'
-              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
-              : {}),
-          },
-        })
-      );
-
-      replyText = (response.text ?? 'Keine Antwort erhalten.').trim();
+      const streamContents = groundingContext
+        ? fullPrompt + '\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n' + groundingContext + '\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.'
+        : fullPrompt;
+      const streamConfig = {
+        systemInstruction,
+        ...(selectedModel === 'gemini-3.8-flash' && needsFullContext
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
+          : {}),
+      };
+      const wantsStream = req.headers.accept?.includes('text/event-stream') ?? false;
+      if (wantsStream) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
+      }
+      const responseStream = await ai.models.generateContentStream({
+        model: selectedModel,
+        contents: streamContents,
+        config: streamConfig,
+      });
+      for await (const chunk of responseStream) {
+        const piece = chunk.text ?? '';
+        if (!piece) continue;
+        replyText += piece;
+        if (wantsStream) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+        }
+      }
+      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
         ...(useWebSearch ? [`Google Search über gemini-2.5-flash-lite Free Tier (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
+        `Kontextmodus: ${isSimpleRequest ? 'Schnellmodus' : 'Kontextmodus'}`,
+        `ZERO Antwortzeit: ${Date.now() - requestStartedAt} ms`,
       ];
 
     const now = new Date().toISOString();
@@ -688,13 +710,19 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     }
     await saveDb(db);
 
-    res.json({
+    const chatResult = {
       reply: replyText,
       modelUsed: selectedModel,
       routingSteps,
       sources,
+      performance: { totalMs: Date.now() - requestStartedAt, contextMode: isSimpleRequest ? 'fast' : 'full' },
       messages: database.chatHistory,
-    });
+    };
+    if (req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'done', ...chatResult }) + '\n\n');
+      return res.end();
+    }
+    return res.json(chatResult);
   } catch (err) {
     const requestedModel = routedModelId || String(req.body?.modelId ?? '');
     const quotaKeys = req.body?.useWebSearch
@@ -708,11 +736,14 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       }
       await saveDb(db);
     }
-    res.status(db ? 400 : 503).json({
-      error: db
-        ? formatGermanApiError(err)
-        : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.',
-    });
+    const errorMessage = db
+      ? formatGermanApiError(err)
+      : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.';
+    if (res.headersSent && req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'error', error: errorMessage }) + '\n\n');
+      return res.end();
+    }
+    return res.status(db ? 400 : 503).json({ error: errorMessage });
   }
 });
 
