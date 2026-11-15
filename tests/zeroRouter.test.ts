@@ -39,19 +39,19 @@ const budget: BudgetGuardState = {
   autoUpgradeDisabled: true,
   freeQuotaUsage: {
     'gemini-3.8-flash': { requestsToday: 0, dailySoftLimit: 10, exhausted: false, lastResetDate: '2026-11-16' },
-    'gemini-2.5-flash-lite': { requestsToday: 0, dailySoftLimit: 10, exhausted: false, lastResetDate: '2026-11-16' },
+    'gemini-3.6-flash': { requestsToday: 0, dailySoftLimit: 10, exhausted: false, lastResetDate: '2026-11-16' },
   },
   auditLog: [],
 };
 
 const now = new Date('2026-11-16T12:00:00.000Z');
 const preferred = chooseZeroChatModel(
-  [makeModel('gemini-3.8-flash'), makeModel('gemini-2.5-flash-lite')],
+  [makeModel('gemini-3.8-flash'), makeModel('gemini-3.6-flash')],
   budget,
-  'gemini-2.5-flash-lite',
+  'gemini-3.6-flash',
   now,
 );
-assert.equal(preferred?.modelId, 'gemini-2.5-flash-lite');
+assert.equal(preferred?.modelId, 'gemini-3.6-flash');
 
 const fallbackBudget: BudgetGuardState = {
   ...budget,
@@ -61,12 +61,12 @@ const fallbackBudget: BudgetGuardState = {
   },
 };
 const fallback = chooseZeroChatModel(
-  [makeModel('gemini-3.8-flash'), makeModel('gemini-2.5-flash-lite')],
+  [makeModel('gemini-3.8-flash'), makeModel('gemini-3.6-flash')],
   fallbackBudget,
   'gemini-3.8-flash',
   now,
 );
-assert.equal(fallback?.modelId, 'gemini-2.5-flash-lite');
+assert.equal(fallback?.modelId, 'gemini-3.6-flash');
 
 const untested = makeModel('gemini-3.8-flash');
 untested.testPassed = false;
