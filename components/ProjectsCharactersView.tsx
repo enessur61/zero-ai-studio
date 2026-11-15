@@ -43,7 +43,7 @@ export function ProjectsCharactersView({
   const [charAppearance, setCharAppearance] = useState('');
   const [charClothing, setCharClothing] = useState('');
   const [charVoice, setCharVoice] = useState<CharacterProfile['voiceName']>('Charon');
-  const [genRefImg, setGenRefImg] = useState(true);
+  const [genRefImg] = useState(false);
   const [creatingChar, setCreatingChar] = useState(false);
 
   async function handleCreateProject(e: React.FormEvent) {
@@ -328,9 +328,9 @@ export function ProjectsCharactersView({
               <input
                 type="checkbox"
                 checked={genRefImg}
-                onChange={(e) => setGenRefImg(e.target.checked)}
+                disabled
               />
-              Referenzporträt automatisch mit FLUX erzeugen
+              Referenzporträt-Generierung (Cloud derzeit deaktiviert)
             </label>
             <button
               type="submit"
