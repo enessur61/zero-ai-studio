@@ -8,6 +8,8 @@ type RuntimeCheck = {
   isSafari: boolean;
   isStandalone: boolean;
   webGPU: 'checking' | 'available' | 'unavailable' | 'error';
+  webGPUMessage: string;
+  webGPUMaxStorageBufferMB: number | null;
   webAssembly: boolean;
   hardwareThreads: number | null;
   nativeBridge: boolean;
@@ -21,6 +23,8 @@ const initialState: RuntimeCheck = {
   isSafari: false,
   isStandalone: false,
   webGPU: 'checking',
+  webGPUMessage: 'WebGPU wurde noch nicht geprüft.',
+  webGPUMaxStorageBufferMB: null,
   webAssembly: false,
   hardwareThreads: null,
   nativeBridge: false,
@@ -35,7 +39,11 @@ export function IPhoneRuntimePanel() {
   const inspectRuntime = useCallback(async () => {
     setRefreshing(true);
     const nav = navigator as Navigator & {
-      gpu?: { requestAdapter: () => Promise<unknown | null> };
+      gpu?: {
+        requestAdapter: () => Promise<{
+          limits?: { maxStorageBufferBindingSize?: number };
+        } | null>;
+      };
       standalone?: boolean;
     };
     const ua = nav.userAgent;
@@ -45,14 +53,28 @@ export function IPhoneRuntimePanel() {
     const isSafari =
       /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
     let webGPU: RuntimeCheck['webGPU'] = 'unavailable';
+    let webGPUMessage = 'Dieser Browser stellt WebGPU nicht bereit.';
+    let webGPUMaxStorageBufferMB: number | null = null;
 
     if (nav.gpu?.requestAdapter) {
       webGPU = 'checking';
       try {
         const adapter = await nav.gpu.requestAdapter();
-        webGPU = adapter ? 'available' : 'unavailable';
+        if (adapter) {
+          webGPU = 'available';
+          const maxBytes = adapter.limits?.maxStorageBufferBindingSize;
+          webGPUMaxStorageBufferMB =
+            typeof maxBytes === 'number' ? Math.round(maxBytes / (1024 * 1024)) : null;
+          webGPUMessage = webGPUMaxStorageBufferMB
+            ? `GPU-Adapter bereit · max. Speicherpuffer ${webGPUMaxStorageBufferMB} MB.`
+            : 'GPU-Adapter bereit; Speichergrenze konnte nicht ausgelesen werden.';
+        } else {
+          webGPU = 'unavailable';
+          webGPUMessage = 'WebGPU ist vorhanden, aber Safari hat aktuell keinen GPU-Adapter bereitgestellt.';
+        }
       } catch {
         webGPU = 'error';
+        webGPUMessage = 'WebGPU-Adapterprüfung ist fehlgeschlagen.';
       }
     }
 
@@ -86,6 +108,8 @@ export function IPhoneRuntimePanel() {
         Boolean(nav.standalone) ||
         window.matchMedia('(display-mode: standalone)').matches,
       webGPU,
+      webGPUMessage,
+      webGPUMaxStorageBufferMB,
       webAssembly: typeof WebAssembly === 'object',
       hardwareThreads: Number.isFinite(nav.hardwareConcurrency)
         ? nav.hardwareConcurrency
@@ -211,7 +235,7 @@ export function IPhoneRuntimePanel() {
           {runtime.hardwareThreads
             ? ` Erkannte logische CPU-Threads: ${runtime.hardwareThreads}.`
             : ''}
-          {' '}Apple-Modell: {runtime.foundationModelMessage}
+          {' '}WebGPU: {runtime.webGPUMessage} Apple-Modell: {runtime.foundationModelMessage}
         </p>
       </div>
     </section>

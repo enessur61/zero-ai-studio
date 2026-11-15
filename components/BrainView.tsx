@@ -17,6 +17,13 @@ import {
   runNativeCoreMLPrompt,
 } from '../lib/iosCoreMLBridge.ts';
 import type { AutomationRun, ChatMessage, StudioProject } from '../types/zero.ts';
+import {
+  generateWebGPULocalChat,
+  isWebGPULocalModelLoaded,
+  loadWebGPULocalModel,
+  unloadWebGPULocalModel,
+  type WebGPULocalModelProgress,
+} from '../lib/webgpuLocalModel.ts';
 
 interface BrainViewProps {
   initialMessages: ChatMessage[];
@@ -44,12 +51,17 @@ export function BrainView({
     | 'gemini-3.8-flash'
     | 'gemini-3.1-flash-lite'
     | 'gpt-oss-20b-free'
+    | 'webgpu-llama-3.2-1b'
     | NativeIOSTextModelId
   >('gemini-3.8-flash');
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [webgpuModelLoaded, setWebgpuModelLoaded] = useState(isWebGPULocalModelLoaded());
+  const [webgpuModelLoading, setWebgpuModelLoading] = useState(false);
+  const [webgpuProgress, setWebgpuProgress] = useState<WebGPULocalModelProgress | null>(null);
+  const [webgpuAssistantDraft, setWebgpuAssistantDraft] = useState('');
 
   // Web Intelligence state
   const [researchQuery, setResearchQuery] = useState('');
@@ -70,6 +82,35 @@ export function BrainView({
   const [autoLoading, setAutoLoading] = useState(false);
   const [autoError, setAutoError] = useState<string | null>(null);
 
+  async function handleLoadWebGPULocalModel() {
+    setChatError(null);
+    setWebgpuModelLoading(true);
+    setWebgpuProgress({ progress: 0, text: 'Prüfe WebGPU-GPU-Adapter …' });
+    try {
+      await loadWebGPULocalModel(setWebgpuProgress);
+      setWebgpuModelLoaded(true);
+      setWebgpuProgress({
+        progress: 1,
+        text: 'Llama 3.2 1B ist lokal geladen und einsatzbereit.',
+      });
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Lokales Modell konnte nicht geladen werden.');
+    } finally {
+      setWebgpuModelLoading(false);
+    }
+  }
+
+  async function handleUnloadWebGPULocalModel() {
+    try {
+      await unloadWebGPULocalModel();
+      setWebgpuModelLoaded(false);
+      setWebgpuProgress(null);
+      setWebgpuAssistantDraft('');
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Lokales Modell konnte nicht entladen werden.');
+    }
+  }
+
   async function handleSendChat(e: React.FormEvent) {
     e.preventDefault();
     if (!input.trim() || chatLoading) return;
@@ -84,7 +125,45 @@ export function BrainView({
     ]);
     setChatLoading(true);
     try {
-      if (
+      if (selectedModel === 'webgpu-llama-3.2-1b') {
+        if (!isWebGPULocalModelLoaded()) {
+          throw new Error('Bitte zuerst das lokale Llama-Modell laden. Der erste Download umfasst etwa 705 MB.');
+        }
+        const history = messages
+          .filter((message) => message.role === 'user' || message.role === 'assistant')
+          .slice(-8)
+          .map((message) => ({
+            role: message.role as 'user' | 'assistant',
+            content: message.content,
+          }));
+        const localMessages = [
+          {
+            role: 'system' as const,
+            content:
+              'Du bist ZERO BRAIN, ein lokaler Assistent. Antworte standardmäßig auf Deutsch, klar und hilfreich. Du hast keinen Webzugriff und darfst keine aktuellen Informationen erfinden. Du bist ein kleines On-Device-Modell: Weise bei komplexen Aufgaben ehrlich auf mögliche Grenzen hin.',
+          },
+          ...history,
+          { role: 'user' as const, content: promptText },
+        ];
+        setInput('');
+        setWebgpuAssistantDraft('');
+        const reply = await generateWebGPULocalChat(localMessages, (token) => {
+          setWebgpuAssistantDraft((previous) => previous + token);
+        });
+        setMessages((prev) => [
+          ...prev.filter((message) => message.id !== pendingId),
+          { id: pendingId, role: 'user', content: promptText, timestamp: pendingTimestamp },
+          {
+            id: `msg-local-${Date.now()}`,
+            role: 'assistant',
+            content: reply,
+            modelUsed: 'Llama 3.2 1B · WebGPU',
+            routingSteps: ['ZERO CORE -> WebGPU GPU · lokal im Browser · 0,00 €'],
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        setWebgpuAssistantDraft('');
+      } else if (
         selectedModel === 'llama-3.2-1b-coreml' ||
         selectedModel === 'llama-3.2-3b-coreml' ||
         selectedModel === 'qwen-2.5-3b-coreml' ||
@@ -246,6 +325,7 @@ export function BrainView({
                       | 'gemini-3.8-flash'
                       | 'gemini-3.1-flash-lite'
                       | 'gpt-oss-20b-free'
+                      | 'webgpu-llama-3.2-1b'
                       | NativeIOSTextModelId
                   )
                 }
@@ -276,6 +356,9 @@ export function BrainView({
                 <option value="apple-foundation-model">
                   Apple Foundation Models (iOS 26+ · Apple Intelligence · lokal · 0 €)
                 </option>
+                <option value="webgpu-llama-3.2-1b">
+                  Llama 3.2 1B (WebGPU · Safari 26+ · lokal · 0 €)
+                </option>
               </select>
 
               <select
@@ -294,10 +377,13 @@ export function BrainView({
               <button
                 type="button"
                 onClick={() => setUseWebSearch((v) => !v)}
+                disabled={selectedModel === 'webgpu-llama-3.2-1b'}
                 className={`min-h-[40px] px-3 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                  useWebSearch
-                    ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
-                    : 'bg-[#090B10] border-white/[0.1] text-slate-400 hover:text-white'
+                  selectedModel === 'webgpu-llama-3.2-1b'
+                    ? 'bg-[#090B10] border-white/[0.1] text-slate-600 opacity-50 cursor-not-allowed'
+                    : useWebSearch
+                      ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                      : 'bg-[#090B10] border-white/[0.1] text-slate-400 hover:text-white'
                 }`}
               >
                 <Globe className="w-3.5 h-3.5" />
@@ -314,6 +400,62 @@ export function BrainView({
               Verlauf leeren
             </button>
           </div>
+
+          {selectedModel === 'webgpu-llama-3.2-1b' && (
+            <div className="mx-4 mt-4 p-3.5 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-sky-200">Lokales Llama 3.2 1B · WebGPU</div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Einmaliger Download ca. 705 MB · etwa 879 MB GPU-Speicher · danach lokal im Browser-Cache.
+                    WLAN empfohlen. Keine API-Kosten; Safari kann Cache-Daten bei Speichermangel löschen.
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  {!webgpuModelLoaded ? (
+                    <button
+                      type="button"
+                      onClick={handleLoadWebGPULocalModel}
+                      disabled={webgpuModelLoading}
+                      className="min-h-[36px] px-3 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-medium inline-flex items-center gap-1.5"
+                    >
+                      {webgpuModelLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                      {webgpuModelLoading ? 'Lädt …' : 'Modell laden'}
+                    </button>
+                  ) : (
+                    <>
+                      <span className="min-h-[36px] px-3 rounded-lg border border-emerald-500/30 text-emerald-300 text-xs inline-flex items-center">
+                        Lokal bereit
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleUnloadWebGPULocalModel}
+                        className="min-h-[36px] px-3 rounded-lg border border-white/[0.1] text-slate-300 text-xs"
+                      >
+                        GPU freigeben
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              {webgpuModelLoading && webgpuProgress && (
+                <div className="space-y-1.5">
+                  <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                    <div
+                      className="h-full bg-sky-400 transition-[width]"
+                      style={{ width: `${Math.round(webgpuProgress.progress * 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {Math.round(webgpuProgress.progress * 100)}% · {webgpuProgress.text}
+                  </div>
+                </div>
+              )}
+              {!webgpuModelLoading && webgpuProgress && (
+                <div className="text-[10px] text-emerald-300">{webgpuProgress.text}</div>
+              )}
+            </div>
+          )}
 
           {/* Messages */}
           <div className="p-4 sm:p-6 space-y-4 max-h-[52vh] min-h-[320px] overflow-y-auto">
@@ -356,6 +498,13 @@ export function BrainView({
                 </div>
               </div>
             ))}
+            {webgpuAssistantDraft && (
+              <div className="flex flex-col items-start">
+                <div className="max-w-[92%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-[#161B26] border border-sky-500/20 text-slate-100">
+                  {webgpuAssistantDraft}
+                </div>
+              </div>
+            )}
           </div>
 
           {chatError && (
@@ -378,7 +527,7 @@ export function BrainView({
             />
             <button
               type="submit"
-              disabled={chatLoading || !input.trim()}
+              disabled={chatLoading || !input.trim() || (selectedModel === 'webgpu-llama-3.2-1b' && !webgpuModelLoaded)}
               className="min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
             >
               {chatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
