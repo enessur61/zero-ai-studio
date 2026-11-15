@@ -98,12 +98,10 @@ export function HomeView({
               ZERO CORE · iPhone 16 Pro Max Zielarchitektur · Budget 0,00 €
             </p>
             <h1 className="mt-3 text-3xl sm:text-4xl font-semibold text-white tracking-tight text-balance">
-              Nichts ist zufällig. Dein eigenständiges KI-Produktionsstudio.
+              BEYOND LIMITS. Dein KI-Produktionsstudio.
             </h1>
             <p className="mt-4 text-sm sm:text-base text-slate-300 leading-relaxed max-w-2xl">
-              ZERO AI STUDIO verbindet echte kostenlose Cloud-Modelle mit lokalen On-Device
-              Synthese-, Bild-, Audio- und Video-Pipelines. Keine Abonnements, keine versteckten
-              Upgrades, harte 60-Sekunden-Videogrenze.
+              ZERO AI STUDIO kombiniert Gemini-Free-Tier-Modelle (eigener API-Key und Kontingent erforderlich) mit lokalen Audio-, Bildbearbeitungs-, Musik- und Video-Pipelines. Nicht verifizierte Cloud-Generierung bleibt deaktiviert. Keine kostenpflichtigen Fallbacks, harte 60-Sekunden-Videogrenze.
             </p>
           </div>
 
