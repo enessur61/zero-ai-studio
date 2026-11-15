@@ -21,19 +21,19 @@ const sixteenScenes = clampScenesToMax60Seconds(
 );
 assert.equal(sixteenScenes.length, 16);
 assert.equal(totalDuration(sixteenScenes), 60);
-assert.ok(sixteenScenes.every((scene) => scene.durationSec >= 1));
+assert.ok(sixteenScenes.every((scene) => scene.durationSec >= 2));
 
 const tooManyScenes = clampScenesToMax60Seconds(
   Array.from({ length: 100 }, (_, index) => ({ id: String(index), durationSec: 2 }))
 );
-assert.equal(tooManyScenes.length, 60);
+assert.equal(tooManyScenes.length, 30);
 assert.equal(totalDuration(tooManyScenes), 60);
 
 const invalidDurations = clampScenesToMax60Seconds([
   { id: 'nan', durationSec: Number.NaN },
   { id: 'negative', durationSec: -10 },
 ]);
-assert.deepEqual(invalidDurations.map((scene) => scene.durationSec), [1, 1]);
+assert.deepEqual(invalidDurations.map((scene) => scene.durationSec), [2, 2]);
 assert.ok(totalDuration(invalidDurations) <= 60);
 
 console.log('Film timeline tests passed: all generated timelines are <= 60 seconds.');
