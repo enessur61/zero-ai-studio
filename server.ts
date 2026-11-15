@@ -395,6 +395,11 @@ app.post('/api/models/:id/toggle', async (req, res) => {
       error: `Modell "${model.name}" besitzt noch keinen lauffähigen Adapter (${model.status}).`,
     });
   }
+  if (model.executionMode === 'LOCAL ON-DEVICE' && model.status === 'INSTALLATION ERFORDERLICH') {
+    return res.status(400).json({
+      error: `Modell "${model.name}" benötigt zuerst seine lokalen Modellgewichte und einen nativen iOS-Build.`,
+    });
+  }
   model.enabled = !model.enabled;
   await saveDb(db);
   res.json({ model });
