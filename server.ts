@@ -644,9 +644,15 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     });
   } catch (err) {
     const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
-    const quotaKey = req.body?.useWebSearch ? 'gemini-web-grounding' : requestedModel;
-    if (isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[quotaKey]) {
-      db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+    const quotaKeys = req.body?.useWebSearch
+      ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
+      : [requestedModel];
+    if (isQuotaOrRateLimitError(err)) {
+      for (const quotaKey of quotaKeys) {
+        if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
+          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+        }
+      }
       await saveDb(db);
     }
     res.status(400).json({ error: formatGermanApiError(err) });
@@ -708,8 +714,12 @@ app.post('/api/web/research', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-web-grounding']) {
-      db.budgetGuard.freeQuotaUsage['gemini-web-grounding'].exhausted = true;
+    if (isQuotaOrRateLimitError(err)) {
+      for (const quotaKey of ['gemini-web-grounding', 'gemini-2.5-flash-lite']) {
+        if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
+          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+        }
+      }
       await saveDb(db);
     }
     res.status(400).json({ error: formatGermanApiError(err) });
