@@ -17,9 +17,9 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 │   ├── backups/                     # Zeitgestempelte System-Backups
 │   └── zero-studio-db.json          # Persistente JSON-Datenbank (Modelle, Projekte, Charaktere, Memory, Audit-Log)
 ├── ios/
-│   └── ZeroCoreML/                  # Swift 6 Runtime-Paket für alle 8 lokalen iOS-Modelle (CoreML, MLX, MediaPipe, whisper.cpp, Piper, Kokoro) + WKWebView Bridge
+│   └── ZeroCoreML/                  # Swift-Quellcodepaket + WKWebView-Bridge; Modellgewichte und native App-Integration noch erforderlich
 ├── server/
-│   ├── adapters.ts                  # Reale Modelladapter (Gemini Free Tier, Pollinations, Swift 6 iOS Verify, Batch-Testrunner)
+│   ├── adapters.ts                  # Gemini-Free-Tier-Adapter, deaktivierte nicht verifizierte Cloud-Provider, iOS-Quellcodeprüfung
 │   ├── coremlAdapter.ts             # Verifizierer für das iPhone 16 Pro Max Swift-6-Paket (9 Dateien, 8 Modelle)
 │   ├── geminiClient.ts              # Server-seitiger @google/genai Client (v1beta, Transient-Retry, 0 € Budget-Guard)
 │   ├── modelCatalog.ts              # Katalog aller realen Modelle (Lizenz, RAM, iOS-Kompatibilität, Status)
@@ -116,7 +116,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 | `DELETE` | `/api/system/zip-backups/:id` | Löscht ausschließlich ungeschützte ZIP-Versionen |
 | `GET` | `/api/models` | Listet alle Modelle inkl. Kostenklasse, Voraussetzungen, RAM, Lizenz & iOS-Kompatibilität |
 | `GET` | `/api/models/coreml/llama-3.2` | Prüft CoreML Adapter-Paket für Llama 3.2 1B & 3B |
-| `GET` | `/api/models/ios-runtime` | Prüft alle 9 Swift-6-Adapter-Dateien für sämtliche 8 lokalen iOS-Modelle |
+| `GET` | `/api/models/ios-runtime` | Prüft Swift-Quellcode und die erwarteten Modellgewichte; ersetzt keinen Xcode-/Gerätetest |
 | `POST` | `/api/models/test-all` | Prüft alle kompatiblen Adapter im Modellkatalog gebündelt (inkl. IP-Cooldown-Schutz) |
 | `POST` | `/api/models/:id/test` | Führt einen echten Live-Funktionstest für das jeweilige Modell aus |
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
@@ -139,7 +139,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 ## 4. Datenbank & Persistenz
 
 - **Format**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`), keine externen Cloud-Datenbankkosten.
-- **Migration / Initialisierung**: Beim ersten Start ohne `data/zero-studio-db.json` erzeugt `server/store.ts` automatisch das vollständige Schema inkl. 28-Modelle-Katalog, 0 € Budget-Guard, Beispiel-Charakter (*Elena Vance*), Beispiel-Kurzfilm (*Schatten über Mitte*, 58s) und Initial-Erinnerungen. Beim Laden vorhandener Datenbanken werden neue Katalogmodelle automatisch zusammengeführt, ohne bestehende Testergebnisse zu überschreiben.
+- **Migration / Initialisierung**: Beim ersten Start ohne `data/zero-studio-db.json` erzeugt `server/store.ts` automatisch das vollständige Schema inkl. 31-Modelle-Katalog, 0 € Budget-Guard, Beispiel-Charakter (*Elena Vance*), Beispiel-Kurzfilm (*Schatten über Mitte*, 58s) und Initial-Erinnerungen. Beim Laden vorhandener Datenbanken werden neue Katalogmodelle automatisch zusammengeführt, ohne bestehende Testergebnisse zu überschreiben.
 
 ---
 
@@ -147,5 +147,5 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 1. **Keine Geheimnisse im Export**: `.env`, `node_modules/` und `dist/` sind aus Sicherheits- und Größengründen nicht im ZIP enthalten. Für den Betrieb werden `npm install` sowie ein eigener `GEMINI_API_KEY` in `.env` benötigt.
 2. **Benutzerverwaltung / Login**: In der aktuellen Ausbaustufe arbeitet ZERO AI STUDIO bewusst als lokales Einzelplatz-Studio ohne Multi-User-Authentifizierung, Passwort-Hashes oder Cloud-Account-Zwang (keine versteckten oder vorgetäuschten Zugangsdaten). Für eine spätere Mehrbenutzer-Umgebung müsste z. B. Firebase Auth oder ein lokaler JWT/Passkey-Layer ergänzt werden.
-3. **Native iOS-Gewichte (Phase 12)**: Alle 8 lokalen iOS-Modelle (Llama 3.2 1B/3B CoreML, Qwen 2.5 3B MLX, DeepSeek-R1 1.5B MLX, Gemma 3 4B MediaPipe, `whisper.cpp` Metal, Piper ONNX DE, Kokoro-82M) besitzen im Paket `ios/ZeroCoreML/` vollständige Swift-6-Adapter & WKWebView-Bridge und sind als `Ready for Deployment` registriert. Ihre 0,07–2,6 GB großen Binärgewichte werden beim Xcode iOS-Build eingebunden.
+3. **Native iOS-Modelle (Phase 12 – noch nicht einsatzbereit)**: Für acht lokale Modelle (Llama 3.2 1B/3B CoreML, Qwen 2.5 3B, DeepSeek-R1 1.5B, Gemma 3 4B, `whisper.cpp`, Piper ONNX DE, Kokoro-82M) liegt Swift-Adapter-Quellcode samt WKWebView-Bridge vor. Die Binärgewichte (ca. 0,07–2,6 GB) sind noch nicht im Repository enthalten; sie müssen in `ios/ZeroCoreML/Models/` bereitgestellt und in eine native iOS-App integriert werden. Der Swift-Paket-Build läuft in macOS-CI, bestätigt aber weder Modellgewichte noch einen echten iPhone-Gerätetest. Diese Modelle bleiben deshalb auf `INSTALLATION ERFORDERLICH`.
 4. **0 € Budget-Schutz**: Kostenpflichtige Gemini-Modelle (`gemini-4-argon`, `gemini-4-argon`, `gemini-3.1-flash-image`, `gemini-omni-1.1-flash`, `lyria-3-*`) sind serverseitig in `server/geminiClient.ts` fest gesperrt (`GESPERRT`).
