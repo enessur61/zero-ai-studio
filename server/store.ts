@@ -458,9 +458,26 @@ export async function loadDb(): Promise<ZeroDatabase> {
         'sd-turbo-free',
         'sana-free',
       ].includes(def.id);
+      const requiresNativeRuntimeVerification = [
+        'qwen-2.5-3b-coreml',
+        'llama-3.2-1b-coreml',
+        'llama-3.2-3b-coreml',
+        'gemma-3-4b-it',
+        'deepseek-r1-distill-1.5b',
+        'piper-tts-de',
+        'whisper-cpp-small',
+        'kokoro-82m',
+      ].includes(def.id);
+      const unverifiedDefaultSuccess =
+        prev &&
+        def.executionMode === 'FREE CLOUD' &&
+        prev.status === 'FUNKTIONIERT' &&
+        !prev.lastTestedAt;
       const shouldKeepPrevState =
         prev &&
         !legacyPollinationsModel &&
+        !requiresNativeRuntimeVerification &&
+        !unverifiedDefaultSuccess &&
         !hasStaleRawError &&
         prev.adapterId === def.adapterId &&
         prev.hasRealAdapter === def.hasRealAdapter;
