@@ -96,9 +96,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
           const blob = await videoResponse.blob();
           if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
-          setWanClipUrl(URL.createObjectURL(blob));
+          const clipUrl = URL.createObjectURL(blob);
+          setWanClipUrl(clipUrl);
           setWanClipScene(scene.title);
-          setWanProgress('Echter Wan-2.1-Clip fertig · 5 Sekunden · MP4');
+          setScenes((previous) => previous.map((item) =>
+            item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
+          ));
+          setWanProgress('Echter Wan-2.1-Clip fertig · 5 Sekunden · wird im finalen Timeline-Export verwendet');
           completed = true;
           break;
         }
@@ -330,7 +334,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               </span>
             </div>
             <p className="text-xs text-slate-400">{wanWorker.message}</p>
-            <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p · kein kostenpflichtiger Fallback. Die GPU muss separat bereitgestellt werden.</p>
+            <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
             {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
             {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
             {wanClipUrl && (
@@ -375,6 +379,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 </div>
 
                 <p className="text-xs text-slate-300 line-clamp-2">{scene.subtitleText}</p>
+                {scene.videoUrl && <p className="text-[10px] font-semibold text-emerald-300">NEURAL CLIP BEREIT · wird im finalen Export verwendet</p>}
                 <button
                   type="button"
                   onClick={() => void handleWanSceneGeneration(scene)}
