@@ -120,8 +120,8 @@ export const IST_ZUSTAND_REPORT: IstZustandItem[] = [
   {
     area: 'Lokale Open-Weight Modelle (CoreML / MLX / MediaPipe / whisper.cpp / Piper / Kokoro)',
     status: 'neu_implementiert',
-    summary: 'Alle 8 iPhone-16-Pro-Max-kompatiblen Modelle im Swift-6-Paket ios/ZeroCoreML vollständig mit WKWebView-Bridge implementiert (Ready for Deployment).',
-    details: 'Qwen 2.5 3B (MLX), Llama 3.2 1B/3B (CoreML), DeepSeek-R1 1.5B (MLX), Gemma 3 4B (MediaPipe), whisper.cpp Metal, Piper ONNX DE & Kokoro-82M besitzen vollständige Swift-Adapter; die 0,07–2,6 GB Gewichtsdateien werden beim Xcode iOS-Build eingebunden.',
+    summary: 'Swift-Quellcode und WKWebView-Bridge für acht lokale iOS-Modelle vorhanden; native App, Modellgewichte und echte Gerätetests fehlen noch (nicht einsatzbereit).',
+    details: 'Quellcode-Gerüste für Qwen 2.5 3B, Llama 3.2 1B/3B, DeepSeek-R1 1.5B, Gemma 3 4B, whisper.cpp, Piper ONNX und Kokoro-82M sind vorhanden. Die 0,07–2,6 GB Modellgewichte sind nicht enthalten; Runtime-Backends/Tokenizer und ein natives Xcode-App-Target müssen ergänzt und auf einem echten iPhone getestet werden. Der Swift-Paket-Build bestätigt nur die Kompilierung.',
   },
   {
     area: 'Große Videodiffusion & 24B–70B Modelle (Wan 2.1, LTX, CogVideoX, HunyuanVideo)',

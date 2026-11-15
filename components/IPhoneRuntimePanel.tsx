@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Cpu, RefreshCw, Smartphone, Zap } from 'lucide-react';
-import { isNativeIOSCoreMLAvailable } from '../lib/iosCoreMLBridge.ts';
+import { isNativeIOSCoreMLAvailable, runNativeIOSDiagnostics } from '../lib/iosCoreMLBridge.ts';
 
 type RuntimeCheck = {
   checked: boolean;
@@ -11,6 +11,8 @@ type RuntimeCheck = {
   webAssembly: boolean;
   hardwareThreads: number | null;
   nativeBridge: boolean;
+  foundationModel: 'checking' | 'available' | 'unavailable' | 'not-native' | 'error';
+  foundationModelMessage: string;
 };
 
 const initialState: RuntimeCheck = {
@@ -22,6 +24,8 @@ const initialState: RuntimeCheck = {
   webAssembly: false,
   hardwareThreads: null,
   nativeBridge: false,
+  foundationModel: 'not-native',
+  foundationModelMessage: 'Apple Foundation Models benötigen die native ZERO-iOS-App.',
 };
 
 export function IPhoneRuntimePanel() {
@@ -52,6 +56,28 @@ export function IPhoneRuntimePanel() {
       }
     }
 
+    const nativeBridge = isNativeIOSCoreMLAvailable();
+    let foundationModel: RuntimeCheck['foundationModel'] = nativeBridge
+      ? 'checking'
+      : 'not-native';
+    let foundationModelMessage = nativeBridge
+      ? 'Prüfe Apple Intelligence und deutsche Modellverfügbarkeit …'
+      : 'Nur in einer nativen ZERO-iOS-App verfügbar; Safari/PWA kann Foundation Models nicht direkt aufrufen.';
+
+    if (nativeBridge) {
+      try {
+        const diagnostics = await runNativeIOSDiagnostics('apple-foundation-model');
+        foundationModel =
+          diagnostics.available && diagnostics.germanSupported ? 'available' : 'unavailable';
+        foundationModelMessage =
+          diagnostics.message || diagnostics.error || diagnostics.status || 'Keine Detaildiagnose verfügbar.';
+      } catch (error) {
+        foundationModel = 'error';
+        foundationModelMessage =
+          error instanceof Error ? error.message : 'Apple Foundation Models konnten nicht geprüft werden.';
+      }
+    }
+
     setRuntime({
       checked: true,
       isIOS,
@@ -64,7 +90,9 @@ export function IPhoneRuntimePanel() {
       hardwareThreads: Number.isFinite(nav.hardwareConcurrency)
         ? nav.hardwareConcurrency
         : null,
-      nativeBridge: isNativeIOSCoreMLAvailable(),
+      nativeBridge,
+      foundationModel,
+      foundationModelMessage,
     });
     setRefreshing(false);
   }, []);
@@ -83,6 +111,20 @@ export function IPhoneRuntimePanel() {
       label: 'Native ZERO-iOS-Bridge',
       value: runtime.nativeBridge ? 'Verbunden' : 'Noch nicht verbunden',
       good: runtime.nativeBridge,
+    },
+    {
+      label: 'Apple Foundation Model (Deutsch)',
+      value:
+        runtime.foundationModel === 'checking'
+          ? 'Wird geprüft …'
+          : runtime.foundationModel === 'available'
+            ? 'Bereit · lokal'
+            : runtime.foundationModel === 'unavailable'
+              ? 'Nicht bereit'
+              : runtime.foundationModel === 'error'
+                ? 'Prüfung fehlgeschlagen'
+                : 'Native App erforderlich',
+      good: runtime.foundationModel === 'available',
     },
     {
       label: 'WebGPU-Grafikzugriff',
@@ -169,6 +211,7 @@ export function IPhoneRuntimePanel() {
           {runtime.hardwareThreads
             ? ` Erkannte logische CPU-Threads: ${runtime.hardwareThreads}.`
             : ''}
+          {' '}Apple-Modell: {runtime.foundationModelMessage}
         </p>
       </div>
     </section>

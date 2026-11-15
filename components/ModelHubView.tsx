@@ -373,7 +373,11 @@ export function ModelHubView({
                 <div>
                   <span className="text-slate-500 block">Größe / RAM</span>
                   <span className="text-slate-200 font-mono tabular-nums">
-                    {m.sizeGB > 0 ? `${m.sizeGB} GB / ${m.ramRequirementGB} GB` : 'Cloud / Web'}
+                    {m.sizeGB > 0
+                      ? `${m.sizeGB} GB / ${m.ramRequirementGB} GB`
+                      : m.executionMode === 'LOCAL ON-DEVICE'
+                        ? 'Systemverwaltet'
+                        : 'Cloud / Web'}
                   </span>
                 </div>
                 <div>
