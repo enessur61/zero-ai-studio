@@ -74,8 +74,12 @@ export interface ZipVerifyResult {
   errors: string[];
 }
 
-export async function buildFullProjectZip(rootDir = process.cwd()): Promise<ZipExportResult> {
-  const files = await collectFiles(rootDir);
+export async function buildFullProjectZip(
+  rootDir = process.cwd(),
+  extraFiles: Record<string, Buffer> = {}
+): Promise<ZipExportResult> {
+  const diskFiles = await collectFiles(rootDir);
+  const files = [...new Set([...diskFiles, ...Object.keys(extraFiles)])].sort();
   const localChunks: Buffer[] = [];
   const centralRecords: Buffer[] = [];
   let offset = 0;
@@ -92,7 +96,7 @@ export async function buildFullProjectZip(rootDir = process.cwd()): Promise<ZipE
 
   for (const relPath of files) {
     const fullPath = path.join(rootDir, relPath);
-    const raw = await fs.readFile(fullPath);
+    const raw = extraFiles[relPath] ?? await fs.readFile(fullPath);
     const compressed = zlib.deflateRawSync(raw, { level: 6 });
     const nameBuf = Buffer.from(relPath, 'utf8');
     const crc = crc32(raw);
