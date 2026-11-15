@@ -81,6 +81,12 @@ jobs:
           const modelResponse = await authFetch('/api/models');
           if (!modelResponse.ok) throw new Error('Model catalog endpoint failed');
           const { models } = await modelResponse.json();
+          const localProbe = await authFetch('/api/models/zero-canvas-img2img/test', { method: 'POST' });
+          if (!localProbe.ok) throw new Error('Local browser adapter probe failed');
+          const localProbeData = await localProbe.json();
+          if (localProbeData.model.status !== 'BROWSER TEST ERFORDERLICH' || localProbeData.model.testPassed) {
+            throw new Error('Server falsely marked a browser-only adapter as verified');
+          }
           for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
             const model = models.find((entry) => entry.id === id);
             if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
