@@ -513,6 +513,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
         : def;
       return enrichModelMetadata(merged);
     });
+    // Remove persisted quota counters for Gemini aliases retired from the catalog.
+    delete parsed.budgetGuard.freeQuotaUsage['gemini-3.7-flash'];
+    delete parsed.budgetGuard.freeQuotaUsage['gemini-3.5-flash'];
     if (!parsed.budgetGuard.freeQuotaUsage['gemini-web-grounding']) {
       parsed.budgetGuard.freeQuotaUsage['gemini-web-grounding'] = {
         requestsToday: 0,
