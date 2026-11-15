@@ -1175,13 +1175,9 @@ Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
     scene.imagePrompt = updated.imagePrompt || scene.imagePrompt;
     scene.soundCue = updated.soundCue || scene.soundCue;
 
-    const img = await generateFreeCloudImage({
-      prompt: scene.imagePrompt,
-      model: 'flux',
-      aspectRatio: '16:9',
-    });
-    scene.imageUrl = img.imageDataUrl;
-    scene.status = 'Bild bereit';
+    // Text and scene direction can be revised without an unavailable cloud image provider.
+    // Keep any previous image asset, but mark the scene as a draft because it no longer matches the revised prompt.
+    scene.status = 'Entwurf';
     project.updatedAt = new Date().toISOString();
     await saveDb(db);
 
