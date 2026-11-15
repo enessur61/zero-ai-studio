@@ -106,6 +106,21 @@ ZERO AI STUDIO ist als installierbare PWA vorbereitet. Öffne die veröffentlich
 
 ---
 
+## Wan 2.1 GPU Worker (optional)
+
+ZERO now includes an optional self-hosted Wan 2.1 T2V-1.3B worker in `gpu-worker/`. The worker accepts authenticated generation jobs and returns short MP4 shots; the ZERO backend proxies job creation, status, and video downloads without exposing the worker token to the browser.
+
+- One worker job produces one 5-second 480p shot; the final ZERO timeline remains hard-capped at 60 seconds.
+- Requires a separate NVIDIA CUDA GPU host. The iPhone and Render web service do not run this model.
+- Model weights download on first inference; no weights or GPU compute are bundled.
+- Configure `ZERO_VIDEO_ENGINE_URL` and the matching `ZERO_VIDEO_ENGINE_TOKEN` on the ZERO server. The worker itself also requires the same token.
+- See [gpu-worker/README.md](gpu-worker/README.md) for Docker deployment and API details.
+- No paid provider fallback is implemented. Open weights do not make GPU compute or hosting permanently free.
+
+The worker source and proxy routes are prepared in this repository, but no GPU worker is deployed or generation run has been verified yet.
+
+---
+
 ## 3. iPhone-PWA installieren
 
 ZERO kann als installierbare Web-App auf dem iPhone genutzt werden. Die PWA verwendet den eigenständigen Anzeige-Modus und registriert einen Service Worker für den App-Shell-Cache.
