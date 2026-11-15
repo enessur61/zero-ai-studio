@@ -65,7 +65,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleDiagnostics(requestId: String, modelId: String) {
-        if modelId == ZeroAppleFoundationModel.modelId {
+        if modelId == "apple-foundation-model" {
             if #available(iOS 26.0, macOS 26.0, *) {
                 let availability = ZeroAppleFoundationModel.availabilityDescription()
                 emitToJS(requestId: requestId, payload: [
@@ -167,7 +167,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleGenerate(requestId: String, modelId: String, prompt: String) {
-        if modelId == ZeroAppleFoundationModel.modelId {
+        if modelId == "apple-foundation-model" {
             Task {
                 do {
                     guard #available(iOS 26.0, macOS 26.0, *) else {
