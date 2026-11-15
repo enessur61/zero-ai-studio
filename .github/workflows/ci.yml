@@ -31,8 +31,8 @@ jobs:
             console.error('Forbidden local data or secret files are tracked:', forbidden);
             process.exit(1);
           }
-          if (files.includes('ZERO_AI_STUDIO_v1.1.8.zip')) {
-            const entries = execFileSync('unzip', ['-Z1', 'ZERO_AI_STUDIO_v1.1.8.zip'], { encoding: 'utf8' }).split(String.fromCharCode(10));
+          for (const archive of files.filter((file) => file.toLowerCase().endsWith('.zip'))) {
+            const entries = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).split(String.fromCharCode(10));
             const unsafeArchiveEntries = entries.filter((file) => {
               const parts = file.replaceAll(String.fromCharCode(92), '/').split('/');
               const name = parts.at(-1) ?? '';
@@ -43,7 +43,7 @@ jobs:
                 ['.pem', '.key', '.p12', '.pfx', '.sqlite', '.db'].some((ext) => name.toLowerCase().endsWith(ext));
             });
             if (unsafeArchiveEntries.length) {
-              console.error('The committed ZIP contains local data or secrets:', unsafeArchiveEntries);
+              console.error('Archive contains local data or secrets:', archive, unsafeArchiveEntries);
               process.exit(1);
             }
           }
