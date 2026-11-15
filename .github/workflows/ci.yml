@@ -31,6 +31,17 @@ jobs:
             console.error('Forbidden local data or secret files are tracked:', forbidden);
             process.exit(1);
           }
+          if (files.includes('ZERO_AI_STUDIO_v1.1.8.zip')) {
+            const entries = execFileSync('unzip', ['-Z1', 'ZERO_AI_STUDIO_v1.1.8.zip'], { encoding: 'utf8' }).split('\\n');
+            const unsafeArchiveEntries = entries.filter((file) =>
+              /(^|\\/)(\\.env($|\\.)|zero-studio-db\\.json$|data\\/|.*\\.(pem|key|p12|pfx|sqlite|db)$)/i.test(file) &&
+              !file.endsWith('.env.example')
+            );
+            if (unsafeArchiveEntries.length) {
+              console.error('The committed ZIP contains local data or secrets:', unsafeArchiveEntries);
+              process.exit(1);
+            }
+          }
           console.log('No local database or secret files are tracked.');
           NODE
       - run: npm install --no-audit --no-fund
