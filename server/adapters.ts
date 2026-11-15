@@ -70,6 +70,8 @@ export async function runLiveModelTest(
 ): Promise<ModelDefinition> {
   const started = Date.now();
   const now = new Date().toISOString();
+  // Revoke any stale activation before probing; only the verified-success path below may re-enable it.
+  model.enabled = false;
 
   if (
     !model.enabled &&
