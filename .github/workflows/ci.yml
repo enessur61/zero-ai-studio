@@ -32,11 +32,16 @@ jobs:
             process.exit(1);
           }
           if (files.includes('ZERO_AI_STUDIO_v1.1.8.zip')) {
-            const entries = execFileSync('unzip', ['-Z1', 'ZERO_AI_STUDIO_v1.1.8.zip'], { encoding: 'utf8' }).split('\\n');
-            const unsafeArchiveEntries = entries.filter((file) =>
-              /(^|\\/)(\\.env($|\\.)|zero-studio-db\\.json$|data\\/|.*\\.(pem|key|p12|pfx|sqlite|db)$)/i.test(file) &&
-              !file.endsWith('.env.example')
-            );
+            const entries = execFileSync('unzip', ['-Z1', 'ZERO_AI_STUDIO_v1.1.8.zip'], { encoding: 'utf8' }).split(String.fromCharCode(10));
+            const unsafeArchiveEntries = entries.filter((file) => {
+              const parts = file.replaceAll(String.fromCharCode(92), '/').split('/');
+              const name = parts.at(-1) ?? '';
+              return name === '.env' ||
+                (name.startsWith('.env.') && name !== '.env.example') ||
+                name === 'zero-studio-db.json' ||
+                parts[0] === 'data' ||
+                ['.pem', '.key', '.p12', '.pfx', '.sqlite', '.db'].some((ext) => name.toLowerCase().endsWith(ext));
+            });
             if (unsafeArchiveEntries.length) {
               console.error('The committed ZIP contains local data or secrets:', unsafeArchiveEntries);
               process.exit(1);
