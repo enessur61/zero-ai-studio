@@ -90,7 +90,7 @@ public final class WhisperMetalAdapter: @unchecked Sendable {
         let url = Self.locateModelURL(filename: weightsFilename)
         return WhisperDeploymentDiagnostics(
             modelId: modelId,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "whisper.cpp Metal GPU + CoreML ANE Encoder (16 kHz PCM -> SRT)",
             deviceModel: "iPhone 16 Pro Max (A18 Pro · ~0,2x Echtzeit)",
             weightsPresent: url != nil,
