@@ -21,3 +21,6 @@ zero-studio-db.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Generated project archives may contain private runtime data
+*.zip
