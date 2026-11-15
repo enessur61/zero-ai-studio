@@ -1075,13 +1075,16 @@ app.post('/api/music/compose', async (req, res) => {
 app.get('/api/video/engine/status', async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
-  if (!configuredUrl) {
+  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  if (!configuredUrl || !token) {
     return res.json({
-      configured: false,
+      configured: Boolean(configuredUrl),
       online: false,
       engine: 'Wan 2.1',
-      status: 'GPU_WORKER_NOT_CONFIGURED',
-      message: 'Noch kein eigener Wan-GPU-Worker verbunden. ZERO verwendet weiterhin den lokalen Storyboard-Export.',
+      status: configuredUrl ? 'WORKER_TOKEN_MISSING' : 'GPU_WORKER_NOT_CONFIGURED',
+      message: configuredUrl
+        ? 'ZERO_VIDEO_ENGINE_TOKEN fehlt. Der Worker wird ohne gemeinsames Geheimnis nicht freigeschaltet.'
+        : 'Noch kein eigener Wan-GPU-Worker verbunden. ZERO verwendet weiterhin den lokalen Storyboard-Export.',
       maxDurationSec: 60,
       costFallback: false,
     });
@@ -1110,8 +1113,7 @@ app.get('/api/video/engine/status', async (_req, res) => {
   const timeout = setTimeout(() => controller.abort(), 4000);
   try {
     const headers: Record<string, string> = { Accept: 'application/json' };
-    const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    headers.Authorization = `Bearer ${token}`;
     const response = await fetch(new URL('/health', endpoint), {
       method: 'GET',
       headers,
