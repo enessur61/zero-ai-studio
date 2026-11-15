@@ -261,14 +261,16 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed('gemini-web-grounding', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
+        recordBudgetAudit(db, e)
+      );
       const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model: 'gemini-2.5-flash-lite',
             contents: 'Was ist die aktuelle offizielle Swift-Version?',
             config: {
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
               tools: [{ googleSearch: {} }],
             },
           }),
