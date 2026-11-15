@@ -8,7 +8,7 @@ Optional self-hosted inference worker for ZERO AI STUDIO. This is a real model r
 - ZERO's final assembled video must remain at or below **60 seconds**.
 - The worker has no hosted inference provider and no paid fallback.
 - The model weights are downloaded from Hugging Face on first generation. They are not included in this repository or Docker image.
-- A GPU is mandatory. The worker returns an error if CUDA is unavailable. CPU-only and iPhone execution are not supported.
+- An NVIDIA CUDA GPU is mandatory. For this Diffusers pipeline, plan for roughly 11 GB VRAM as a starting point; actual memory depends on driver, precision, offload behavior, and runtime versions. CUDA availability alone does not guarantee enough memory. CPU-only and iPhone execution are not supported.
 - The health endpoint does not load/download the model.
 
 ## Run with Docker
