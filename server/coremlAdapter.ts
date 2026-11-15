@@ -225,6 +225,17 @@ export const ALL_IOS_LOCAL_MODELS: IOSLocalModelSpec[] = [
   },
 ];
 
+async function checkModelBundle(bundleFilename: string): Promise<FileCheckResult> {
+  const rel = 'Models/' + bundleFilename;
+  const full = path.join(COREML_ROOT, rel);
+  try {
+    const st = await fs.stat(full);
+    return { path: 'ios/ZeroCoreML/' + rel, exists: st.isFile() || st.isDirectory(), sizeBytes: st.isFile() ? st.size : 0 };
+  } catch {
+    return { path: 'ios/ZeroCoreML/' + rel, exists: false, sizeBytes: 0 };
+  }
+}
+
 async function checkFiles(relPaths: string[]): Promise<FileCheckResult[]> {
   return Promise.all(
     relPaths.map(async (rel) => {
@@ -249,7 +260,8 @@ async function checkFiles(relPaths: string[]): Promise<FileCheckResult[]> {
 
 export async function verifyCoreMLAdapterPackage(): Promise<CoreMLPackageVerification> {
   const checked = await checkFiles(REQUIRED_COREML_FILES);
-  const missingFiles = checked.filter((c) => !c.exists).map((c) => c.path);
+  const modelBundles = await Promise.all(LLAMA_32_COREML_VARIANTS.map((variant) => checkModelBundle(variant.bundleFilename)));
+  const missingFiles = [...checked, ...modelBundles].filter((c) => !c.exists).map((c) => c.path);
   const readyForDeployment = missingFiles.length === 0;
 
   return {
@@ -260,8 +272,8 @@ export async function verifyCoreMLAdapterPackage(): Promise<CoreMLPackageVerific
     variants: LLAMA_32_COREML_VARIANTS,
     bridgeChannel: 'window.webkit.messageHandlers.zeroCoreML',
     notes: readyForDeployment
-      ? 'Swift 6 / CoreML Adapter-Paket vollständig geprüft und einsatzbereit für Xcode / iPhone 16 Pro Max Deployment (0,00 €). Im Linux-Browser-Container läuft kein Apple CoreML; dort erfolgt die Ausführung über die WKWebView-Bridge auf iOS.'
-      : `Fehlende Adapter-Dateien: ${missingFiles.join(', ')}`,
+      ? 'Swift 6 Adapter-Code und beide CoreML-Modellgewichte vorhanden. Ein nativer Xcode-Build und Gerätetest bleiben separat erforderlich.'
+      : `Swift-Adapter-Code geprüft; Modellgewichte fehlen oder sind unvollständig: ${missingFiles.join(', ')}`,
   };
 }
 
@@ -292,7 +304,8 @@ export async function verifyIOSAdapterForModel(
   }
 
   const checkedFiles = await checkFiles(spec.requiredSwiftFiles);
-  const missingFiles = checkedFiles.filter((c) => !c.exists).map((c) => c.path);
+  const modelBundle = await checkModelBundle(spec.bundleFilename);
+  const missingFiles = [...checkedFiles.filter((c) => !c.exists).map((c) => c.path), ...(!modelBundle.exists ? [modelBundle.path] : [])];
   const readyForDeployment = missingFiles.length === 0;
 
   return {
@@ -302,20 +315,23 @@ export async function verifyIOSAdapterForModel(
     runtime: spec.runtime,
     bundleFilename: spec.bundleFilename,
     notes: readyForDeployment
-      ? `${spec.runtime} · ${checkedFiles.length} Swift 6 Adapter-Dateien in ios/ZeroCoreML verifiziert (Ziel-Bundle: ${spec.bundleFilename}, ${spec.ramRequirementGB} GB <= 8 GB iPhone 16 Pro Max).`
-      : `Fehlende Swift-Adapter-Dateien: ${missingFiles.join(', ')}`,
+      ? `${spec.runtime} · Swift-Quellcode und Modellgewicht vorhanden (Ziel-Bundle: ${spec.bundleFilename}). Nativer iOS-Gerätetest steht noch aus.`
+      : `Adapter-Quellcode prüfen; Modellgewicht fehlt oder ist unvollständig: ${missingFiles.join(', ')}`,
   };
 }
 
 export async function verifyZeroIOSRuntimeSuite(): Promise<IOSRuntimeSuiteVerification> {
   const checked = await checkFiles(ALL_SWIFT_PACKAGE_FILES);
+  const modelBundles = await Promise.all(ALL_IOS_LOCAL_MODELS.map((spec) => checkModelBundle(spec.bundleFilename)));
   const byPath = new Map(checked.map((c) => [c.path, c]));
-  const missingFiles = checked.filter((c) => !c.exists).map((c) => c.path);
+  const byBundle = new Map(modelBundles.map((c) => [c.path, c]));
+  const missingFiles = [...checked, ...modelBundles].filter((c) => !c.exists).map((c) => c.path);
 
   const models = ALL_IOS_LOCAL_MODELS.map((spec) => {
-    const modelMissing = spec.requiredSwiftFiles
-      .map((rel) => `ios/ZeroCoreML/${rel}`)
-      .filter((p) => !byPath.get(p)?.exists);
+    const modelMissing = [
+      ...spec.requiredSwiftFiles.map((rel) => `ios/ZeroCoreML/${rel}`).filter((p) => !byPath.get(p)?.exists),
+      ...(!byBundle.get('ios/ZeroCoreML/Models/' + spec.bundleFilename)?.exists ? ['ios/ZeroCoreML/Models/' + spec.bundleFilename] : []),
+    ];
     return {
       modelId: spec.modelId,
       adapterId: spec.adapterId,
@@ -336,13 +352,13 @@ export async function verifyZeroIOSRuntimeSuite(): Promise<IOSRuntimeSuiteVerifi
     readyForDeployment: allFilesPresent,
     packageRoot: 'ios/ZeroCoreML',
     bridgeChannel: 'window.webkit.messageHandlers.zeroCoreML',
-    totalFilesChecked: checked.length,
+    totalFilesChecked: checked.length + modelBundles.length,
     allFilesPresent,
-    files: checked,
+    files: [...checked, ...modelBundles],
     missingFiles,
     models,
     notes: allFilesPresent
-      ? `Alle ${readyCount}/${models.length} lokalen iOS-Adapter (CoreML, MLX Swift, MediaPipe, whisper.cpp, Piper ONNX, Kokoro) sind im Swift 6 Paket vollständig implementiert und bereit für Xcode / iPhone 16 Pro Max Deployment (0,00 €).`
-      : `Fehlende Dateien im ZeroCoreML-Paket: ${missingFiles.join(', ')}`,
+      ? `Alle ${readyCount}/${models.length} lokalen iOS-Adapter besitzen Quellcode und Modellgewichte. Ein nativer Xcode-Build und Gerätetest bleiben separat erforderlich.`
+      : `Swift-Quellcode vorhanden; fehlende Modellgewichte oder Adapter-Dateien: ${missingFiles.join(', ')}`,
   };
 }
