@@ -1,0 +1,28 @@
+{
+  "id": "/",
+  "name": "ZERO AI STUDIO",
+  "short_name": "ZERO AI",
+  "description": "BEYOND LIMITS. Dein KI-Produktionsstudio.",
+  "lang": "de-DE",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#090B10",
+  "theme_color": "#090B10",
+  "categories": ["productivity", "photo", "video", "music"],
+  "icons": [
+    {
+      "src": "/icons/zero-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/zero-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
