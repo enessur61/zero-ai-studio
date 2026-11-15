@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import {
@@ -768,18 +769,24 @@ app.post('/api/image/analyze', async (req, res) => {
 
 // === ZERO AUDIO STUDIO ===
 app.post('/api/audio/tts', async (req, res) => {
-  const db = await loadDb();
   const useExpressiveModel = Boolean(req.body?.expressive);
   const modelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+
   try {
+    const database = await loadDb();
+    db = database;
     const text = String(req.body?.text ?? '').trim();
     const voiceName = String(req.body?.voiceName ?? 'Kore');
     const style = String(req.body?.style ?? 'Ruhige, klare deutsche Erzählstimme').trim();
 
     if (!text) return res.status(400).json({ error: 'Text für Sprachausgabe fehlt.' });
+    if (text.length > 5_000) {
+      return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
+    }
 
-    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
+    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
+      recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
@@ -808,25 +815,34 @@ app.post('/api/audio/tts', async (req, res) => {
       })
     );
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)
-      ?.inlineData?.data;
+    const audioPart = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data);
+    const base64Audio = audioPart?.inlineData?.data;
     if (!base64Audio) {
       throw new Error('TTS-Modell hat keine Audiodaten zurückgegeben.');
     }
 
-    await saveDb(db);
+    const audioDataUrl = pcmBase64ToWavDataUrl(base64Audio, audioPart?.inlineData?.mimeType);
+    await saveDb(database);
     res.json({
-      audioDataUrl: `data:audio/wav;base64,${base64Audio}`,
+      audioDataUrl,
       modelUsed: modelId,
       voiceName,
       costEur: 0,
     });
   } catch (err) {
-    if (isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
+    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
       db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
-      await saveDb(db);
+      try {
+        await saveDb(db);
+      } catch (persistError) {
+        console.error('[ZERO AUDIO] Kontingentstatus konnte nicht gespeichert werden:', persistError);
+      }
     }
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(db ? 400 : 503).json({
+      error: db
+        ? formatGermanApiError(err)
+        : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
+    });
   }
 });
 
