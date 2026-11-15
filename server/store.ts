@@ -620,18 +620,16 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
     await fs.writeFile(path.join(BACKUP_DIR, filename), payload, 'utf8');
   }
   db.backups.unshift(meta);
-  if (db.backups.length > 20) {
-    const removed = db.backups.slice(20);
-    db.backups = db.backups.slice(0, 20);
-    if (process.env.DATABASE_URL) {
-      await Promise.all(removed.map((backup) => deleteBackupFile(backup.id)));
-    } else {
-      await Promise.all(removed.map((backup) =>
-        fs.rm(path.join(BACKUP_DIR, backup.filename), { force: true })
-      ));
-    }
-  }
+  const removedBackups = db.backups.length > 20 ? db.backups.slice(20) : [];
+  if (removedBackups.length) db.backups = db.backups.slice(0, 20);
   await saveDb(db);
+  if (process.env.DATABASE_URL) {
+    await Promise.all(removedBackups.map((backup) => deleteBackupFile(backup.id)));
+  } else {
+    await Promise.all(removedBackups.map((backup) =>
+      fs.rm(path.join(BACKUP_DIR, backup.filename), { force: true })
+    ));
+  }
   return meta;
 }
 
@@ -721,6 +719,7 @@ export async function createVersionedZipBackup(params: {
   }
   db.backupConfig.lastVerifiedAt = now;
   db.backupConfig.zipBackups.unshift(record);
+  let removedZipBackups: ZipBackupVersion[] = [];
   if (db.backupConfig.zipBackups.length > 25) {
     // Keep all manually protected backups and at most 10 recent automatic backups.
     const beforePrune = db.backupConfig.zipBackups;
@@ -730,16 +729,16 @@ export async function createVersionedZipBackup(params: {
       b.createdAt.localeCompare(a.createdAt)
     );
     const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
-    const removed = beforePrune.filter((b) => !retainedIds.has(b.id));
-    if (process.env.DATABASE_URL) {
-      await Promise.all(removed.map((backup) => deleteBackupFile(backup.id)));
-    } else {
-      await Promise.all(removed.map((backup) =>
-        fs.rm(path.join(ZIP_BACKUP_DIR, backup.filename), { force: true })
-      ));
-    }
+    removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
   }
   await saveDb(db);
+  if (process.env.DATABASE_URL) {
+    await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
+  } else {
+    await Promise.all(removedZipBackups.map((backup) =>
+      fs.rm(path.join(ZIP_BACKUP_DIR, backup.filename), { force: true })
+    ));
+  }
   return record;
 }
 
