@@ -137,7 +137,7 @@ export interface FilmScene {
   imageUrl?: string;
   videoUrl?: string;
   audioDataUrl?: string;
-  status: 'Entwurf' | 'Bild bereit' | 'Audio bereit' | 'Szenenbereit' | 'Bildgenerierung nicht verfügbar';
+  status: 'Entwurf' | 'Bild bereit' | 'Audio bereit' | 'Szenenbereit';
 }
 
 export interface ProjectAsset {
