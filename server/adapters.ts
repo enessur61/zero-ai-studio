@@ -70,8 +70,8 @@ export async function runLiveModelTest(
 ): Promise<ModelDefinition> {
   const started = Date.now();
   const now = new Date().toISOString();
-  // Revoke any stale activation before probing; only the verified-success path below may re-enable it.
-  model.enabled = false;
+  // Revoke stale activation for server-probed models. WebGPU is probed in the browser, not on this server.
+  if (model.id !== 'webgpu-llama-3.2-1b') model.enabled = false;
 
   if (
     !model.enabled &&
@@ -131,6 +131,19 @@ export async function runLiveModelTest(
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
     model.lastTestMessage = pkg.notes;
+    return model;
+  }
+
+  if (
+    model.id === 'webgpu-llama-3.2-1b' &&
+    model.enabled &&
+    model.status === 'LOKAL INSTALLIERT' &&
+    model.testPassed
+  ) {
+    model.lastTestMessage =
+      'Auf diesem Gerät bereits durch echte lokale WebGPU-Inferenz bestätigt. Der Server kann die Browser-GPU nicht erneut testen.';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = 0;
     return model;
   }
 
