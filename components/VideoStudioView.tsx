@@ -103,7 +103,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         <div>
           <h1 className="text-2xl font-semibold text-white">ZERO VIDEO STUDIO</h1>
           <p className="text-xs text-slate-400 mt-1">
-            Szenen-Schnitt, Ken-Burns Kamerabewegung, Untertitel & Export · Harte Grenze: max. 60 Sekunden
+            Szenen-Schnitt, 1080p-Full-HD-Master, 24 fps, Untertitel & Audio-Mix · Harte Grenze: max. 60 Sekunden
           </p>
         </div>
 
