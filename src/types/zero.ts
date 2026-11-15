@@ -25,7 +25,8 @@ export type FreeTierClassification =
   | 'DAUERHAFT KOSTENLOS (OPEN CLOUD)'
   | 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)'
   | 'HARDWARE / SERVER ERFORDERLICH'
-  | 'GESPERRT (KOSTENPFLICHTIG)';
+  | 'GESPERRT (KOSTENPFLICHTIG)'
+  | 'DERZEIT NICHT VERFÜGBAR';
 
 export interface ModelDefinition {
   id: string;
