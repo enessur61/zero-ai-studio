@@ -9,6 +9,20 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: zero
+          POSTGRES_PASSWORD: zero-test-password
+          POSTGRES_DB: zero_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zero -d zero_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -71,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PORT=4179 NODE_ENV=production GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
+          PORT=4179 NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
@@ -189,6 +203,32 @@ jobs:
             body: JSON.stringify({ message: 'smoke test', modelId: 'gpt-oss-20b-free' })
           });
           if (brain.status !== 503) throw new Error('Unverified GPT-OSS route did not fail closed');
+          const jsonBackupResponse = await authFetch('/api/system/backup', {
+            method: 'POST', body: JSON.stringify({ note: 'CI PostgreSQL backup integration test' })
+          });
+          if (!jsonBackupResponse.ok) throw new Error('PostgreSQL JSON backup failed: ' + await jsonBackupResponse.text());
+          const { backup: jsonBackup } = await jsonBackupResponse.json();
+          if (!jsonBackup.id) throw new Error('JSON backup metadata missing');
+          const zipBackupResponse = await authFetch('/api/system/zip-backups', {
+            method: 'POST', body: JSON.stringify({ changelog: 'CI PostgreSQL ZIP backup integration test' })
+          });
+          if (!zipBackupResponse.ok) throw new Error('PostgreSQL ZIP backup failed: ' + await zipBackupResponse.text());
+          const { backup: zipBackup } = await zipBackupResponse.json();
+          const zipDownload = await authFetch('/api/system/zip-backups/' + zipBackup.id + '/download');
+          if (!zipDownload.ok) throw new Error('PostgreSQL ZIP download failed');
+          const zipBytes = Buffer.from(await zipDownload.arrayBuffer());
+          if (zipBytes.length !== zipBackup.sizeBytes || zipBytes[0] !== 0x50 || zipBytes[1] !== 0x4b) {
+            throw new Error('PostgreSQL ZIP backup bytes are missing or corrupted');
+          }
+          const zipRestore = await authFetch('/api/system/zip-backups/' + zipBackup.id + '/restore', {
+            method: 'POST', body: JSON.stringify({})
+          });
+          if (!zipRestore.ok) throw new Error('PostgreSQL ZIP restore failed: ' + await zipRestore.text());
+          const jsonRestore = await authFetch('/api/system/restore', {
+            method: 'POST', body: JSON.stringify({ backupId: jsonBackup.id })
+          });
+          if (!jsonRestore.ok) throw new Error('PostgreSQL JSON restore failed: ' + await jsonRestore.text());
+          console.log('Verified PostgreSQL state, JSON backups, ZIP backup download and restore.');
           const logout = await authFetch('/api/auth/logout', { method: 'POST' });
           if (!logout.ok) throw new Error('Logout failed');
           const clearedCookie = logout.headers.get('set-cookie') ?? '';

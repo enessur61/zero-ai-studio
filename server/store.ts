@@ -17,6 +17,7 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
+import { deleteBackupFile, readBackupFile, readPersistentState, writeBackupFile, writePersistentState } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -448,7 +449,15 @@ export async function loadDb(): Promise<ZeroDatabase> {
   await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
 
   try {
-    const raw = await fs.readFile(DB_PATH, 'utf8');
+    if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL && process.env.ZERO_ALLOW_EPHEMERAL_DB !== 'true') {
+      throw new Error('DATABASE_URL fehlt. ZERO startet in Produktion nicht mit flüchtiger Dateispeicherung.');
+    }
+    const stored = process.env.DATABASE_URL
+      ? await readPersistentState<ZeroDatabase>()
+      : null;
+    const raw = stored ? JSON.stringify(stored) : process.env.DATABASE_URL
+      ? JSON.stringify(createDefaultDatabase())
+      : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
@@ -551,8 +560,10 @@ export async function loadDb(): Promise<ZeroDatabase> {
       };
     }
     dbCache = parsed;
+    if (process.env.DATABASE_URL) await writePersistentState(parsed);
     return dbCache;
-  } catch {
+  } catch (error) {
+    if (process.env.DATABASE_URL || process.env.NODE_ENV === 'production') throw error;
     dbCache = createDefaultDatabase();
     dbCache.models = dbCache.models.map(enrichModelMetadata);
     await saveDb(dbCache);
@@ -562,6 +573,10 @@ export async function loadDb(): Promise<ZeroDatabase> {
 
 export async function saveDb(db: ZeroDatabase): Promise<void> {
   dbCache = db;
+  if (process.env.DATABASE_URL) {
+    await writePersistentState(db);
+    return;
+  }
   await fs.mkdir(DATA_DIR, { recursive: true });
   const tmpPath = `${DB_PATH}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(db, null, 2), 'utf8');
@@ -588,12 +603,9 @@ export function recordBudgetAudit(
 
 export async function createSystemBackup(note: string): Promise<SystemBackupMeta> {
   const db = await loadDb();
-  await fs.mkdir(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `zero-backup-${stamp}.json`;
-  const target = path.join(BACKUP_DIR, filename);
   const payload = JSON.stringify(db, null, 2);
-  await fs.writeFile(target, payload, 'utf8');
   const meta: SystemBackupMeta = {
     id: `bkp-${Date.now()}`,
     filename,
@@ -601,11 +613,23 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
     note,
     sizeBytes: Buffer.byteLength(payload, 'utf8'),
   };
-  db.backups.unshift(meta);
-  if (db.backups.length > 20) {
-    db.backups = db.backups.slice(0, 20);
+  if (process.env.DATABASE_URL) {
+    await writeBackupFile(meta.id, filename, 'application/json', Buffer.from(payload, 'utf8'));
+  } else {
+    await fs.mkdir(BACKUP_DIR, { recursive: true });
+    await fs.writeFile(path.join(BACKUP_DIR, filename), payload, 'utf8');
   }
+  db.backups.unshift(meta);
+  const removedBackups = db.backups.length > 20 ? db.backups.slice(20) : [];
+  if (removedBackups.length) db.backups = db.backups.slice(0, 20);
   await saveDb(db);
+  if (process.env.DATABASE_URL) {
+    await Promise.all(removedBackups.map((backup) => deleteBackupFile(backup.id)));
+  } else {
+    await Promise.all(removedBackups.map((backup) =>
+      fs.rm(path.join(BACKUP_DIR, backup.filename), { force: true })
+    ));
+  }
   return meta;
 }
 
@@ -615,8 +639,9 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   if (!found) {
     throw new Error('Backup nicht gefunden.');
   }
-  const target = path.join(BACKUP_DIR, found.filename);
-  const raw = await fs.readFile(target, 'utf8');
+  const raw = process.env.DATABASE_URL
+    ? (await readBackupFile(found.id)).toString('utf8')
+    : await fs.readFile(path.join(BACKUP_DIR, found.filename), 'utf8');
   const restored = JSON.parse(raw) as ZeroDatabase;
   restored.backups = db.backups;
   restored.backupConfig = db.backupConfig;
@@ -636,8 +661,6 @@ export async function createVersionedZipBackup(params: {
   bumpVersion?: boolean;
 }): Promise<ZipBackupVersion> {
   const db = await loadDb();
-  await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
-
   const nextVersion =
     params.bumpVersion === false
       ? db.backupConfig.currentVersion
@@ -660,7 +683,9 @@ export async function createVersionedZipBackup(params: {
   }
   await saveDb(db);
 
-  const zipRes = await buildFullProjectZip();
+  const zipRes = await buildFullProjectZip(process.cwd(), {
+    'data/zero-studio-db.json': Buffer.from(JSON.stringify(await loadDb(), null, 2), 'utf8'),
+  });
   const verification = verifyZipBuffer(zipRes.buffer);
   if (!verification.result.valid) {
     throw new Error(
@@ -670,8 +695,6 @@ export async function createVersionedZipBackup(params: {
       ].join('; ')}`
     );
   }
-
-  await fs.writeFile(targetPath, zipRes.buffer);
 
   // Mark latest verified working backup as protected; keep prior protected backups intact
   const record: ZipBackupVersion = {
@@ -684,21 +707,38 @@ export async function createVersionedZipBackup(params: {
     fileCount: zipRes.fileCount,
     sizeBytes: zipRes.buffer.length,
     verified: true,
-    protected: true,
+    protected: params.trigger !== 'auto',
     excludedSecrets: EXCLUDED_SECRETS_DOC,
   };
 
+  if (process.env.DATABASE_URL) {
+    await writeBackupFile(record.id, filename, 'application/zip', zipRes.buffer);
+  } else {
+    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+    await fs.writeFile(targetPath, zipRes.buffer);
+  }
   db.backupConfig.lastVerifiedAt = now;
   db.backupConfig.zipBackups.unshift(record);
+  let removedZipBackups: ZipBackupVersion[] = [];
   if (db.backupConfig.zipBackups.length > 25) {
-    // Keep all protected backups or latest 25 without silently deleting protected ones
-    const protectedItems = db.backupConfig.zipBackups.filter((b) => b.protected);
-    const unprotectedItems = db.backupConfig.zipBackups.filter((b) => !b.protected).slice(0, 10);
+    // Keep all manually protected backups and at most 10 recent automatic backups.
+    const beforePrune = db.backupConfig.zipBackups;
+    const protectedItems = beforePrune.filter((b) => b.protected);
+    const unprotectedItems = beforePrune.filter((b) => !b.protected).slice(0, 10);
     db.backupConfig.zipBackups = [...protectedItems, ...unprotectedItems].sort((a, b) =>
       b.createdAt.localeCompare(a.createdAt)
     );
+    const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
+    removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
   }
   await saveDb(db);
+  if (process.env.DATABASE_URL) {
+    await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
+  } else {
+    await Promise.all(removedZipBackups.map((backup) =>
+      fs.rm(path.join(ZIP_BACKUP_DIR, backup.filename), { force: true })
+    ));
+  }
   return record;
 }
 
@@ -714,14 +754,15 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
 
 export async function getZipBackupFilePath(zipId: string): Promise<{
   record: ZipBackupVersion;
-  filePath: string;
+  buffer: Buffer;
 }> {
   const db = await loadDb();
   const record = db.backupConfig.zipBackups.find((b) => b.id === zipId);
   if (!record) throw new Error('ZIP-Version nicht gefunden.');
-  const filePath = path.join(ZIP_BACKUP_DIR, record.filename);
-  await fs.access(filePath);
-  return { record, filePath };
+  const buffer = process.env.DATABASE_URL
+    ? await readBackupFile(record.id)
+    : await fs.readFile(path.join(ZIP_BACKUP_DIR, record.filename));
+  return { record, buffer };
 }
 
 export async function toggleZipBackupProtection(zipId: string): Promise<ZipBackupVersion> {
@@ -741,8 +782,8 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   if (target.protected) {
     throw new Error('Geschütztes Backup darf nicht gelöscht werden. Hebe zuerst den Schutz auf.');
   }
-  const filePath = path.join(ZIP_BACKUP_DIR, target.filename);
-  await fs.rm(filePath, { force: true });
+  if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
+  else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
   db.backupConfig.zipBackups.splice(idx, 1);
   await saveDb(db);
 }
@@ -752,8 +793,7 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
   safetyBackup: ZipBackupVersion;
   db: ZeroDatabase;
 }> {
-  const { record, filePath } = await getZipBackupFilePath(zipId);
-  const zipBuf = await fs.readFile(filePath);
+  const { record, buffer: zipBuf } = await getZipBackupFilePath(zipId);
   const verification = verifyZipBuffer(zipBuf);
 
   if (!verification.result.valid) {

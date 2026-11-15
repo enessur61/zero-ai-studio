@@ -211,7 +211,10 @@ app.post('/api/system/restore', async (req, res) => {
 
 app.get('/api/system/export-manifest', async (_req, res) => {
   try {
-    const result = await buildFullProjectZip();
+    const db = await loadDb();
+    const result = await buildFullProjectZip(process.cwd(), {
+      'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+    });
     const verification = verifyZipBuffer(result.buffer);
     res.json({
       filename: 'ZERO_AI_STUDIO_FULL_PROJECT.zip',
@@ -229,7 +232,9 @@ app.get('/api/system/export-manifest', async (_req, res) => {
 app.get('/api/system/export-zip', async (_req, res) => {
   try {
     const db = await loadDb();
-    const result = await buildFullProjectZip();
+    const result = await buildFullProjectZip(process.cwd(), {
+      'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+    });
     const verification = verifyZipBuffer(result.buffer);
     if (!verification.result.valid) {
       return res.status(500).json({
@@ -288,10 +293,10 @@ app.post('/api/system/zip-backups/settings', async (req, res) => {
 
 app.get('/api/system/zip-backups/:id/download', async (req, res) => {
   try {
-    const { record, filePath } = await getZipBackupFilePath(req.params.id);
+    const { record, buffer } = await getZipBackupFilePath(req.params.id);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${record.filename}"`);
-    res.sendFile(filePath);
+    res.send(buffer);
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : 'ZIP-Datei nicht gefunden' });
   }
