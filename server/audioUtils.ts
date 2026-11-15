@@ -21,8 +21,8 @@ export function pcmBase64ToWavDataUrl(
     return `data:${mimeType};base64,${base64Pcm}`;
   }
 
-  const mimeRate = normalizedMime.match(/(?:rate|samplerate)=(\\d+)/)?.[1];
-  const mimeChannels = normalizedMime.match(/channels=(\\d+)/)?.[1];
+  const mimeRate = normalizedMime.match(/(?:rate|samplerate)=(\d+)/)?.[1];
+  const mimeChannels = normalizedMime.match(/channels=(\d+)/)?.[1];
   const sampleRate = options.sampleRate ?? (mimeRate ? Number(mimeRate) : 24_000);
   const channels = options.channels ?? (mimeChannels ? Number(mimeChannels) : 1);
   const bitsPerSample = 16;
