@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
+import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -32,9 +33,34 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
 
   useEffect(() => {
-    if (currentProject) {
-      setScenes(currentProject.scenes);
+    let active = true;
+    if (!currentProject) {
+      setScenes([]);
+      return () => { active = false; };
     }
+    setScenes(currentProject.scenes);
+    Promise.all(currentProject.scenes.map(async (scene) => {
+      try {
+        const blob = await loadSceneVideoClip(currentProject.id, scene.id);
+        return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
+      } catch {
+        return null;
+      }
+    })).then((restored) => {
+      if (!active) {
+        restored.forEach((item) => { if (item) URL.revokeObjectURL(item.url); });
+        return;
+      }
+      const urls = new Map(restored.filter((item): item is { sceneId: string; url: string } => Boolean(item))
+        .map((item) => [item.sceneId, item.url]));
+      if (urls.size) {
+        setScenes((previous) => previous.map((scene) => {
+          const url = urls.get(scene.id);
+          return url ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene;
+        }));
+      }
+    });
+    return () => { active = false; };
   }, [selectedProjectId, currentProject]);
 
   useEffect(() => {
@@ -98,6 +124,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
           const clipUrl = URL.createObjectURL(blob);
           setWanClipUrl(clipUrl);
+          if (currentProject?.id) {
+            try {
+              await saveSceneVideoClip(currentProject.id, scene.id, blob);
+              setWanProgress('Clip erzeugt und lokal auf diesem iPhone gespeichert...');
+            } catch {
+              setWanProgress('Clip erzeugt; lokale Speicherung fehlgeschlagen. Bitte vor dem Neuladen exportieren.');
+            }
+          }
           setWanClipScene(scene.title);
           setScenes((previous) => previous.map((item) =>
             item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
