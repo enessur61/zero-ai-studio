@@ -65,6 +65,7 @@ jobs:
           console.log('Gemini API correctly blocked until billing-disabled confirmation.');
           NODE
       - run: npm run lint
+      - run: npm test
       - run: npm run build
       - name: Production server smoke test
         shell: bash
