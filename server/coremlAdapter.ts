@@ -262,7 +262,8 @@ export async function verifyCoreMLAdapterPackage(): Promise<CoreMLPackageVerific
   const checked = await checkFiles(REQUIRED_COREML_FILES);
   const modelBundles = await Promise.all(LLAMA_32_COREML_VARIANTS.map((variant) => checkModelBundle(variant.bundleFilename)));
   const missingFiles = [...checked, ...modelBundles].filter((c) => !c.exists).map((c) => c.path);
-  const readyForDeployment = missingFiles.length === 0;
+  const assetsComplete = missingFiles.length === 0;
+  const readyForDeployment = false;
 
   return {
     readyForDeployment,
@@ -271,9 +272,9 @@ export async function verifyCoreMLAdapterPackage(): Promise<CoreMLPackageVerific
     missingFiles,
     variants: LLAMA_32_COREML_VARIANTS,
     bridgeChannel: 'window.webkit.messageHandlers.zeroCoreML',
-    notes: readyForDeployment
-      ? 'Swift 6 Adapter-Code und beide CoreML-Modellgewichte vorhanden. Ein nativer Xcode-Build und Gerätetest bleiben separat erforderlich.'
-      : `Swift-Adapter-Code geprüft; Modellgewichte fehlen oder sind unvollständig: ${missingFiles.join(', ')}`,
+    notes: assetsComplete
+      ? 'Swift-Quellcode und beide CoreML-Modellgewichte vorhanden. Trotzdem NICHT deploymentbereit: Ein natives iOS-App-Target, Tokenizer-Integration, Xcode-Build und Gerätetest sind noch erforderlich.'
+      : `Swift-Adapter-Code geprüft; Modellgewichte fehlen oder sind unvollständig: ${missingFiles.join(', ')}. Zusätzlich fehlen natives iOS-App-Target und Gerätetest.`,
   };
 }
 
@@ -306,7 +307,8 @@ export async function verifyIOSAdapterForModel(
   const checkedFiles = await checkFiles(spec.requiredSwiftFiles);
   const modelBundle = await checkModelBundle(spec.bundleFilename);
   const missingFiles = [...checkedFiles.filter((c) => !c.exists).map((c) => c.path), ...(!modelBundle.exists ? [modelBundle.path] : [])];
-  const readyForDeployment = missingFiles.length === 0;
+  const assetsComplete = missingFiles.length === 0;
+  const readyForDeployment = false;
 
   return {
     readyForDeployment,
@@ -340,16 +342,15 @@ export async function verifyZeroIOSRuntimeSuite(): Promise<IOSRuntimeSuiteVerifi
       bundleFilename: spec.bundleFilename,
       sizeGB: spec.sizeGB,
       ramRequirementGB: spec.ramRequirementGB,
-      readyForDeployment: modelMissing.length === 0,
+      readyForDeployment: false,
       missingFiles: modelMissing,
     };
   });
 
   const allFilesPresent = missingFiles.length === 0;
-  const readyCount = models.filter((m) => m.readyForDeployment).length;
 
   return {
-    readyForDeployment: allFilesPresent,
+    readyForDeployment: false,
     packageRoot: 'ios/ZeroCoreML',
     bridgeChannel: 'window.webkit.messageHandlers.zeroCoreML',
     totalFilesChecked: checked.length + modelBundles.length,
@@ -358,7 +359,7 @@ export async function verifyZeroIOSRuntimeSuite(): Promise<IOSRuntimeSuiteVerifi
     missingFiles,
     models,
     notes: allFilesPresent
-      ? `Alle ${readyCount}/${models.length} lokalen iOS-Adapter besitzen Quellcode und Modellgewichte. Ein nativer Xcode-Build und Gerätetest bleiben separat erforderlich.`
-      : `Swift-Quellcode vorhanden; fehlende Modellgewichte oder Adapter-Dateien: ${missingFiles.join(', ')}`,
+      ? 'Swift-Quellcode und Modellgewichte sind vorhanden. Trotzdem NICHT deploymentbereit: natives iOS-App-Target, echte Runtime-Abhängigkeiten, Tokenizer/Backends, Xcode-Build und Gerätetest fehlen noch.'
+      : `Swift-Quellcode vorhanden; fehlende Modellgewichte oder Adapter-Dateien: ${missingFiles.join(', ')}. Zusätzlich ist das native iOS-App-Target noch nicht integriert.`,
   };
 }
