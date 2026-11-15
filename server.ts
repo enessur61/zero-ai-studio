@@ -1119,16 +1119,20 @@ app.get('/api/video/engine/status', async (_req, res) => {
       redirect: 'error',
     });
     if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
-    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string };
-    const online = payload.ok === true && (!payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || ''));
+    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean };
+    const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
+    const online = payload.ok === true && payload.cuda_available === true && engineMatches;
     return res.json({
       configured: true,
       online,
+      gpuAvailable: payload.cuda_available === true,
       engine: 'Wan 2.1',
-      status: online ? 'WORKER_ONLINE' : 'WORKER_PROTOCOL_MISMATCH',
+      status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
       message: online
-        ? 'Wan-Worker erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
-        : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
+        ? 'Wan-Worker und CUDA-GPU erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
+        : payload.cuda_available === false
+          ? 'Worker erreichbar, aber keine CUDA-GPU verfügbar. Wan-Inferenz ist nicht startbereit.'
+          : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
       maxDurationSec: 60,
       costFallback: false,
     });
