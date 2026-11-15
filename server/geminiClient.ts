@@ -3,6 +3,7 @@ import type { BudgetGuardState } from '../src/types/zero.ts';
 
 const ALLOWED_FREE_GEMINI_MODELS = new Set([
   'gemini-3.8-flash',
+  'gemini-2.5-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-3.8-flash-lite-tts',
   'gemini-3.8-flash-tts',
