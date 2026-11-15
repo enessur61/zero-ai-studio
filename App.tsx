@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   Brain,
   Clapperboard,
@@ -69,6 +69,13 @@ export default function App() {
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authConfigured, setAuthConfigured] = useState(true);
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authStatusLoading, setAuthStatusLoading] = useState(true);
 
   const [models, setModels] = useState<ModelDefinition[]>([]);
   const [budgetGuard, setBudgetGuard] = useState<BudgetGuardState | null>(null);
@@ -138,15 +145,82 @@ export default function App() {
       });
       setExcludedSecrets(zipRes.excludedSecrets ?? []);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Backend konnte nicht geladen werden.');
+      const message = err instanceof Error ? err.message : 'Backend konnte nicht geladen werden.';
+      if (message.includes('401') || message.includes('Anmeldung erforderlich')) {
+        setAuthRequired(true);
+        setLoadError(null);
+      } else {
+        setLoadError(message);
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadAllData();
+    let cancelled = false;
+    void (async () => {
+      setAuthStatusLoading(true);
+      try {
+        const status = await apiRequest<{
+          required: boolean;
+          configured: boolean;
+          authenticated: boolean;
+        }>('/api/auth/status');
+        if (cancelled) return;
+        setAuthEnabled(status.required);
+        setAuthConfigured(status.configured);
+        if (status.required && (!status.configured || !status.authenticated)) {
+          setAuthRequired(true);
+          setLoading(false);
+          return;
+        }
+        await loadAllData();
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : 'Backend konnte nicht geladen werden.');
+          setLoading(false);
+        }
+      } finally {
+        if (!cancelled) setAuthStatusLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [loadAllData]);
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: authPassword }),
+      });
+      const status = await apiRequest<{ authenticated: boolean }>('/api/auth/status');
+      if (!status.authenticated) throw new Error('Anmeldung konnte nicht bestätigt werden.');
+      setAuthRequired(false);
+      setAuthPassword('');
+      await loadAllData();
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Anmeldung fehlgeschlagen.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await apiRequest('/api/auth/logout', { method: 'POST' });
+    } finally {
+      setAuthRequired(true);
+      setAuthPassword('');
+      setMobileSheetOpen(false);
+      setLoading(false);
+    }
+  }
 
   function navigateTo(tab: NavigationTab) {
     setActiveTab(tab);
@@ -160,12 +234,57 @@ export default function App() {
 
   const activeNav = NAV_ITEMS.find((n) => n.id === activeTab) ?? NAV_ITEMS[0];
 
-  if (loading) {
+  if (authStatusLoading || loading) {
     return (
       <div className="min-h-screen bg-[#090B10] text-white flex items-center justify-center p-6">
         <div className="flex items-center gap-3 text-sm text-slate-300">
           <Loader2 className="w-5 h-5 animate-spin text-[#F43F5E]" />
           ZERO AI STUDIO initialisiert Module...
+        </div>
+      </div>
+    );
+  }
+
+  if (authRequired) {
+    return (
+      <div className="min-h-screen bg-[#090B10] text-white flex items-center justify-center p-6">
+        <div className="w-full max-w-sm bg-[#11151E] border border-white/[0.1] rounded-2xl p-6 space-y-5">
+          <div className="space-y-2">
+            <p className="text-[10px] tracking-[0.24em] text-rose-400 font-semibold">BEYOND LIMITS.</p>
+            <h1 className="text-xl font-semibold">ZERO AI STUDIO</h1>
+            <p className="text-sm text-slate-400">
+              {authConfigured
+                ? 'Dieser ZERO-Server ist geschützt. Melde dich mit deinem Admin-Passwort an.'
+                : 'Der Server ist noch nicht sicher konfiguriert. Setze ZERO_ADMIN_PASSWORD (mindestens 12 Zeichen) und ZERO_SESSION_SECRET (mindestens 32 Zeichen) in den Hosting-Umgebungsvariablen.'}
+            </p>
+          </div>
+          {authConfigured ? (
+            <form onSubmit={handleLogin} className="space-y-3">
+              <label className="block text-xs text-slate-300" htmlFor="zero-admin-password">Admin-Passwort</label>
+              <input
+                id="zero-admin-password"
+                type="password"
+                autoComplete="current-password"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+                required
+                className="w-full min-h-[48px] rounded-xl bg-[#090B10] border border-white/10 px-4 text-sm text-white outline-none focus:border-rose-400"
+                placeholder="Admin-Passwort eingeben"
+              />
+              {authError && <p className="text-xs text-rose-300">{authError}</p>}
+              <button
+                type="submit"
+                disabled={authBusy || !authPassword}
+                className="w-full min-h-[48px] rounded-xl bg-[#F43F5E] text-white text-sm font-semibold disabled:opacity-50"
+              >
+                {authBusy ? 'Anmeldung läuft...' : 'Sicher anmelden'}
+              </button>
+            </form>
+          ) : (
+            <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200">
+              Bis beide Variablen gesetzt sind, bleiben alle privaten API-Daten gesperrt.
+            </div>
+          )}
         </div>
       </div>
     );
