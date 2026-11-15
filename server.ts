@@ -38,6 +38,7 @@ import {
   saveDb,
   toggleZipBackupProtection,
 } from './server/store.ts';
+import { chooseZeroChatModel } from './server/zeroRouter.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -551,11 +552,23 @@ app.post('/api/brain/chat', async (req, res) => {
     const database = await loadDb();
     db = database;
     const message = String(req.body?.message ?? '').trim();
-    const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
+    const requestedModel = String(req.body?.modelId ?? '');
     const useWebSearch = Boolean(req.body?.useWebSearch);
     const projectId = req.body?.projectId ? String(req.body.projectId) : undefined;
 
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
+
+    const routeDecision = chooseZeroChatModel(
+      database.models,
+      database.budgetGuard,
+      requestedModel || undefined,
+    );
+    if (!routeDecision) {
+      return res.status(503).json({
+        error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Textmodell. Bitte im Modell-Hub einen echten Modelltest ausführen. Es wird kein kostenpflichtiger Fallback gestartet.',
+      });
+    }
+    const selectedModel = routeDecision.modelId;
 
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
@@ -591,7 +604,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
+      assertZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
         recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
@@ -634,13 +647,13 @@ Langzeitgedächtnis:\n${relevantMemories}`;
 
       const response = await withTransientRetry(() =>
         ai.models.generateContent({
-          model: requestedModel,
+          model: selectedModel,
           contents: groundingContext
             ? `${fullPrompt}\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n${groundingContext}\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.`
             : fullPrompt,
           config: {
             systemInstruction,
-            ...(requestedModel === 'gemini-3.8-flash'
+            ...(selectedModel === 'gemini-3.8-flash'
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
               : {}),
           },
@@ -650,7 +663,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       replyText = (response.text ?? 'Keine Antwort erhalten.').trim();
 
       routingSteps = [
-        `ZERO CORE Router -> ${requestedModel} (Gemini Free Tier; Kontingent beachten)`,
+        `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
         ...(useWebSearch ? [`Google Search über gemini-2.5-flash-lite Free Tier (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
       ];
@@ -662,7 +675,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         id: `msg-a-${Date.now() + 1}`,
         role: 'assistant',
         content: replyText,
-        modelUsed: requestedModel,
+        modelUsed: selectedModel,
         routingSteps,
         sources,
         timestamp: new Date().toISOString(),
@@ -681,7 +694,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       messages: database.chatHistory,
     });
   } catch (err) {
-    const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
+    const requestedModel = String(req.body?.modelId ?? '');
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
