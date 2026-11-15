@@ -90,7 +90,7 @@ public final class PiperONNXAdapter: @unchecked Sendable {
         let files = Self.locateVoiceFiles(onnxName: onnxFilename, jsonName: configFilename)
         return PiperDeploymentDiagnostics(
             modelId: modelId,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "ONNX Runtime iOS (de_DE-thorsten-high · 22,05 kHz PCM -> WAV)",
             deviceModel: "iPhone 16 Pro Max (CPU/CoreML EP · ~0,15 GB RAM)",
             voicePresent: files != nil,
