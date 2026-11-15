@@ -60,7 +60,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
   },
   {
     id: 'gpt-oss-20b-free',
-    name: 'GPT-OSS 20B Reasoning (Open-Weights Free Cloud)',
+    name: 'GPT-OSS 20B Reasoning (Provider ausstehend)',
     family: 'GPT-OSS',
     category: 'Text & Reasoning',
     executionMode: 'FREE CLOUD',
@@ -288,7 +288,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
   // === BILDGENERIERUNG & BILDBEARBEITUNG ===
   {
     id: 'flux-1-schnell-free',
-    name: 'FLUX.1 Schnell (Open-Source Free Cloud)',
+    name: 'FLUX.1 Schnell (Provider ausstehend)',
     family: 'FLUX',
     category: 'Bildgenerierung',
     executionMode: 'FREE CLOUD',
@@ -316,7 +316,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
   },
   {
     id: 'sd-turbo-free',
-    name: 'Stable Diffusion Turbo (Free Cloud)',
+    name: 'Stable Diffusion Turbo (Provider ausstehend)',
     family: 'Stable Diffusion',
     category: 'Bildgenerierung',
     executionMode: 'FREE CLOUD',
@@ -344,7 +344,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
   },
   {
     id: 'sana-free',
-    name: 'Sana Open-Source Diffusion (Free Cloud)',
+    name: 'Sana Open-Source Diffusion (Provider ausstehend)',
     family: 'Sana',
     category: 'Bildgenerierung',
     executionMode: 'FREE CLOUD',
