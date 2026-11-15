@@ -4,8 +4,8 @@ export interface PcmWavOptions {
 }
 
 /**
- * Gemini speech generation returns raw 16-bit PCM, not a WAV container.
- * Wrap the PCM bytes in a valid RIFF/WAVE header before exposing an audio/wav URL.
+ * Preserve complete WAV responses from unary Gemini TTS calls. If a provider
+ * returns headerless 16-bit PCM instead, wrap it in a valid RIFF/WAVE container.
  */
 export function pcmBase64ToWavDataUrl(
   base64Pcm: string,
@@ -17,9 +17,19 @@ export function pcmBase64ToWavDataUrl(
   }
 
   const normalizedMime = (mimeType ?? '').toLowerCase();
-  if (normalizedMime.includes('audio/wav') || normalizedMime.includes('audio/x-wav')) {
-    return `data:${mimeType};base64,${base64Pcm}`;
+  const decoded = Buffer.from(base64Pcm, 'base64');
+  const canonicalBase64 = decoded.toString('base64').replace(/=+$/, '');
+  if (!decoded.length || canonicalBase64 !== base64Pcm.replace(/=+$/, '')) {
+    throw new Error('TTS-Antwort enthält keine gültigen Audiodaten.');
   }
+
+  // Gemini 3.8 unary TTS normally returns a complete WAV file. Detect the
+  // container itself so a missing MIME field can never cause a double header.
+  const hasWavHeader =
+    decoded.length >= 44 &&
+    decoded.toString('ascii', 0, 4) === 'RIFF' &&
+    decoded.toString('ascii', 8, 12) === 'WAVE';
+  if (hasWavHeader) return `data:audio/wav;base64,${base64Pcm}`;
 
   const mimeRate = normalizedMime.match(/(?:rate|samplerate)=(\d+)/)?.[1];
   const mimeChannels = normalizedMime.match(/channels=(\d+)/)?.[1];
@@ -34,7 +44,7 @@ export function pcmBase64ToWavDataUrl(
     throw new Error('TTS-Audio hat eine ungültige Kanalanzahl.');
   }
 
-  const pcm = Buffer.from(base64Pcm, 'base64');
+  const pcm = decoded;
   const blockAlign = channels * (bitsPerSample / 8);
   if (pcm.length === 0 || pcm.length % blockAlign !== 0) {
     throw new Error('TTS-Audio enthält unvollständige PCM-Samples.');
