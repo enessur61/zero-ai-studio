@@ -86,6 +86,8 @@ export function IPhoneRuntimePanel() {
         Boolean(nav.standalone) ||
         window.matchMedia('(display-mode: standalone)').matches,
       webGPU,
+      webGPUMessage,
+      webGPUMaxStorageBufferMB,
       webAssembly: typeof WebAssembly === 'object',
       hardwareThreads: Number.isFinite(nav.hardwareConcurrency)
         ? nav.hardwareConcurrency
@@ -211,7 +213,7 @@ export function IPhoneRuntimePanel() {
           {runtime.hardwareThreads
             ? ` Erkannte logische CPU-Threads: ${runtime.hardwareThreads}.`
             : ''}
-          {' '}Apple-Modell: {runtime.foundationModelMessage}
+          {' '}WebGPU: {runtime.webGPUMessage} Apple-Modell: {runtime.foundationModelMessage}
         </p>
       </div>
     </section>
