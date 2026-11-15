@@ -821,7 +821,7 @@ app.post('/api/audio/tts', async (req, res) => {
       throw new Error('TTS-Modell hat keine Audiodaten zurückgegeben.');
     }
 
-    const audioDataUrl = pcmBase64ToWavDataUrl(base64Audio, audioPart.inlineData?.mimeType);
+    const audioDataUrl = pcmBase64ToWavDataUrl(base64Audio, audioPart?.inlineData?.mimeType);
     await saveDb(database);
     res.json({
       audioDataUrl,
