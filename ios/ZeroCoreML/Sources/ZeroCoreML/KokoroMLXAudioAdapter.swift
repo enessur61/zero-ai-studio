@@ -68,7 +68,7 @@ public final class KokoroMLXAudioAdapter: @unchecked Sendable {
         let url = Self.locateModelURL(bundleName: bundleName)
         return KokoroDeploymentDiagnostics(
             modelId: modelId,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "Apple CoreML / MLX Audio (82M · 24 kHz Voice Embeddings)",
             deviceModel: "iPhone 16 Pro Max (A18 Pro Neural Engine · ~0,8 GB RAM)",
             modelPresent: url != nil,
