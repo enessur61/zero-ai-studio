@@ -204,7 +204,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO AUDIO STUDIO</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Deutsche KI-Stimmen (Gemini 3.8 TTS WAV + Apple AVSpeechSynthesizer) · Spracherkennung & SRT-Untertitel (Gemini 3.5 Transcribe)
+          Lokale Apple-Sprachausgabe · optionale Gemini-Free-Tier-TTS und Transkription (eigener API-Key & Kontingent)
         </p>
       </div>
 
@@ -247,8 +247,8 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                 onChange={(e) => setExpressive(e.target.value === 'flash')}
                 className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white"
               >
-                <option value="lite">Gemini 3.8 Flash Lite TTS (0 €)</option>
-                <option value="flash">Gemini 3.8 Flash TTS Regie (0 €)</option>
+                <option value="lite">Gemini 3.8 Flash Lite TTS (Free Tier · API-Key)</option>
+                <option value="flash">Gemini 3.8 Flash TTS Regie (Free Tier · API-Key)</option>
               </select>
             </div>
           </div>
@@ -379,7 +379,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
             Spracherkennung & Automatische Untertitel
           </h2>
           <p className="text-xs text-slate-400">
-            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — Gemini 3.5 Transcribe erzeugt Text & SRT-Untertitel (0 €).
+            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — Gemini 3.5 Transcribe erzeugt Text & SRT-Untertitel (Free Tier · API-Key).
           </p>
 
           <div className="flex flex-wrap gap-2.5">
