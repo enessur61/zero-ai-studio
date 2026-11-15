@@ -52,7 +52,7 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const IS_PRODUCTION = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
 const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
 const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
 const AUTH_COOKIE_NAME = 'zero_session';
