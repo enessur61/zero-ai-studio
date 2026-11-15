@@ -154,7 +154,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/models/test-all` | Prüft alle kompatiblen Adapter im Modellkatalog gebündelt (inkl. IP-Cooldown-Schutz) |
 | `POST` | `/api/models/:id/test` | Führt einen echten Live-Funktionstest für das jeweilige Modell aus |
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
-| `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
+| `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
 | `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
 | `POST` | `/api/image/generate` | Bildgenerierung über (derzeit deaktiviert; kein verifizierter dauerhaft kostenloser Provider) |
 | `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
