@@ -167,7 +167,7 @@ public final class MLXSwiftTextAdapter: @unchecked Sendable {
         let dir = Self.locateModelDirectory(for: variant)
         return MLXDeploymentDiagnostics(
             modelId: variant.rawValue,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "Apple MLX Swift (Metal GPU Unified Memory · 4-bit Q4)",
             deviceModel: "iPhone 16 Pro Max (8 GB Unified RAM)",
             weightsPresent: dir != nil,
