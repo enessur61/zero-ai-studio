@@ -172,8 +172,11 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 
 ## 4. Datenbank & Persistenz
 
-- **Format**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`), keine externen Cloud-Datenbankkosten.
-- **Migration / Initialisierung**: Beim ersten Start ohne `data/zero-studio-db.json` erzeugt `server/store.ts` automatisch das vollständige Schema inkl. 35-Modelle-Katalog, 0 € Budget-Guard, Beispiel-Charakter (*Elena Vance*), Beispiel-Kurzfilm (*Schatten über Mitte*, 58s) und Initial-Erinnerungen. Beim Laden vorhandener Datenbanken werden neue Katalogmodelle automatisch zusammengeführt, ohne bestehende Testergebnisse zu überschreiben.
+- **Lokale Entwicklung**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`).
+- **Produktion / Render**: PostgreSQL über `DATABASE_URL`. Die App speichert den vollständigen ZERO-Zustand als JSONB in `zero_app_state`; JSON-System-Backups und verifizierte ZIP-Archive liegen als `BYTEA` in `zero_backup_files`. Damit hängen Produktionsdaten und Backups nicht vom flüchtigen Render-Dateisystem ab.
+- **Initialisierung**: Tabellen werden beim ersten Datenbankzugriff automatisch angelegt. Ist noch kein Zustand vorhanden, wird das Standardprojekt initialisiert und in PostgreSQL gespeichert. Vorhandene Datensätze werden nicht durch die Initialisierung überschrieben.
+- **Produktionsschutz**: Ohne `DATABASE_URL` verweigert ZERO in Produktion den Zugriff auf die JSON-Datei. `ZERO_ALLOW_EPHEMERAL_DB=true` ist ausschließlich für den CI-Smoke-Test vorgesehen und darf nicht in Render gesetzt werden.
+- **Backup-Limit**: Die Datenbank und die darin gespeicherten ZIP-Dateien teilen sich das Speicherlimit des PostgreSQL-Anbieters. Große Medienproduktionen sollten deshalb nicht dauerhaft als Binärdateien in der Datenbank archiviert werden; dafür wäre später ein separater Object-Storage nötig.
 
 ---
 
