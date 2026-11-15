@@ -71,7 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PORT=4179 NODE_ENV=production ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
+          PORT=4179 NODE_ENV=production GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
@@ -123,6 +123,12 @@ jobs:
           const { project: durationProject } = await durationResponse.json();
           const totalDuration = durationProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
           if (totalDuration > 60) throw new Error('Film duration exceeded hard 60-second cap: ' + totalDuration);
+          const billingGateResponse = await authFetch('/api/models/gemini-3.7-flash/test', { method: 'POST' });
+          const billingGate = await billingGateResponse.json();
+          if (!billingGateResponse.ok || billingGate.model.status !== 'INSTALLATION ERFORDERLICH' ||
+              !billingGate.model.lastTestMessage.includes('ZERO_GEMINI_FREE_TIER_ONLY=true')) {
+            throw new Error('Gemini billing safety gate is not clearly enforced: ' + JSON.stringify(billingGate.model));
+          }
           const modelResponse = await authFetch('/api/models');
           if (!modelResponse.ok) throw new Error('Model catalog endpoint failed: ' + modelResponse.status + ' ' + await modelResponse.text());
           const { models } = await modelResponse.json();
