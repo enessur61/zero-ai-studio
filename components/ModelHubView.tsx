@@ -14,6 +14,7 @@ import type {
   ModelDefinition,
 } from '../types/zero.ts';
 import { StatusLabel } from './StatusLabel.tsx';
+import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 
 interface ModelHubViewProps {
   models: ModelDefinition[];
@@ -264,6 +265,8 @@ export function ModelHubView({
           ))}
         </div>
       </div>
+
+      <IPhoneRuntimePanel />
 
       {feedback && (
         <div className="p-3.5 rounded-xl bg-[#161B26] border border-white/[0.1] text-xs text-slate-200">
