@@ -165,6 +165,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     requiresExternalGpu: false,
     costEur: 0,
     enabled: false,
+    freeTierType: 'DAUERHAFT KOSTENLOS (LOKAL)',
     capabilities: ['On-Device Text', 'Deutsch', 'Dialog', 'Zusammenfassung', 'Kreatives Schreiben', 'Offline nach Modell-Setup'],
     lastTestedAt: null,
     lastTestLatencyMs: null,
