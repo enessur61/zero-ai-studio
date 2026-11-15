@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
+import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import {
@@ -732,15 +733,34 @@ app.post('/api/image/generate', async (req, res) => {
 });
 
 app.post('/api/image/analyze', async (req, res) => {
-  const db = await loadDb();
-  try {
-    const imageDataUrl = String(req.body?.imageDataUrl ?? '');
-    const question = String(req.body?.question ?? 'Analysiere Bildaufbau, Beleuchtung, Farben und erkannte Elemente detailliert auf Deutsch.');
-    const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) return res.status(400).json({ error: 'Ungültiges Bildformat (Data-URL erwartet).' });
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
+  try {
+    const database = await loadDb();
+    db = database;
+    const imageDataUrl = String(req.body?.imageDataUrl ?? '');
+    const question = String(
+      req.body?.question ??
+        'Analysiere Bildaufbau, Beleuchtung, Farben und erkannte Elemente detailliert auf Deutsch.'
+    ).trim();
+    const image = parseBase64DataUrl(
+      imageDataUrl,
+      ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+      12 * 1024 * 1024
+    );
+
+    if (!image) {
+      return res.status(400).json({
+        error: 'Ungültiges Bild. Erlaubt sind JPEG, PNG, WebP oder GIF bis maximal 12 MB.',
+      });
+    }
+    if (!question) return res.status(400).json({ error: 'Bitte eine Analysefrage eingeben.' });
+    if (question.length > 2_000) {
+      return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
+    }
+
+    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
+      recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
@@ -749,21 +769,33 @@ app.post('/api/image/analyze', async (req, res) => {
         model: 'gemini-3.8-flash',
         contents: {
           parts: [
-            { inlineData: { mimeType: match[1], data: match[2] } },
+            { inlineData: { mimeType: image.mimeType, data: image.data } },
             { text: question },
           ],
         },
       })
     );
 
-    await saveDb(db);
+    await saveDb(database);
     res.json({
       analysis: (response.text ?? '').trim(),
       modelUsed: 'gemini-3.8-flash',
       costEur: 0,
     });
   } catch (err) {
-    res.status(400).json({ error: formatGermanApiError(err) });
+    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
+      db.budgetGuard.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
+      try {
+        await saveDb(db);
+      } catch (persistError) {
+        console.error('[ZERO IMAGE] Kontingentstatus konnte nicht gespeichert werden:', persistError);
+      }
+    }
+    res.status(db ? 400 : 503).json({
+      error: db
+        ? formatGermanApiError(err)
+        : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
+    });
   }
 });
 
@@ -847,14 +879,36 @@ app.post('/api/audio/tts', async (req, res) => {
 });
 
 app.post('/api/audio/transcribe', async (req, res) => {
-  const db = await loadDb();
-  try {
-    const audioDataUrl = String(req.body?.audioDataUrl ?? '');
-    const match = audioDataUrl.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) return res.status(400).json({ error: 'Audio Data-URL erwartet.' });
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
-    assertZeroBudgetModelAllowed('gemini-3.5-transcribe', 'AUDIO_TRANSCRIBE', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
+  try {
+    const database = await loadDb();
+    db = database;
+    const audioDataUrl = String(req.body?.audioDataUrl ?? '');
+    const audio = parseBase64DataUrl(
+      audioDataUrl,
+      [
+        'audio/wav',
+        'audio/x-wav',
+        'audio/mpeg',
+        'audio/mp3',
+        'audio/mp4',
+        'audio/aac',
+        'audio/ogg',
+        'audio/webm',
+        'audio/flac',
+        'audio/x-aiff',
+      ],
+      18 * 1024 * 1024
+    );
+    if (!audio) {
+      return res.status(400).json({
+        error: 'Ungültige Audiodatei. Unterstützte Formate: WAV, MP3, MP4/M4A, AAC, OGG, WebM, FLAC und AIFF (maximal 18 MB).',
+      });
+    }
+
+    assertZeroBudgetModelAllowed('gemini-3.5-transcribe', 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
+      recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
@@ -865,7 +919,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
           {
             role: 'user',
             parts: [
-              { inlineData: { mimeType: match[1].split(';')[0], data: match[2] } },
+              { inlineData: { mimeType: audio.mimeType, data: audio.data } },
               { text: 'Transcribe this audio.' },
             ],
           },
@@ -890,7 +944,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
 
     const formattedTranscript = `${rawTranscript}\n\n--- SRT Untertitel ---\n1\n00:00:00,000 --> 00:00:05,000\n${rawTranscript}`;
 
-    await saveDb(db);
+    await saveDb(database);
     res.json({
       transcript: formattedTranscript,
       rawText: rawTranscript,
@@ -898,11 +952,19 @@ app.post('/api/audio/transcribe', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.5-transcribe']) {
+    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.5-transcribe']) {
       db.budgetGuard.freeQuotaUsage['gemini-3.5-transcribe'].exhausted = true;
-      await saveDb(db);
+      try {
+        await saveDb(db);
+      } catch (persistError) {
+        console.error('[ZERO AUDIO] Kontingentstatus konnte nicht gespeichert werden:', persistError);
+      }
     }
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(db ? 400 : 503).json({
+      error: db
+        ? formatGermanApiError(err)
+        : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
+    });
   }
 });
 
