@@ -90,6 +90,7 @@ const ALL_SWIFT_PACKAGE_FILES = [
   'Sources/ZeroCoreML/WhisperMetalAdapter.swift',
   'Sources/ZeroCoreML/PiperONNXAdapter.swift',
   'Sources/ZeroCoreML/KokoroMLXAudioAdapter.swift',
+  'Sources/ZeroCoreML/AppleFoundationModelAdapter.swift',
   'Sources/ZeroCoreML/ZeroWKWebViewBridge.swift',
 ];
 
