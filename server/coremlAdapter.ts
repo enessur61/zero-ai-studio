@@ -316,9 +316,9 @@ export async function verifyIOSAdapterForModel(
     missingFiles,
     runtime: spec.runtime,
     bundleFilename: spec.bundleFilename,
-    notes: readyForDeployment
-      ? `${spec.runtime} · Swift-Quellcode und Modellgewicht vorhanden (Ziel-Bundle: ${spec.bundleFilename}). Nativer iOS-Gerätetest steht noch aus.`
-      : `Adapter-Quellcode prüfen; Modellgewicht fehlt oder ist unvollständig: ${missingFiles.join(', ')}`,
+    notes: assetsComplete
+      ? `${spec.runtime} · Swift-Quellcode und Modellgewicht vorhanden (Ziel-Bundle: ${spec.bundleFilename}). Native Runtime-Verknüpfung, iOS-App-Target und Gerätetest fehlen noch.`
+      : `Adapter-Quellcode prüfen; Modellgewicht fehlt oder ist unvollständig: ${missingFiles.join(', ')}. Native Runtime-Verknüpfung ist zusätzlich erforderlich.`,
   };
 }
 
