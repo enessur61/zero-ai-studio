@@ -177,7 +177,7 @@ export function ImageStudioView({
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO IMAGE STUDIO</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Text-to-Image (FLUX.1 Schnell & SD Turbo Free Cloud) · Charakterkonsistenz · Lokales 2x Upscaling & Bildanalyse
+          Cloud-Text-to-Image pausiert · Bild-Upload, Charakterreferenzen, lokale Bildbearbeitung & 2x Upscaling verfügbar
         </p>
       </div>
 
@@ -201,15 +201,16 @@ export function ImageStudioView({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Bildmodell (0 €)</label>
+              <label className="text-xs text-slate-400 block mb-1">Cloud-Modell (derzeit deaktiviert)</label>
               <select
+                disabled
                 value={model}
                 onChange={(e) => setModel(e.target.value as 'flux' | 'turbo' | 'sana')}
                 className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white focus:outline-none focus:border-[#2563EB]"
               >
-                <option value="flux">FLUX.1 Schnell (Open Cloud · 0 €)</option>
-                <option value="turbo">SD Turbo (Open Cloud · 0 €)</option>
-                <option value="sana">Sana Open-Source (Open Cloud · 0 €)</option>
+                <option value="flux">FLUX.1 Schnell (nicht verfügbar)</option>
+                <option value="turbo">SD Turbo (nicht verfügbar)</option>
+                <option value="sana">Sana (nicht verfügbar)</option>
               </select>
             </div>
 
@@ -256,6 +257,8 @@ export function ImageStudioView({
             />
           </div>
 
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-amber-200">Cloud-Bildmodelle sind deaktiviert, bis ein verlässlich kostenloser Provider verfügbar ist. Kein kostenpflichtiger Fallback. Upload und lokale Bildbearbeitung funktionieren weiterhin.</div>
+
           {error && (
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
               {error}
@@ -265,11 +268,11 @@ export function ImageStudioView({
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="submit"
-              disabled={loading || !prompt.trim()}
+              disabled={true || loading || !prompt.trim()}
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-              Bild generieren (0 €)
+              Cloud-Bildgenerierung pausiert
             </button>
 
             <label className="min-h-[44px] px-3.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
