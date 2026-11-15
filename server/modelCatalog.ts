@@ -143,6 +143,38 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     limitations: 'Kein verifizierter dauerhaft kostenloser Cloud-Zugriff. Kein kostenpflichtiger Fallback.',
   },
 
+  // === APPLE SYSTEM MODEL (LOCAL ON-DEVICE) ===
+  {
+    id: 'apple-foundation-model',
+    name: 'Apple Foundation Model (Apple Intelligence)',
+    family: 'Apple Foundation Models',
+    category: 'Text & Reasoning',
+    executionMode: 'LOCAL ON-DEVICE',
+    status: 'INSTALLATION ERFORDERLICH',
+    license: 'Apple system framework / OS-provided model',
+    commercialUse: 'Nutzung über Apples Foundation Models Framework; Apple Developer Terms beachten',
+    sizeGB: 0,
+    ramRequirementGB: 0,
+    iosCompatible: true,
+    iosNotes: 'Natives Apple-Modell ohne eigenen API-Key oder Cloud-Aufruf. Benötigt iOS 26+, kompatibles Apple-Intelligence-Gerät, aktivierte/verfügbare Modellressourcen und die native ZERO-iOS-App.',
+    provider: 'Apple Foundation Models',
+    adapterId: 'ios-apple-foundation-model',
+    hasRealAdapter: false,
+    requiresPaidKey: false,
+    requiresExternalGpu: false,
+    costEur: 0,
+    enabled: false,
+    capabilities: ['Offline Text', 'Dialog', 'Zusammenfassung', 'Strukturierte Ausgabe', 'Tool Calling'],
+    lastTestedAt: null,
+    lastTestLatencyMs: null,
+    lastTestMessage: 'Swift-Adapter und WKWebView-Bridge implementiert; native iOS-Host-App und echter Gerätetest stehen noch aus.',
+    testPassed: false,
+    version: 'System-managed · iOS 26+',
+    limitations: 'Nicht über Safari-Webseite allein ausführbar. Apple Intelligence muss auf dem Gerät unterstützt, aktiviert und vollständig geladen sein. Nicht für komplexes Reasoning oder Bild-/Videogenerierung gedacht.',
+    freeTierType: 'DAUERHAFT KOSTENLOS (LOKAL)',
+    prerequisites: 'Native ZERO-iOS-App, iOS 26+, Apple-Intelligence-kompatibles Gerät und verfügbare lokale Modellressourcen.',
+  },
+
   // === TEXT & REASONING (LOCAL ON-DEVICE / SELF-HOSTED) ===
   {
     id: 'qwen-2.5-3b-coreml',
