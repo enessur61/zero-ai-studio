@@ -5,6 +5,7 @@ export type ModelStatus =
   | 'LOKAL INSTALLIERT'
   | 'Ready for Deployment'
   | 'INSTALLATION ERFORDERLICH'
+  | 'BROWSER TEST ERFORDERLICH'
   | 'ADAPTER FEHLT'
   | 'NICHT KOMPATIBEL'
   | 'FREE-TIER AUSGESCHÖPFT'
