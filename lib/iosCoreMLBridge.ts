@@ -11,6 +11,9 @@ export interface CoreMLBridgeResponse {
   deviceModel?: string;
   estimatedRamGB?: number;
   compiledModelPresent?: boolean;
+  available?: boolean;
+  germanSupported?: boolean;
+  message?: string;
   error?: string;
 }
 
