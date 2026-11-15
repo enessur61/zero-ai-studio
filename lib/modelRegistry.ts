@@ -73,9 +73,9 @@ export class ModelRegistry {
   }
 
   /**
-   * Dynamically verifies the Llama 3.2 CoreML adapter (server package + optional WKWebView diagnostics),
-   * registers both 1B and 3B variants into ModelRegistry, and updates their status to 'Ready for Deployment'
-   * once the adapter check passes.
+   * Checks the Llama 3.2 Swift sources, model bundles and optional WKWebView diagnostics.
+   * Source/package checks alone never mark a model deployable: a native iOS host target,
+   * tokenizer/runtime wiring and a real-device inference test are still required.
    */
   public async verifyAndRegisterLlama32(): Promise<RegistryVerificationResult> {
     const started = performance.now();
