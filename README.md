@@ -3,7 +3,7 @@
 **BEYOND LIMITS.**  
 
 > **Verifizierungsstatus (15.11.2026):** Die Oberfläche und die Backend-Routen sind im Quellcode vorhanden, aber nicht alle Provider sind ohne Zugangsdaten nutzbar. Gemini 3.8 Flash ist ein reales Modell laut offizieller Modellliste; der kostenlose API-Tarif ist kontingentbegrenzt und benötigt einen eigenen API-Key. Ein Modellstatus „FUNKTIONIERT“ darf erst nach erfolgreichem Live-Test gesetzt werden. Pollinations verlangt inzwischen einen API-Key für Generierungsanfragen; ein kostenfreier oder unbegrenzter Betrieb darf daher nicht pauschal zugesichert werden.
-Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safari / Native iOS Roadmap) mit **ZERO CORE**, **Model Hub**, **Film Director**, **Image/Video/Audio/Music Studios**, **Character Engine**, **Web Intelligence**, **Automation Engine** und **Langzeitgedächtnis**.
+Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (installierbare PWA; native On-Device-KI als separate Roadmap) mit **ZERO CORE**, **Model Hub**, **Film Director**, **Image/Video/Audio/Music Studios**, **Character Engine**, **Web Intelligence**, **Automation Engine** und **Langzeitgedächtnis**.
 
 ---
 
@@ -62,6 +62,10 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 ---
 
 ## 2. Installation & Lokaler Start
+
+### iPhone-Installation
+
+ZERO AI STUDIO ist als installierbare PWA vorbereitet. Öffne die veröffentlichte HTTPS-Adresse in Safari auf dem iPhone, tippe auf **Teilen → Zum Home-Bildschirm** und bestätige. Die App-Shell kann danach offline angezeigt werden; private API-Daten, Projekte, Chats und Memory werden ausdrücklich nicht im Service Worker zwischengespeichert. KI-Funktionen benötigen weiterhin eine Serververbindung.
 
 ### Voraussetzungen
 - **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
