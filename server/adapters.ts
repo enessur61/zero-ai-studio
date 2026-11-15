@@ -121,13 +121,11 @@ export async function runLiveModelTest(
       costEur: 0,
     });
     const swiftSourcesPresent = pkg.checkedFiles.every((file) => file.exists);
-    model.hasRealAdapter = swiftSourcesPresent;
+    // Swift source files alone are not a runnable iOS adapter: model weights,
+    // concrete runtime dependencies, tokenizer/backend wiring and a native app target are still missing.
+    model.hasRealAdapter = false;
     model.testPassed = false;
-    model.status = !swiftSourcesPresent
-      ? 'ADAPTER FEHLT'
-      : pkg.readyForDeployment
-        ? 'Ready for Deployment'
-        : 'INSTALLATION ERFORDERLICH';
+    model.status = swiftSourcesPresent ? 'INSTALLATION ERFORDERLICH' : 'ADAPTER FEHLT';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
     model.lastTestMessage = pkg.notes;
