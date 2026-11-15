@@ -191,7 +191,7 @@ export function ModelHubView({
         <div>
           <h1 className="text-2xl font-semibold text-white">ZERO MODEL HUB</h1>
           <p className="text-xs text-slate-400 mt-1">
-            Klare Trennung nach dauerhaft kostenlos (lokal / Open Cloud), eingeschränktem Free-Tier, Hardware-Pflicht und gesperrten Bezahlanbietern.
+            Klare Trennung nach lokalen Werkzeugen, Gemini-Free-Tier (API-Key/Kontingent), nicht verfügbaren Providern, Hardware-Pflicht und gesperrten Bezahlanbietern.
           </p>
         </div>
         <button
