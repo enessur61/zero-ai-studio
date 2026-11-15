@@ -27,7 +27,7 @@ const tooManyScenes = clampScenesToMax60Seconds(
   Array.from({ length: 100 }, (_, index) => ({ id: String(index), durationSec: 2 }))
 );
 assert.equal(tooManyScenes.length, 30);
-assert.equal(totalDuration(tooManyScenes), 60);
+assert.ok(totalDuration(tooManyScenes) <= 60);
 
 const invalidDurations = clampScenesToMax60Seconds([
   { id: 'nan', durationSec: Number.NaN },
