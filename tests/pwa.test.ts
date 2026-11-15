@@ -26,6 +26,7 @@ assert.ok(serviceWorker.includes("url.pathname.startsWith('/api/')"));
 assert.ok(serviceWorker.includes('Never cache private API responses'));
 assert.ok(serviceWorker.includes("request.mode === 'navigate'"));
 assert.ok(serviceWorker.includes("url.pathname.startsWith('/assets/')"));
+assert.ok(serviceWorker.includes("'/icons/apple-touch-icon.png'"));
 
 const html = readFileSync('index.html', 'utf8');
 assert.ok(html.includes('rel="manifest" href="/manifest.webmanifest"'));
