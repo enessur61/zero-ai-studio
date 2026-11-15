@@ -45,105 +45,23 @@ function createSilentWavBase64(durationSec = 0.5, sampleRate = 16000): string {
   return buffer.toString('base64');
 }
 
-export async function generateFreeOpenText(params: {
+export async function generateFreeOpenText(_params: {
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
 }): Promise<{ text: string; engine: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
-  try {
-    const response = await fetch('https://text.pollinations.ai/', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'ZERO-AI-STUDIO/1.0',
-      },
-      body: JSON.stringify({
-        model: 'openai-fast',
-        messages: params.messages,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Open-Cloud Text-Endpunkt antwortete mit HTTP ${response.status}`);
-    }
-    const text = (await response.text()).trim();
-    if (!text) throw new Error('Leere Antwort vom Open-Cloud Endpunkt.');
-    return { text, engine: 'GPT-OSS 20B (Pollinations / OVH Free Cloud)' };
-  } finally {
-    clearTimeout(timeout);
-  }
+  throw new Error(
+    'GPT-OSS Open Cloud ist deaktiviert: Der bisherige anonyme Pollinations-Endpunkt ist nicht als dauerhaft kostenloser Zugriff verifiziert. Kein kostenpflichtiger Fallback wurde aufgerufen.'
+  );
 }
 
-export async function generateFreeCloudImage(params: {
+export async function generateFreeCloudImage(_params: {
   prompt: string;
   model?: 'flux' | 'turbo' | 'sana';
   aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3';
   seed?: number;
 }): Promise<{ imageDataUrl: string; engine: string; width: number; height: number }> {
-  const cooldownSec = getPollinationsCooldownRemainingSec();
-  if (cooldownSec > 0) {
-    throw new Error(
-      `FREE_LIMIT: Kostenloses Open-Cloud Bildlimit (1 Bild alle 45 Sekunden pro IP). Bitte noch ${cooldownSec}s warten — kein kostenpflichtiger Fallback.`
-    );
-  }
-
-  const aspect = params.aspectRatio ?? '16:9';
-  const dims =
-    aspect === '9:16'
-      ? { width: 576, height: 1024 }
-      : aspect === '1:1'
-        ? { width: 768, height: 768 }
-        : aspect === '4:3'
-          ? { width: 896, height: 672 }
-          : { width: 1024, height: 576 };
-
-  const modelName =
-    params.model === 'turbo' ? 'turbo' : params.model === 'sana' ? 'sana' : 'flux';
-  const seed = params.seed ?? Math.floor(Math.random() * 1_000_000);
-  const encodedPrompt = encodeURIComponent(params.prompt.slice(0, 600));
-  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=${modelName}&width=${dims.width}&height=${dims.height}&seed=${seed}&nologo=true`;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'ZERO-AI-STUDIO/1.0',
-      },
-    });
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '');
-      if (response.status === 402 || response.status === 429 || bodyText.includes('FREE_LIMIT')) {
-        lastPollinationsImageAt = Date.now();
-        throw new Error(
-          `FREE_LIMIT: Kostenloses Open-Cloud Bildlimit (1 Bild alle 45 Sekunden pro IP) vorübergehend erreicht. Bitte 45 Sekunden warten — kein kostenpflichtiger Fallback.`
-        );
-      }
-      throw new Error(`Free-Cloud Bildendpunkt antwortete mit HTTP ${response.status}`);
-    }
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-    if (!contentType.startsWith('image/')) {
-      throw new Error(`Unerwarteter Content-Type vom Bild-Endpunkt: ${contentType}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
-    lastPollinationsImageAt = Date.now();
-    return {
-      imageDataUrl: `data:${contentType.split(';')[0]};base64,${base64}`,
-      engine:
-        modelName === 'turbo'
-          ? 'Stable Diffusion Turbo (Free Cloud)'
-          : modelName === 'sana'
-            ? 'Sana Open-Source Diffusion (Free Cloud)'
-            : 'FLUX.1 Schnell (Free Cloud)',
-      width: dims.width,
-      height: dims.height,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  throw new Error(
+    'Bildgenerierung über Pollinations ist deaktiviert: Der aktuelle API-Zugriff benötigt Authentifizierung und kann Pollen-Guthaben verbrauchen. Kein kostenpflichtiger Fallback wurde aufgerufen.'
+  );
 }
 
 export async function runLiveModelTest(
@@ -152,6 +70,18 @@ export async function runLiveModelTest(
 ): Promise<ModelDefinition> {
   const started = Date.now();
   const now = new Date().toISOString();
+
+  if (
+    !model.enabled &&
+    ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free'].includes(model.id)
+  ) {
+    model.testPassed = false;
+    model.status = 'ADAPTER FEHLT';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = 0;
+    model.lastTestMessage = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar.';
+    return model;
+  }
 
   if (model.requiresPaidKey || model.status === 'GESPERRT') {
     recordBudgetAudit(db, {
