@@ -473,10 +473,17 @@ export async function loadDb(): Promise<ZeroDatabase> {
         def.executionMode === 'FREE CLOUD' &&
         prev.status === 'FUNKTIONIERT' &&
         !prev.lastTestedAt;
+      const requiresBrowserRuntimeVerification = [
+        'zero-canvas-img2img',
+        'zero-timeline-video-60s',
+        'apple-avspeech-webspeech',
+        'zero-webaudio-synth',
+      ].includes(def.id);
       const shouldKeepPrevState =
         prev &&
         !legacyPollinationsModel &&
         !requiresNativeRuntimeVerification &&
+        !requiresBrowserRuntimeVerification &&
         !unverifiedDefaultSuccess &&
         !hasStaleRawError &&
         prev.adapterId === def.adapterId &&
