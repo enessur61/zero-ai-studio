@@ -119,8 +119,8 @@ jobs:
           if (!logout.ok) throw new Error('Logout failed');
           const clearedCookie = logout.headers.get('set-cookie') ?? '';
           if (!clearedCookie.includes('Max-Age=0')) throw new Error('Logout did not clear the session cookie');
-          const afterLogout = await fetch(base + '/api/projects');
-          if (afterLogout.status !== 401) throw new Error('Private API remained accessible after logout');
+          const afterLogout = await fetch(base + '/api/projects', { headers: { cookie } });
+          if (afterLogout.status !== 401) throw new Error('Revoked session cookie remained valid after logout');
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
 
