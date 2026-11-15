@@ -28,6 +28,21 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+function loadVideo(src: string): Promise<HTMLVideoElement> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.onloadeddata = () => resolve(video);
+    video.onerror = () => reject(new Error('Ein generierter Szenenclip konnte nicht geladen werden.'));
+    video.src = src;
+    video.load();
+  });
+}
+
+
 async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<AudioBuffer> {
   try {
     const res = await fetch(url);
@@ -44,7 +59,7 @@ async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<Audio
 
 function drawCoverFrame(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement | null,
+  img: HTMLImageElement | HTMLVideoElement | null,
   width: number,
   height: number,
   progress: number,
@@ -116,7 +131,9 @@ function drawCoverFrame(
     ctx.font = `500 ${Math.round(width * 0.019)}px Arial, sans-serif`;
     ctx.fillText('SZENENENTWURF  •  BEWEGTE TYPOGRAFIE', width * 0.075, height * 0.91);
   } else {
-    const baseScale = Math.max(width / img.width, height / img.height);
+    const sourceWidth = img instanceof HTMLVideoElement ? img.videoWidth : img.width;
+    const sourceHeight = img instanceof HTMLVideoElement ? img.videoHeight : img.height;
+    const baseScale = Math.max(width / sourceWidth, height / sourceHeight);
     let zoom = 1.05;
     let panX = 0;
     let panY = 0;
@@ -136,8 +153,8 @@ function drawCoverFrame(
       panY = (0.5 - progress) * 50;
     }
 
-    const drawW = img.width * baseScale * zoom;
-    const drawH = img.height * baseScale * zoom;
+    const drawW = sourceWidth * baseScale * zoom;
+    const drawH = sourceHeight * baseScale * zoom;
     const drawX = (width - drawW) / 2 + panX;
     const drawY = (height - drawH) / 2 + panY;
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
@@ -219,6 +236,26 @@ export async function renderTimelineVideoMax60s(
   if (failedImageIndex >= 0) {
     throw new Error(
       `Das Szenenbild für „${renderScenes[failedImageIndex].title}“ konnte nicht geladen werden.`
+    );
+  }
+
+  onProgress?.(7, 'Lade generierte KI-Videoclips...');
+  const loadedVideos = await Promise.all(
+    renderScenes.map(async (scene) => {
+      if (!scene.videoUrl) return null;
+      try {
+        return await loadVideo(scene.videoUrl);
+      } catch {
+        return null;
+      }
+    })
+  );
+  const failedVideoIndex = renderScenes.findIndex(
+    (scene, index) => Boolean(scene.videoUrl) && !loadedVideos[index]
+  );
+  if (failedVideoIndex >= 0) {
+    throw new Error(
+      `Der KI-Videoclip für „${renderScenes[failedVideoIndex].title}“ konnte nicht geladen werden.`
     );
   }
 
@@ -389,7 +426,14 @@ export async function renderTimelineVideoMax60s(
   try {
     for (let sIdx = 0; sIdx < renderScenes.length; sIdx++) {
       const scene = renderScenes[sIdx];
-      const img = loadedImages[sIdx];
+      const img = loadedVideos[sIdx] ?? loadedImages[sIdx];
+      const sceneVideo = loadedVideos[sIdx];
+      if (sceneVideo) {
+        sceneVideo.currentTime = 0;
+        await sceneVideo.play().catch(() => {
+          throw new Error(`Der KI-Videoclip für „${scene.title}“ konnte nicht abgespielt werden.`);
+        });
+      }
       const sceneFrames = Math.floor(scene.durationSec * fps);
 
       for (let f = 0; f < sceneFrames; f++) {
@@ -403,7 +447,7 @@ export async function renderTimelineVideoMax60s(
         const transitionFrames = Math.min(14, Math.max(1, Math.floor(fps * 0.55)));
         if (sIdx > 0 && f < transitionFrames) {
           const previousScene = renderScenes[sIdx - 1];
-          const previousImage = loadedImages[sIdx - 1];
+          const previousImage = loadedVideos[sIdx - 1] ?? loadedImages[sIdx - 1];
           const blend = (f + 1) / transitionFrames;
           drawCoverFrame(
             ctx,
@@ -452,12 +496,14 @@ export async function renderTimelineVideoMax60s(
         }
         await new Promise((r) => setTimeout(r, 1000 / fps));
       }
+      sceneVideo?.pause();
     }
   } finally {
     window.clearTimeout(hardTimeoutId);
     if (recorder.state === 'recording') {
       recorder.stop();
     }
+    loadedVideos.forEach((video) => video?.pause());
     scheduledSources.forEach((s) => {
       try {
         s.stop();
