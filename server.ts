@@ -548,6 +548,7 @@ app.get('/api/brain/history', async (_req, res) => {
 
 app.post('/api/brain/chat', async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  let routedModelId = '';
   try {
     const database = await loadDb();
     db = database;
@@ -569,6 +570,7 @@ app.post('/api/brain/chat', async (req, res) => {
       });
     }
     const selectedModel = routeDecision.modelId;
+    routedModelId = selectedModel;
 
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
@@ -688,13 +690,13 @@ Langzeitgedächtnis:\n${relevantMemories}`;
 
     res.json({
       reply: replyText,
-      modelUsed: requestedModel,
+      modelUsed: selectedModel,
       routingSteps,
       sources,
       messages: database.chatHistory,
     });
   } catch (err) {
-    const requestedModel = String(req.body?.modelId ?? '');
+    const requestedModel = routedModelId || String(req.body?.modelId ?? '');
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
