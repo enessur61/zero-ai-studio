@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import UIKit
 import ZeroCoreML
 
 @main
@@ -38,6 +39,7 @@ struct ZEROWebView: UIViewRepresentable {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
 
         let bridge = ZeroWKWebViewBridge(webView: webView)
         context.coordinator.bridge = bridge
@@ -55,7 +57,7 @@ struct ZEROWebView: UIViewRepresentable {
     private static let appURL = URL(string: "https://zero-ai-studio.onrender.com")!
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         // Retain the message handler for the lifetime of the WKWebView.
         var bridge: ZeroWKWebViewBridge?
 
@@ -74,10 +76,20 @@ struct ZEROWebView: UIViewRepresentable {
                 return
             }
 
-            if ["mailto", "tel"].contains(url.scheme ?? "") {
+            if ["mailto", "tel"].contains(url.scheme ?? "") || url.scheme == "https" {
                 UIApplication.shared.open(url)
             }
             decisionHandler(.cancel)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+            initiatedByFrame frame: WKFrameInfo,
+            type: WKMediaCaptureType,
+            decisionHandler: @escaping (WKPermissionDecision) -> Void
+        ) {
+            decisionHandler(.prompt)
         }
     }
 }
