@@ -150,11 +150,10 @@ export function ModelHubView({
       const okCount = data.models.filter(
         (m) =>
           m.status === 'FUNKTIONIERT' ||
-          m.status === 'LOKAL INSTALLIERT' ||
-          m.status === 'Ready for Deployment'
+          m.status === 'LOKAL INSTALLIERT'
       ).length;
       setFeedback(
-        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle aktiv oder Ready for Deployment (0,00 €).`
+        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle erfolgreich getestet (0,00 €).`
       );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'Komplettprüfung fehlgeschlagen');
@@ -284,9 +283,9 @@ export function ModelHubView({
               </p>
               <h2 className="text-sm font-semibold text-white mt-0.5">
                 Swift-Paket „{iosRuntime.packageRoot}“ —{' '}
-                {iosRuntime.readyForDeployment
-                  ? `Ready for Deployment (${iosRuntime.totalFilesChecked} Dateien)`
-                   : 'Modellgewichte fehlen · Installation erforderlich'}
+                {iosRuntime.allFilesPresent
+                  ? `Quellpaket vollständig geprüft (${iosRuntime.totalFilesChecked} Dateien) · Modellinferenz nicht bestätigt`
+                  : 'Quellpaket unvollständig · Dateien fehlen'}
               </h2>
             </div>
 
