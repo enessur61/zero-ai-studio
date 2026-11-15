@@ -577,7 +577,7 @@ app.post('/api/brain/chat', async (req, res) => {
 
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
-      : needsFullContext ? database.projects[0] : undefined;
+      : undefined;
 
     const availableModelsSummary = database.models
       .filter(
