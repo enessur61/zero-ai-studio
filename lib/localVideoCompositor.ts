@@ -324,7 +324,7 @@ export async function renderTimelineVideoMax60s(
   const supportedMimes = typeof MediaRecorder.isTypeSupported === 'function'
     ? preferredMimes.filter((candidate) => MediaRecorder.isTypeSupported(candidate))
     : [];
-  let recorder: MediaRecorder;
+  let recorder: MediaRecorder | null = null;
   let mimeType = '';
   let recorderError: unknown;
   for (const candidate of supportedMimes) {
@@ -339,7 +339,7 @@ export async function renderTimelineVideoMax60s(
       recorderError = error;
     }
   }
-  if (!recorder!) {
+  if (!recorder) {
     try {
       recorder = new MediaRecorder(finalStream, { videoBitsPerSecond: 6_000_000 });
       mimeType = recorder.mimeType || '';
