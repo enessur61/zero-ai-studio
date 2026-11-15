@@ -240,6 +240,7 @@ export async function renderTimelineVideoMax60s(
         await audioCtx.close().catch(() => {});
         audioCtx = null;
       }
+      canvasStream.getTracks().forEach((track) => track.stop());
       throw audioError;
     }
   }
