@@ -58,7 +58,7 @@ export function BrainView({
     | NativeIOSTextModelId
   >('auto');
   const [useWebSearch, setUseWebSearch] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [webgpuModelLoaded, setWebgpuModelLoaded] = useState(isWebGPULocalModelLoaded());
