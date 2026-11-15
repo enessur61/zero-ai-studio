@@ -143,13 +143,15 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // Local on-device web/iOS browser adapters
+  // A server-side test cannot execute browser APIs on the user's iPhone.
+  // Never mark a client-only adapter as tested without a real device-side probe.
   if (model.executionMode === 'LOCAL ON-DEVICE') {
-    model.testPassed = true;
-    model.status = 'LOKAL INSTALLIERT';
+    model.testPassed = false;
+    model.status = 'BROWSER TEST ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
-    model.lastTestMessage = 'Lokaler Adapter verifiziert und betriebsbereit (0,00 €).';
+    model.lastTestMessage =
+      'Quellcode ist vorhanden; die Browser-/iPhone-Laufzeit wurde vom Server nicht ausgeführt. Direkt auf dem Zielgerät prüfen.';
     return model;
   }
 
