@@ -48,12 +48,13 @@ export function BrainView({
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState<
+    | 'auto'
     | 'gemini-3.8-flash'
     | 'gemini-3.1-flash-lite'
     | 'gpt-oss-20b-free'
     | 'webgpu-llama-3.2-1b'
     | NativeIOSTextModelId
-  >('gemini-3.8-flash');
+  >('auto');
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '');
   const [chatLoading, setChatLoading] = useState(false);
@@ -212,7 +213,7 @@ export function BrainView({
           method: 'POST',
           body: JSON.stringify({
             message: promptText,
-            modelId: selectedModel,
+            ...(selectedModel === 'auto' ? {} : { modelId: selectedModel }),
             useWebSearch,
             projectId: selectedProjectId,
           }),
@@ -337,6 +338,7 @@ export function BrainView({
                 onChange={(e) =>
                   setSelectedModel(
                     e.target.value as
+                      | 'auto'
                       | 'gemini-3.8-flash'
                       | 'gemini-3.1-flash-lite'
                       | 'gpt-oss-20b-free'
@@ -346,6 +348,7 @@ export function BrainView({
                 }
                 className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB]"
               >
+                <option value="auto">ZERO AUTO · beste geprüfte kostenlose Engine</option>
                 <option value="gemini-3.8-flash">Gemini 3.8 Flash (Free-Tier, API-Key erforderlich)</option>
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Schnell · 0 €)</option>
                 <option value="gemini-3.6-flash">Gemini 3.6 Flash (Free-Tier)</option>
