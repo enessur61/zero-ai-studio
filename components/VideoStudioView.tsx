@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Film, Loader2, Music, Play } from 'lucide-react';
+import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 
@@ -113,6 +113,34 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         return { ...s, durationSec: d };
       })
     );
+  }
+
+  async function handleShareVideo() {
+    if (!result) return;
+    try {
+      const response = await fetch(result.videoUrl);
+      if (!response.ok) throw new Error('Der fertige Film konnte nicht geöffnet werden.');
+      const blob = await response.blob();
+      const extension = result.mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const safeTitle = (currentProject?.title || 'zero-film').replace(/[^a-z0-9-_]+/gi, '-').slice(0, 48);
+      const file = new File([blob], `${safeTitle}.${extension}`, { type: result.mimeType });
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: currentProject?.title || 'ZERO AI STUDIO Video',
+          text: 'Erstellt mit ZERO AI STUDIO',
+        });
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = result.videoUrl;
+      link.download = file.name;
+      link.click();
+      setError('Der Teilen-Dialog wird von diesem Browser nicht unterstützt. Der Download wurde gestartet; auf dem iPhone findest du die Datei normalerweise unter „Dateien“.');
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setError(err instanceof Error ? err.message : 'Video konnte nicht geteilt werden.');
+    }
   }
 
   async function handleExportVideo() {
@@ -403,6 +431,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 playsInline
                 className="w-full rounded-xl bg-black border border-white/[0.08]"
               />
+              <button
+                type="button"
+                onClick={() => void handleShareVideo()}
+                className="w-full min-h-[46px] rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] border border-[#2563EB] text-xs font-semibold text-white inline-flex items-center justify-center gap-2"
+              >
+                <Share2 className="w-4 h-4" />
+                Auf dem iPhone teilen oder sichern
+              </button>
               <a
                 href={result.videoUrl}
                 download={`zero-film-${currentProject?.title || 'export'}.${
