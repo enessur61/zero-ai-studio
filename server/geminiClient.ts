@@ -29,6 +29,11 @@ export function getGeminiClient(): GoogleGenAI {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY ist nicht konfiguriert.');
   }
+  if (process.env.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
+    throw new Error(
+      'Gemini gesperrt: Setze ZERO_GEMINI_FREE_TIER_ONLY=true erst nachdem im Google-Cloud-Projekt die Abrechnung deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.'
+    );
+  }
   if (!sharedClient) {
     sharedClient = new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY,
