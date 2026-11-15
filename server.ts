@@ -774,7 +774,8 @@ app.post('/api/audio/tts', async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
   try {
-    db = await loadDb();
+    const database = await loadDb();
+    db = database;
     const text = String(req.body?.text ?? '').trim();
     const voiceName = String(req.body?.voiceName ?? 'Kore');
     const style = String(req.body?.style ?? 'Ruhige, klare deutsche Erzählstimme').trim();
@@ -784,8 +785,8 @@ app.post('/api/audio/tts', async (req, res) => {
       return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
     }
 
-    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', db.budgetGuard, (e) =>
-      recordBudgetAudit(db!, e)
+    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
+      recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
@@ -821,7 +822,7 @@ app.post('/api/audio/tts', async (req, res) => {
     }
 
     const audioDataUrl = pcmBase64ToWavDataUrl(base64Audio, audioPart.inlineData?.mimeType);
-    await saveDb(db);
+    await saveDb(database);
     res.json({
       audioDataUrl,
       modelUsed: modelId,
@@ -831,7 +832,11 @@ app.post('/api/audio/tts', async (req, res) => {
   } catch (err) {
     if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
       db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
-      await saveDb(db);
+      try {
+        await saveDb(db);
+      } catch (persistError) {
+        console.error('[ZERO AUDIO] Kontingentstatus konnte nicht gespeichert werden:', persistError);
+      }
     }
     res.status(db ? 400 : 503).json({
       error: db
