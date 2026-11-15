@@ -934,7 +934,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
     const partsText = parts
       .map((p) => p.audioTranscription?.text ?? (typeof p.text === 'string' ? p.text : ''))
       .filter(Boolean)
-      .join('\\n')
+      .join('\n')
       .trim();
     const rawTranscript = (partsText || response.text || '').trim();
 
@@ -942,7 +942,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
       throw new Error('Transkription lieferte kein erkanntes Sprachsignal.');
     }
 
-    const formattedTranscript = `${rawTranscript}\\n\\n--- SRT Untertitel ---\\n1\\n00:00:00,000 --> 00:00:05,000\\n${rawTranscript}`;
+    const formattedTranscript = `${rawTranscript}\n\n--- SRT Untertitel ---\n1\n00:00:00,000 --> 00:00:05,000\n${rawTranscript}`;
 
     await saveDb(database);
     res.json({
