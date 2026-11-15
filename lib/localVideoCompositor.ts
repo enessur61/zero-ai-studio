@@ -228,6 +228,12 @@ export async function renderTimelineVideoMax60s(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D Kontext nicht verfügbar.');
 
+  if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
+    throw new Error(
+      'Dein Browser unterstützt den ZERO-Videoexport nicht. Bitte öffne ZERO in Safari auf einem aktuellen iPhone oder iPad.'
+    );
+  }
+
   const canvasStream = canvas.captureStream(fps);
   const combinedTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
 
@@ -296,14 +302,6 @@ export async function renderTimelineVideoMax60s(
   }
 
   const finalStream = new MediaStream(combinedTracks);
-  if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
-    finalStream.getTracks().forEach((track) => track.stop());
-    if (audioCtx) await audioCtx.close().catch(() => {});
-    throw new Error(
-      'Dein Browser unterstützt den ZERO-Videoexport nicht. Bitte öffne ZERO in Safari auf einem aktuellen iPhone oder iPad.'
-    );
-  }
-
   // Safari on iPhone generally prefers MP4/H.264; Chromium browsers commonly
   // prefer WebM. Probe support instead of assuming one container is available.
   const preferredMimes = hasAudioTrack
