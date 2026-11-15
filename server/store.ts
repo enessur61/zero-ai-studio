@@ -222,6 +222,10 @@ function createDefaultDatabase(): ZeroDatabase {
       freeQuotaUsage: {
         'gemini-3.8-flash': { requestsToday: 0, dailySoftLimit: 250, exhausted: false },
         'gemini-2.5-flash-lite': { requestsToday: 0, dailySoftLimit: 100, exhausted: false },
+        'gemini-3.7-flash': { requestsToday: 0, dailySoftLimit: 150, exhausted: false },
+        'gemini-3.6-flash': { requestsToday: 0, dailySoftLimit: 150, exhausted: false },
+        'gemini-3.5-flash': { requestsToday: 0, dailySoftLimit: 120, exhausted: false },
+        'gemini-3.5-flash-lite': { requestsToday: 0, dailySoftLimit: 250, exhausted: false },
         'gemini-3.1-flash-lite': { requestsToday: 0, dailySoftLimit: 400, exhausted: false },
         'gemini-3.8-flash-lite-tts': { requestsToday: 0, dailySoftLimit: 120, exhausted: false },
         'gemini-3.8-flash-tts': { requestsToday: 0, dailySoftLimit: 80, exhausted: false },
@@ -515,6 +519,20 @@ export async function loadDb(): Promise<ZeroDatabase> {
         dailySoftLimit: 100,
         exhausted: false,
       };
+    }
+    for (const [modelId, dailySoftLimit] of Object.entries({
+      'gemini-3.7-flash': 150,
+      'gemini-3.6-flash': 150,
+      'gemini-3.5-flash': 120,
+      'gemini-3.5-flash-lite': 250,
+    })) {
+      if (!parsed.budgetGuard.freeQuotaUsage[modelId]) {
+        parsed.budgetGuard.freeQuotaUsage[modelId] = {
+          requestsToday: 0,
+          dailySoftLimit,
+          exhausted: false,
+        };
+      }
     }
     if (!parsed.backupConfig) {
       const now = new Date().toISOString();
