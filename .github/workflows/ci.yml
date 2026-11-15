@@ -17,3 +17,23 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm run build
+      - name: Production server smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=4179 NODE_ENV=production npm start > /tmp/zero-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat /tmp/zero-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s /tmp/zero-health.json
+          node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60) process.exit(1); console.log(JSON.stringify(h))"
+
