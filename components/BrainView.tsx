@@ -378,7 +378,7 @@ export function BrainView({
           <div>
             <h2 className="text-base font-semibold text-white">ZERO WEB INTELLIGENCE</h2>
             <p className="text-xs text-slate-400 mt-1">
-              Echte Websuche mit Google Search Grounding über Gemini 3.8 Flash — ausschließlich belegte Quellenlinks.
+              Echte Websuche über Gemini 2.5 Flash-Lite Free Tier mit belegten Quellenlinks; ZERO begrenzt Suchläufe zusätzlich auf 100 pro Tag.
             </p>
           </div>
 
