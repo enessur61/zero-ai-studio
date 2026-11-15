@@ -19,6 +19,10 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 ├── ios/
 │   ├── ZeroCoreML/                  # Swift-Quellcodepaket + WKWebView-Bridge
 │   └── ZEROAIStudio/                # XcodeGen-Projekt für den nativen iPhone-WKWebView-App-Host
+├── gpu-worker/                     # Optional authenticated Wan 2.1 CUDA inference worker
+│   ├── app.py                      # FastAPI queue, WanPipeline inference & MP4 delivery
+│   ├── Dockerfile                  # CUDA runtime container
+│   └── README.md                   # GPU host deployment and API contract
 ├── server/
 │   ├── adapters.ts                  # Gemini-Free-Tier-Adapter, deaktivierte nicht verifizierte Cloud-Provider, iOS-Quellcodeprüfung
 │   ├── coremlAdapter.ts             # Verifizierer für das iPhone 16 Pro Max Swift-6-Paket (9 Dateien, 8 Modelle)
@@ -117,7 +121,7 @@ ZERO now includes an optional self-hosted Wan 2.1 T2V-1.3B worker in `gpu-worker
 - See [gpu-worker/README.md](gpu-worker/README.md) for Docker deployment and API details.
 - No paid provider fallback is implemented. Open weights do not make GPU compute or hosting permanently free.
 
-The worker source and proxy routes are prepared in this repository, but no GPU worker is deployed or generation run has been verified yet.
+The worker source, authenticated proxy routes, per-scene Wan controls, and final-timeline video-clip playback are prepared in this repository. No GPU worker is deployed and no generation run has been verified yet.
 
 ---
 
