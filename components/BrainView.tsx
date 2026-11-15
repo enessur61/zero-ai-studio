@@ -211,7 +211,6 @@ export function BrainView({
         setInput('');
       } else {
         setInput('');
-        setInput('');
         setWebgpuAssistantDraft('');
         const response = await fetch('/api/brain/chat', {
           method: 'POST',
@@ -561,10 +560,10 @@ export function BrainView({
                 </div>
               </div>
             ))}
-            {webgpuAssistantDraft && (
+            {(webgpuAssistantDraft || (chatLoading && selectedModel !== 'webgpu-llama-3.2-1b')) && (
               <div className="flex flex-col items-start">
                 <div className="max-w-[92%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-[#161B26] border border-sky-500/20 text-slate-100">
-                  {webgpuAssistantDraft}
+                  {webgpuAssistantDraft || 'ZERO denkt nach …'}
                 </div>
               </div>
             )}
