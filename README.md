@@ -149,3 +149,17 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 2. **Benutzerverwaltung / Login**: In der aktuellen Ausbaustufe arbeitet ZERO AI STUDIO bewusst als lokales Einzelplatz-Studio ohne Multi-User-Authentifizierung, Passwort-Hashes oder Cloud-Account-Zwang (keine versteckten oder vorgetäuschten Zugangsdaten). Für eine spätere Mehrbenutzer-Umgebung müsste z. B. Firebase Auth oder ein lokaler JWT/Passkey-Layer ergänzt werden.
 3. **Native iOS-Modelle (Phase 12 – noch nicht einsatzbereit)**: Für acht lokale Modelle (Llama 3.2 1B/3B CoreML, Qwen 2.5 3B, DeepSeek-R1 1.5B, Gemma 3 4B, `whisper.cpp`, Piper ONNX DE, Kokoro-82M) liegt Swift-Adapter-Quellcode samt WKWebView-Bridge vor. Die Binärgewichte (ca. 0,07–2,6 GB) sind noch nicht im Repository enthalten; sie müssen in `ios/ZeroCoreML/Models/` bereitgestellt und in eine native iOS-App integriert werden. Der Swift-Paket-Build läuft in macOS-CI, bestätigt aber weder Modellgewichte noch einen echten iPhone-Gerätetest. Diese Modelle bleiben deshalb auf `INSTALLATION ERFORDERLICH`.
 4. **0 € Budget-Schutz**: Kostenpflichtige Gemini-Modelle (`gemini-4-argon`, `gemini-4-argon`, `gemini-3.1-flash-image`, `gemini-omni-1.1-flash`, `lyria-3-*`) sind serverseitig in `server/geminiClient.ts` fest gesperrt (`GESPERRT`).
+
+
+## 8. Produktionsschutz und Anmeldung
+
+In Produktion sind alle privaten `/api/*`-Routen (Projekte, Chats, Memory, Backups, Modellverwaltung und Studios) standardmäßig durch eine Anmeldung geschützt. Nur `/api/health` sowie die Auth-Status- und Login-Routen bleiben öffentlich erreichbar.
+
+Vor dem Start in einer Hosting-Umgebung müssen diese beiden Variablen als **Server-Secrets** gesetzt werden:
+
+- `ZERO_ADMIN_PASSWORD`: eigenes starkes Passwort mit mindestens 12 Zeichen
+- `ZERO_SESSION_SECRET`: zufälliger, geheimer Wert mit mindestens 32 Zeichen
+
+Beide Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
+
+Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält nur leere Platzhalter.
