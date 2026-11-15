@@ -58,7 +58,7 @@ export function BrainView({
     | NativeIOSTextModelId
   >('auto');
   const [useWebSearch, setUseWebSearch] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [webgpuModelLoaded, setWebgpuModelLoaded] = useState(isWebGPULocalModelLoaded());
@@ -211,8 +211,14 @@ export function BrainView({
         setInput('');
       } else {
         setInput('');
-        const data = await apiRequest<{ messages: ChatMessage[] }>('/api/brain/chat', {
+        setWebgpuAssistantDraft('');
+        const response = await fetch('/api/brain/chat', {
           method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
           body: JSON.stringify({
             message: promptText,
             ...(selectedModel === 'auto' ? {} : { modelId: selectedModel }),
@@ -220,8 +226,42 @@ export function BrainView({
             projectId: selectedProjectId,
           }),
         });
-        setMessages(data.messages);
-        setInput('');
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error || 'ZERO-Fehler (HTTP ' + response.status + ')');
+        }
+        if (!response.body) throw new Error('ZERO-Streaming wird von diesem Browser nicht unterstützt.');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalMessages: ChatMessage[] | null = null;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() ?? '';
+          for (const event of events) {
+            const line = event.split('\n').find((part) => part.startsWith('data: '));
+            if (!line) continue;
+            const payload = JSON.parse(line.slice(6)) as {
+              type: 'start' | 'delta' | 'done' | 'error';
+              text?: string;
+              error?: string;
+              messages?: ChatMessage[];
+            };
+            if (payload.type === 'delta' && payload.text) {
+              setWebgpuAssistantDraft((previous) => previous + payload.text);
+            } else if (payload.type === 'done' && payload.messages) {
+              finalMessages = payload.messages;
+            } else if (payload.type === 'error') {
+              throw new Error(payload.error || 'ZERO-Streaming fehlgeschlagen.');
+            }
+          }
+        }
+        if (!finalMessages) throw new Error('ZERO hat den Antwort-Stream unerwartet beendet.');
+        setMessages(finalMessages);
+        setWebgpuAssistantDraft('');
       }
     } catch (err) {
       // Keep the pending user bubble visible so a failed/slow request never looks unsent.
@@ -520,10 +560,10 @@ export function BrainView({
                 </div>
               </div>
             ))}
-            {webgpuAssistantDraft && (
+            {(webgpuAssistantDraft || (chatLoading && selectedModel !== 'webgpu-llama-3.2-1b')) && (
               <div className="flex flex-col items-start">
                 <div className="max-w-[92%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-[#161B26] border border-sky-500/20 text-slate-100">
-                  {webgpuAssistantDraft}
+                  {webgpuAssistantDraft || 'ZERO denkt nach …'}
                 </div>
               </div>
             )}
