@@ -58,15 +58,63 @@ function drawCoverFrame(
   ctx.globalAlpha = alpha;
 
   if (!img) {
+    // Cinematic graphic-storyboard fallback: always produce designed frames
+    // when no generated/user image exists. This is intentionally not presented
+    // as photorealistic AI footage.
     const grad = ctx.createLinearGradient(0, 0, width, height);
-    grad.addColorStop(0, '#0D1320');
-    grad.addColorStop(1, '#1A2338');
+    grad.addColorStop(0, '#080D18');
+    grad.addColorStop(0.52, '#17263B');
+    grad.addColorStop(1, '#321D2B');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#94A3B8';
-    ctx.font = '600 22px Manrope, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(title, width / 2, height / 2);
+
+    const pulse = 0.5 + 0.5 * Math.sin(progress * Math.PI * 2);
+    ctx.globalAlpha = 0.10 + pulse * 0.05;
+    ctx.strokeStyle = '#B9C9E8';
+    ctx.lineWidth = Math.max(2, width * 0.0015);
+    for (let i = 0; i < 7; i++) {
+      const radius = width * (0.10 + i * 0.075 + progress * 0.018);
+      ctx.beginPath();
+      ctx.arc(width * (0.72 - progress * 0.08), height * 0.38, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    const shade = ctx.createLinearGradient(0, height * 0.28, 0, height);
+    shade.addColorStop(0, 'rgba(3,6,12,0.02)');
+    shade.addColorStop(1, 'rgba(3,6,12,0.92)');
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#A8B8D2';
+    ctx.font = `600 ${Math.round(width * 0.018)}px Arial, sans-serif`;
+    ctx.fillText('ZERO  /  CINEMATIC STORYBOARD', width * 0.075, height * 0.13);
+
+    ctx.fillStyle = 'rgba(226,232,240,0.24)';
+    ctx.fillRect(width * 0.075, height * 0.18, width * 0.12, Math.max(3, height * 0.004));
+
+    ctx.fillStyle = '#F8FAFC';
+    ctx.font = `700 ${Math.round(width * 0.052)}px Arial, sans-serif`;
+    const titleWords = title.split(' ');
+    const titleLines: string[] = [];
+    let titleLine = '';
+    const titleMax = width * 0.82;
+    for (const word of titleWords) {
+      const test = titleLine ? titleLine + ' ' + word : word;
+      if (ctx.measureText(test).width > titleMax && titleLine) {
+        titleLines.push(titleLine);
+        titleLine = word;
+      } else titleLine = test;
+    }
+    if (titleLine) titleLines.push(titleLine);
+    titleLines.slice(0, 3).forEach((line, i) =>
+      ctx.fillText(line, width * 0.075, height * (0.64 + i * 0.065))
+    );
+
+    ctx.fillStyle = '#C5D0E0';
+    ctx.font = `500 ${Math.round(width * 0.019)}px Arial, sans-serif`;
+    ctx.fillText('SZENENENTWURF  •  BEWEGTE TYPOGRAFIE', width * 0.075, height * 0.91);
   } else {
     const baseScale = Math.max(width / img.width, height / img.height);
     let zoom = 1.05;
