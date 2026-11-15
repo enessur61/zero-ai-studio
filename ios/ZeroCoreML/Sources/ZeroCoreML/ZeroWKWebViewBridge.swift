@@ -66,28 +66,38 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
 
     private func handleDiagnostics(requestId: String, modelId: String) {
         if modelId == "apple-foundation-model" {
+#if canImport(FoundationModels)
             if #available(iOS 26.0, macOS 26.0, *) {
-                let availability = ZeroAppleFoundationModel.availabilityDescription()
+                let diagnostics = AppleFoundationModelAdapter().deploymentDiagnostics()
                 emitToJS(requestId: requestId, payload: [
                     "ok": true,
-                    "modelId": modelId,
-                    "status": availability.status,
-                    "runtime": "Apple Foundation Models · On-Device Apple Intelligence",
-                    "deviceModel": "Apple-Gerät",
-                    "compiledModelPresent": availability.available,
-                    "estimatedRamGB": 0
+                    "modelId": diagnostics.modelId,
+                    "status": diagnostics.status,
+                    "runtime": diagnostics.runtime,
+                    "available": diagnostics.available,
+                    "germanSupported": diagnostics.germanSupported,
+                    "message": diagnostics.message
                 ])
             } else {
                 emitToJS(requestId: requestId, payload: [
-                    "ok": true,
+                    "ok": false,
                     "modelId": modelId,
                     "status": "iOS 26 oder neuer erforderlich",
-                    "runtime": "Apple Foundation Models",
-                    "deviceModel": "Apple-Gerät",
-                    "compiledModelPresent": false,
-                    "estimatedRamGB": 0
+                    "available": false,
+                    "germanSupported": false,
+                    "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
                 ])
             }
+#else
+            emitToJS(requestId: requestId, payload: [
+                "ok": false,
+                "modelId": modelId,
+                "status": "FoundationModels nicht verfügbar",
+                "available": false,
+                "germanSupported": false,
+                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
+            ])
+#endif
         } else if let llamaVariant = Llama32Variant(rawValue: modelId) {
             let adapter = llamaAdapters[llamaVariant] ?? LlamaCoreMLAdapter(config: LlamaCoreMLConfig(variant: llamaVariant))
             llamaAdapters[llamaVariant] = adapter
@@ -158,35 +168,6 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                 "compiledModelPresent": d.modelPresent,
                 "estimatedRamGB": d.estimatedRamGB
             ])
-        } else if modelId == "apple-foundation-model" {
-#if canImport(FoundationModels)
-            if #available(iOS 26.0, macOS 26.0, *) {
-                let d = AppleFoundationModelAdapter().deploymentDiagnostics()
-                emitToJS(requestId: requestId, payload: [
-                    "ok": true,
-                    "modelId": d.modelId,
-                    "status": d.status,
-                    "runtime": d.runtime,
-                    "available": d.available,
-                    "germanSupported": d.germanSupported,
-                    "message": d.message
-                ])
-            } else {
-                emitToJS(requestId: requestId, payload: [
-                    "ok": false,
-                    "modelId": modelId,
-                    "status": "IOS 26 ERFORDERLICH",
-                    "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
-                ])
-            }
-#else
-            emitToJS(requestId: requestId, payload: [
-                "ok": false,
-                "modelId": modelId,
-                "status": "FRAMEWORK NICHT VERFÜGBAR",
-                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
-            ])
-#endif
         } else {
             emitToJS(requestId: requestId, payload: [
                 "ok": false,
@@ -197,32 +178,43 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
 
     private func handleGenerate(requestId: String, modelId: String, prompt: String) {
         if modelId == "apple-foundation-model" {
-            Task {
-                do {
-                    guard #available(iOS 26.0, macOS 26.0, *) else {
-                        throw NSError(
-                            domain: "ZERO.FoundationModels",
-                            code: 3,
-                            userInfo: [NSLocalizedDescriptionKey: "Apple Foundation Models benötigt iOS 26 oder neuer."]
-                        )
+#if canImport(FoundationModels)
+            if #available(iOS 26.0, macOS 26.0, *) {
+                let adapter = AppleFoundationModelAdapter()
+                Task {
+                    do {
+                        let result = try await adapter.generate(prompt: prompt)
+                        self.emitToJS(requestId: requestId, payload: [
+                            "ok": true,
+                            "type": "done",
+                            "text": result,
+                            "modelId": modelId,
+                            "runtime": "Apple Foundation Models · On-Device",
+                            "costEur": 0,
+                            "execution": "on-device"
+                        ])
+                    } catch {
+                        self.emitToJS(requestId: requestId, payload: [
+                            "ok": false,
+                            "type": "error",
+                            "error": error.localizedDescription
+                        ])
                     }
-                    let result = try await ZeroAppleFoundationModel.generate(prompt: prompt)
-                    self.emitToJS(requestId: requestId, payload: [
-                        "ok": true,
-                        "type": "done",
-                        "text": result,
-                        "modelId": modelId,
-                        "costEur": 0,
-                        "execution": "on-device"
-                    ])
-                } catch {
-                    self.emitToJS(requestId: requestId, payload: [
-                        "ok": false,
-                        "type": "error",
-                        "error": error.localizedDescription
-                    ])
                 }
+            } else {
+                emitToJS(requestId: requestId, payload: [
+                    "ok": false,
+                    "type": "error",
+                    "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
+                ])
             }
+#else
+            emitToJS(requestId: requestId, payload: [
+                "ok": false,
+                "type": "error",
+                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
+            ])
+#endif
         } else if let llamaVariant = Llama32Variant(rawValue: modelId) {
             let adapter = llamaAdapters[llamaVariant] ?? LlamaCoreMLAdapter(config: LlamaCoreMLConfig(variant: llamaVariant))
             llamaAdapters[llamaVariant] = adapter
@@ -278,41 +270,6 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     ])
                 }
             }
-        } else if modelId == "apple-foundation-model" {
-#if canImport(FoundationModels)
-            if #available(iOS 26.0, macOS 26.0, *) {
-                let adapter = AppleFoundationModelAdapter()
-                Task {
-                    do {
-                        let result = try await adapter.generate(prompt: prompt)
-                        self.emitToJS(requestId: requestId, payload: [
-                            "ok": true,
-                            "type": "done",
-                            "text": result,
-                            "modelId": modelId,
-                            "runtime": "Apple Foundation Models · On-Device",
-                            "costEur": 0
-                        ])
-                    } catch {
-                        self.emitToJS(requestId: requestId, payload: [
-                            "ok": false, "type": "error", "error": error.localizedDescription
-                        ])
-                    }
-                }
-            } else {
-                emitToJS(requestId: requestId, payload: [
-                    "ok": false,
-                    "type": "error",
-                    "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
-                ])
-            }
-#else
-            emitToJS(requestId: requestId, payload: [
-                "ok": false,
-                "type": "error",
-                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
-            ])
-#endif
         } else {
             emitToJS(requestId: requestId, payload: [
                 "ok": false,
