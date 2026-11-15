@@ -39,7 +39,7 @@ export function FilmDirectorView({
 
   const [regenSceneId, setRegenSceneId] = useState<string | null>(null);
   const [regenInstruction, setRegenInstruction] = useState(
-    'Dramatischeres Gegenlicht und intensivere Nahaufnahme'
+    'Erhöhe Spannung und emotionale Wirkung; überarbeite Erzähltext, Dialog und Untertitel.'
   );
   const [ttsSceneId, setTtsSceneId] = useState<string | null>(null);
 
