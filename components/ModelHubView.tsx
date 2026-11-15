@@ -280,7 +280,7 @@ export function ModelHubView({
             <div>
               <p className="text-xs font-mono text-teal-300 inline-flex items-center gap-1.5">
                 <Rocket className="w-3.5 h-3.5" />
-                ModelRegistry · iPhone 16 Pro Max Swift 6 Runtime ({iosRuntime.models.length} Lokale Modelle)
+                ModelRegistry · ZERO Swift 6 Runtime ({iosRuntime.models.length} Modelladapter)
               </p>
               <h2 className="text-sm font-semibold text-white mt-0.5">
                 Swift-Paket „{iosRuntime.packageRoot}“ —{' '}
@@ -292,7 +292,7 @@ export function ModelHubView({
 
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-mono text-slate-300">
-                WKWebView Bridge: {nativeBridgeActive ? 'Aktiv (iOS App)' : 'Web-Vorschau (iOS Xcode Build)'}
+                WKWebView Bridge: {nativeBridgeActive ? 'Handler vorhanden' : 'Nicht verbunden (Web/PWA)'}
               </span>
               <button
                 type="button"
@@ -381,7 +381,7 @@ export function ModelHubView({
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">iPhone 16 Pro Max</span>
+                  <span className="text-slate-500 block">iOS-Kompatibilität</span>
                   <span className={m.iosCompatible ? 'text-emerald-400' : 'text-slate-400'}>
                     {m.iosCompatible ? 'Kompatibel' : 'GPU-Server nötig'}
                   </span>
