@@ -77,3 +77,35 @@ noPaid.requiresPaidKey = true;
 assert.equal(chooseZeroChatModel([noPaid], budget, undefined, now), null);
 
 console.log('ZERO CORE router tests passed.');
+
+
+import { chooseZeroMediaModel } from '../server/zeroRouter.ts';
+
+const makeMediaModel = (id: string, category: ModelDefinition['category']): ModelDefinition => ({
+  ...makeModel(id),
+  category,
+});
+
+const ttsModel = makeMediaModel('gemini-3.8-flash-lite-tts', 'Sprache & Audio');
+const ttsBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash-lite-tts': { requestsToday: 0, dailySoftLimit: 10, exhausted: false, lastResetDate: '2026-11-16' },
+  },
+};
+assert.equal(
+  chooseZeroMediaModel([ttsModel], ttsBudget, 'text-to-speech', [], now)?.modelId,
+  'gemini-3.8-flash-lite-tts',
+);
+
+const localVideo = makeMediaModel('zero-timeline-video-60s', 'Videogenerierung');
+localVideo.executionMode = 'LOCAL ON-DEVICE';
+assert.equal(chooseZeroMediaModel([localVideo], budget, 'video', [], now), null);
+assert.equal(
+  chooseZeroMediaModel([localVideo], budget, 'video', ['zero-timeline-video-60s'], now)?.modelId,
+  'zero-timeline-video-60s',
+);
+
+const unverifiedImage = makeMediaModel('flux-1-schnell-free', 'Bildgenerierung');
+assert.equal(chooseZeroMediaModel([unverifiedImage], budget, 'image', [], now), null);
