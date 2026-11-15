@@ -10,8 +10,19 @@
   "orientation": "portrait-primary",
   "background_color": "#090B10",
   "theme_color": "#090B10",
-  "categories": ["productivity", "photo", "video", "music"],
+  "categories": [
+    "productivity",
+    "photo",
+    "video",
+    "music"
+  ],
   "icons": [
+    {
+      "src": "/icons/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
     {
       "src": "/icons/zero-icon.svg",
       "sizes": "any",
