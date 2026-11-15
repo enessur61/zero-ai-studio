@@ -452,8 +452,15 @@ export async function loadDb(): Promise<ZeroDatabase> {
       const hasStaleRawError =
         prev &&
         (prev.status === 'ADAPTER FEHLT' || prev.lastTestMessage.includes('"code":'));
+      const legacyPollinationsModel = [
+        'gpt-oss-20b-free',
+        'flux-1-schnell-free',
+        'sd-turbo-free',
+        'sana-free',
+      ].includes(def.id);
       const shouldKeepPrevState =
         prev &&
+        !legacyPollinationsModel &&
         !hasStaleRawError &&
         prev.adapterId === def.adapterId &&
         prev.hasRealAdapter === def.hasRealAdapter;
