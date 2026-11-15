@@ -499,8 +499,10 @@ app.get('/api/brain/history', async (_req, res) => {
 });
 
 app.post('/api/brain/chat', async (req, res) => {
-  const db = await loadDb();
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
+    const database = await loadDb();
+    db = database;
     const message = String(req.body?.message ?? '').trim();
     const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
     const useWebSearch = Boolean(req.body?.useWebSearch);
@@ -509,10 +511,10 @@ app.post('/api/brain/chat', async (req, res) => {
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
 
     const activeProject = projectId
-      ? db.projects.find((p) => p.id === projectId)
-      : db.projects[0];
+      ? database.projects.find((p) => p.id === projectId)
+      : database.projects[0];
 
-    const availableModelsSummary = db.models
+    const availableModelsSummary = database.models
       .filter(
         (m) =>
           m.enabled &&
@@ -523,7 +525,7 @@ app.post('/api/brain/chat', async (req, res) => {
       .map((m) => `${m.name} [${m.executionMode}]`)
       .join(', ');
 
-    const relevantMemories = db.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
+    const relevantMemories = database.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
 
     const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("BEYOND LIMITS").
 Zielgerät: iPhone 16 Pro Max. Budget-Regel: strikt 0 € laufende Kosten. Maximale Videolänge: 60 Sekunden (bevorzugt 55–60s).
@@ -542,11 +544,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
+      assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
+        recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
-      const recentHistory = db.chatHistory
+      const recentHistory = database.chatHistory
         .slice(-8)
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
@@ -559,11 +561,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', db.budgetGuard, (e) =>
-          recordBudgetAudit(db, e)
+        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
+          recordBudgetAudit(database, e)
         );
-        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', db.budgetGuard, (e) =>
-          recordBudgetAudit(db, e)
+        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
+          recordBudgetAudit(database, e)
         );
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
@@ -607,7 +609,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       ];
 
     const now = new Date().toISOString();
-    db.chatHistory.push(
+    database.chatHistory.push(
       { id: `msg-u-${Date.now()}`, role: 'user', content: message, timestamp: now },
       {
         id: `msg-a-${Date.now() + 1}`,
@@ -619,8 +621,8 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         timestamp: new Date().toISOString(),
       }
     );
-    if (db.chatHistory.length > 60) {
-      db.chatHistory = db.chatHistory.slice(-60);
+    if (database.chatHistory.length > 60) {
+      database.chatHistory = database.chatHistory.slice(-60);
     }
     await saveDb(db);
 
@@ -629,14 +631,14 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       modelUsed: requestedModel,
       routingSteps,
       sources,
-      messages: db.chatHistory,
+      messages: database.chatHistory,
     });
   } catch (err) {
     const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
-    if (isQuotaOrRateLimitError(err)) {
+    if (db && isQuotaOrRateLimitError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
           db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
@@ -644,7 +646,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       }
       await saveDb(db);
     }
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(db ? 400 : 503).json({
+      error: db
+        ? formatGermanApiError(err)
+        : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.',
+    });
   }
 });
 
