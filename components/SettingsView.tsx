@@ -607,18 +607,18 @@ export function SettingsView({
             Native iPhone 16 Pro Max Zielarchitektur (Phase 12)
           </h2>
           <p className="text-xs text-slate-300 leading-relaxed">
-            Diese Web-App arbeitet vollständig responsiv im iPhone 16 Pro Max Safari (Safe-Area, 44px Touch-Targets, Daumen-Navigation). Zusätzlich enthält <span className="font-mono text-white">ios/ZeroCoreML/</span> bereits alle 8 nativen Swift 6 Adapter mit WKWebView-Bridge (<span className="text-emerald-400">Ready for Deployment</span>):
+            ZERO ist für die iPhone-Bedienung optimiert. Unter <span className="font-mono text-white">ios/ZeroCoreML/</span> liegen native Swift-Adapter und eine WKWebView-Bridge als Quellcode. Das ist noch kein installierbares iOS-App-Bundle und wird deshalb nicht als einsatzbereit markiert.
           </p>
           <ul className="space-y-1.5 text-xs text-slate-300 list-disc pl-5">
-            <li>Text/Reasoning Offline: Apple CoreML MLState (Llama 3.2 1B/3B), MLX Swift (Qwen 2.5 3B Q4 & DeepSeek-R1 1.5B) & MediaPipe GenAI (Gemma 3 4B)</li>
-            <li>Spracherkennung Offline: whisper.cpp Metal/CoreML (<span className="font-mono">WhisperMetalAdapter.swift</span>) + Browser Diktat</li>
-            <li>Sprachausgabe Offline: Apple AVSpeechSynthesizer, Piper ONNX (<span className="font-mono">PiperONNXAdapter.swift</span>) & Kokoro-82M (<span className="font-mono">KokoroMLXAudioAdapter.swift</span>)</li>
-            <li>Videoschnitt & Export: Hardware-beschleunigte Timeline mit harter 60,0s Export-Sperre</li>
+            <li>Lokale Textmodelle: Adapter für Llama, Qwen, DeepSeek und Gemma vorhanden; die echten Modellgewichte und Runtime-Verknüpfungen fehlen noch.</li>
+            <li>Apple Foundation Models: iOS-26+-Adapter für Apples On-Device-Modell vorhanden; benötigt eine native ZERO-App und aktivierte, verfügbare Apple Intelligence.</li>
+            <li>Offline-Spracherkennung und -ausgabe: Whisper-, Piper- und Kokoro-Adapter als Quellcode vorhanden; Gewichte und native Laufzeit müssen noch eingebunden werden.</li>
+            <li>Video: lokaler Browser-Timeline-Editor mit Full-HD-Export und harter 60-Sekunden-Grenze; keine neuronale KI-Videogenerierung.</li>
           </ul>
           <div className="pt-2 border-t border-white/[0.06] text-[11px] text-slate-400 inline-flex items-start gap-2">
             <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <span>
-              Hinweis: Die Swift 6 Adapter & Bridge sind vollständig integriert; die 0,07–2,6 GB Binärgewichte werden beim Xcode iOS-Build gebündelt. Im Web-Container laufen sofort alle Free-Cloud-, WebAudio- und Canvas-Engines.
+              Ehrlicher Status: Der Swift-Paket-Build prüft nur, ob der Quellcode kompiliert. Ein natives Xcode-App-Target, vollständige Modellgewichte und echte iPhone-Gerätetests fehlen noch. Die Web-Version kann CoreML-/MLX-Modelle nicht direkt starten.
             </span>
           </div>
         </div>
