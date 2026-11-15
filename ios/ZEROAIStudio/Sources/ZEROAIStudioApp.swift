@@ -14,16 +14,58 @@ struct ZEROAIStudioApp: App {
 }
 
 struct ZEROHomeView: View {
+    @State private var loadError: String?
+    @State private var reloadToken = 0
+
     var body: some View {
-        ZEROWebView()
-            .background(Color(red: 0.035, green: 0.035, blue: 0.045))
-            .preferredColorScheme(.dark)
+        ZStack {
+            Color(red: 0.035, green: 0.035, blue: 0.045).ignoresSafeArea()
+
+            ZEROWebView(
+                reloadToken: reloadToken,
+                onLoadError: { message in loadError = message },
+                onLoadSuccess: { loadError = nil }
+            )
+            .ignoresSafeArea()
+
+            if let loadError {
+                VStack(spacing: 14) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 34, weight: .medium))
+                    Text("ZERO konnte nicht geladen werden")
+                        .font(.headline)
+                    Text(loadError)
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        self.loadError = nil
+                        reloadToken += 1
+                    } label: {
+                        Label("Erneut versuchen", systemImage: "arrow.clockwise")
+                            .font(.headline)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(28)
+                .frame(maxWidth: 360)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+                .padding(24)
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
 struct ZEROWebView: UIViewRepresentable {
+    let reloadToken: Int
+    let onLoadError: (String) -> Void
+    let onLoadSuccess: () -> Void
+
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(onLoadError: onLoadError, onLoadSuccess: onLoadSuccess)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -44,22 +86,83 @@ struct ZEROWebView: UIViewRepresentable {
         let bridge = ZeroWKWebViewBridge(webView: webView)
         context.coordinator.bridge = bridge
         contentController.add(bridge, name: "zeroCoreML")
-
-        var request = URLRequest(url: Self.appURL)
-        request.cachePolicy = .useProtocolCachePolicy
-        request.timeoutInterval = 45
-        webView.load(request)
+        context.coordinator.load(webView)
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
-
-    private static let appURL = URL(string: "https://zero-ai-studio.onrender.com")!
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.updateCallbacks(
+            onLoadError: onLoadError,
+            onLoadSuccess: onLoadSuccess
+        )
+        if context.coordinator.lastReloadToken != reloadToken {
+            context.coordinator.lastReloadToken = reloadToken
+            context.coordinator.load(webView)
+        }
+    }
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        // Retain the message handler for the lifetime of the WKWebView.
         var bridge: ZeroWKWebViewBridge?
+        var lastReloadToken = 0
+        private var onLoadError: (String) -> Void
+        private var onLoadSuccess: () -> Void
+
+        init(onLoadError: @escaping (String) -> Void, onLoadSuccess: @escaping () -> Void) {
+            self.onLoadError = onLoadError
+            self.onLoadSuccess = onLoadSuccess
+        }
+
+        func updateCallbacks(
+            onLoadError: @escaping (String) -> Void,
+            onLoadSuccess: @escaping () -> Void
+        ) {
+            self.onLoadError = onLoadError
+            self.onLoadSuccess = onLoadSuccess
+        }
+
+        func load(_ webView: WKWebView) {
+            var request = URLRequest(url: Self.appURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.timeoutInterval = 45
+            webView.load(request)
+        }
+
+        private static let appURL = URL(string: "https://zero-ai-studio.onrender.com")!
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onLoadSuccess()
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            onLoadError(Self.userFacingMessage(for: error))
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            onLoadError(Self.userFacingMessage(for: error))
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            load(webView)
+        }
+
+        private static func userFacingMessage(for error: Error) -> String {
+            let nsError = error as NSError
+            if nsError.code == NSURLErrorNotConnectedToInternet ||
+                nsError.code == NSURLErrorNetworkConnectionLost ||
+                nsError.code == NSURLErrorTimedOut {
+                return "Keine stabile Internetverbindung. Prüfe WLAN oder mobile Daten und versuche es erneut."
+            }
+            return "Verbindung zum ZERO-Server fehlgeschlagen (\(nsError.localizedDescription))."
+        }
 
         func webView(
             _ webView: WKWebView,
