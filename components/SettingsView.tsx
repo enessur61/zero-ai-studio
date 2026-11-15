@@ -610,15 +610,15 @@ export function SettingsView({
             ZERO ist für die iPhone-Bedienung optimiert. Unter <span className="font-mono text-white">ios/ZeroCoreML/</span> liegen native Swift-Adapter und eine WKWebView-Bridge als Quellcode. Das ist noch kein installierbares iOS-App-Bundle und wird deshalb nicht als einsatzbereit markiert.
           </p>
           <ul className="space-y-1.5 text-xs text-slate-300 list-disc pl-5">
-            <li>Lokale Textmodelle: Adapter für Llama, Qwen, DeepSeek und Gemma vorhanden; die echten Modellgewichte und Runtime-Verknüpfungen fehlen noch.</li>
-            <li>Apple Foundation Models: iOS-26+-Adapter für Apples On-Device-Modell vorhanden; benötigt eine native ZERO-App und aktivierte, verfügbare Apple Intelligence.</li>
-            <li>Offline-Spracherkennung und -ausgabe: Whisper-, Piper- und Kokoro-Adapter als Quellcode vorhanden; Gewichte und native Laufzeit müssen noch eingebunden werden.</li>
+            <li>WebGPU Llama 3.2 1B: experimenteller lokaler Browser-Chat in Safari 26+; ca. 705 MB Erstdownload und ca. 879 MB GPU-Speicher, ohne API-Kosten.</li>
+            <li>Apple Foundation Models: iOS-26+-Adapter und nativer ZERO-WKWebView-App-Host vorhanden; Apple Intelligence, signierte Installation und echter iPhone-Gerätetest sind noch erforderlich.</li>
+            <li>Weitere CoreML-/MLX-Textmodelle sowie Whisper, Piper und Kokoro: Swift-Adapter-Quellcode vorhanden; Modellgewichte und vollständige native Runtime fehlen noch.</li>
             <li>Video: lokaler Browser-Timeline-Editor mit Full-HD-Export und harter 60-Sekunden-Grenze; keine neuronale KI-Videogenerierung.</li>
           </ul>
           <div className="pt-2 border-t border-white/[0.06] text-[11px] text-slate-400 inline-flex items-start gap-2">
             <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <span>
-              Ehrlicher Status: Der Swift-Paket-Build prüft nur, ob der Quellcode kompiliert. Ein natives Xcode-App-Target, vollständige Modellgewichte und echte iPhone-Gerätetests fehlen noch. Die Web-Version kann CoreML-/MLX-Modelle nicht direkt starten.
+              Ehrlicher Status: Der Swift-Paket-Build prüft nur, ob der Quellcode kompiliert. Das native XcodeGen-App-Target ist vorhanden und der Simulator-Build besteht; eine signierte Installation und echte iPhone-Gerätetests fehlen noch. Die Web-Version kann CoreML-/MLX-Modelle nicht direkt starten; das WebGPU-Llama-Modell läuft davon unabhängig lokal im Browser.
             </span>
           </div>
         </div>
