@@ -52,8 +52,6 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
-app.use(express.json({ limit: '25mb' }));
-
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
 const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
@@ -102,6 +100,8 @@ app.use('/api', (req, res, next) => {
   }
   return next();
 });
+
+app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/auth/status', (_req, res) => {
   const configured =
