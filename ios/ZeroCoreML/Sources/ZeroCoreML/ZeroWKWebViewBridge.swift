@@ -65,7 +65,30 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleDiagnostics(requestId: String, modelId: String) {
-        if let llamaVariant = Llama32Variant(rawValue: modelId) {
+        if modelId == ZeroAppleFoundationModel.modelId {
+            if #available(iOS 26.0, macOS 26.0, *) {
+                let availability = ZeroAppleFoundationModel.availabilityDescription()
+                emitToJS(requestId: requestId, payload: [
+                    "ok": true,
+                    "modelId": modelId,
+                    "status": availability.status,
+                    "runtime": "Apple Foundation Models · On-Device Apple Intelligence",
+                    "deviceModel": ProcessInfo.processInfo.machineIdentifier,
+                    "compiledModelPresent": availability.available,
+                    "estimatedRamGB": 0
+                ])
+            } else {
+                emitToJS(requestId: requestId, payload: [
+                    "ok": true,
+                    "modelId": modelId,
+                    "status": "iOS 26 oder neuer erforderlich",
+                    "runtime": "Apple Foundation Models",
+                    "deviceModel": ProcessInfo.processInfo.machineIdentifier,
+                    "compiledModelPresent": false,
+                    "estimatedRamGB": 0
+                ])
+            }
+        } else if let llamaVariant = Llama32Variant(rawValue: modelId) {
             let adapter = llamaAdapters[llamaVariant] ?? LlamaCoreMLAdapter(config: LlamaCoreMLConfig(variant: llamaVariant))
             llamaAdapters[llamaVariant] = adapter
             let d = adapter.deploymentDiagnostics()
@@ -144,7 +167,34 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleGenerate(requestId: String, modelId: String, prompt: String) {
-        if let llamaVariant = Llama32Variant(rawValue: modelId) {
+        if modelId == ZeroAppleFoundationModel.modelId {
+            Task {
+                do {
+                    guard #available(iOS 26.0, macOS 26.0, *) else {
+                        throw NSError(
+                            domain: "ZERO.FoundationModels",
+                            code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "Apple Foundation Models benötigt iOS 26 oder neuer."]
+                        )
+                    }
+                    let result = try await ZeroAppleFoundationModel.generate(prompt: prompt)
+                    self.emitToJS(requestId: requestId, payload: [
+                        "ok": true,
+                        "type": "done",
+                        "text": result,
+                        "modelId": modelId,
+                        "costEur": 0,
+                        "execution": "on-device"
+                    ])
+                } catch {
+                    self.emitToJS(requestId: requestId, payload: [
+                        "ok": false,
+                        "type": "error",
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+        } else if let llamaVariant = Llama32Variant(rawValue: modelId) {
             let adapter = llamaAdapters[llamaVariant] ?? LlamaCoreMLAdapter(config: LlamaCoreMLConfig(variant: llamaVariant))
             llamaAdapters[llamaVariant] = adapter
             Task {
