@@ -165,9 +165,9 @@ Vor dem Start in einer Hosting-Umgebung müssen diese vier Variablen als **Serve
 - `ZERO_ADMIN_PASSWORD`: eigenes starkes Passwort mit mindestens 12 Zeichen
 - `ZERO_SESSION_SECRET`: zufälliger, geheimer Wert mit mindestens 32 Zeichen
 
-Alle vier Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. `ZERO_GEMINI_FREE_TIER_ONLY=true` ist eine bewusste Nutzerbestätigung, kein automatischer Billing-Nachweis. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
+Alle vier Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. `ZERO_GEMINI_FREE_TIER_ONLY=true` ist eine bewusste Nutzerbestätigung, kein automatischer Billing-Nachweis. Ohne korrekt gesetztes `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` verweigert der Produktionsserver den Zugriff auf private APIs. Solange `ZERO_GEMINI_FREE_TIER_ONLY` nicht `true` ist, bleiben zusätzlich alle Gemini-Aufrufe gesperrt. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
 
-Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält nur leere Platzhalter.
+Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält leere Secret-Platzhalter und die sichere Gemini-Standardsperre (`ZERO_GEMINI_FREE_TIER_ONLY=false`).
 
 
 `npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für die tägliche Nutzung muss der Hoster `GEMINI_API_KEY`, `ZERO_GEMINI_FREE_TIER_ONLY`, `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` bereitstellen. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
