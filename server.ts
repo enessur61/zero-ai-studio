@@ -1127,7 +1127,7 @@ app.get('/api/video/engine/status', async (_req, res) => {
       engine: 'Wan 2.1',
       status: online ? 'WORKER_ONLINE' : 'WORKER_PROTOCOL_MISMATCH',
       message: online
-        ? 'Wan-Worker erreichbar. Die Generierungsroute wird erst nach Prüfung des Worker-Auftragsprotokolls freigeschaltet.'
+        ? 'Wan-Worker erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
         : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
       maxDurationSec: 60,
       costFallback: false,
