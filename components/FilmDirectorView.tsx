@@ -30,7 +30,7 @@ export function FilmDirectorView({
   const [genre, setGenre] = useState('Neo-Noir Mystery Thriller');
   const [targetDurationSec, setTargetDurationSec] = useState(58);
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '');
-  const [generateImages, setGenerateImages] = useState(true);
+  const [generateImages] = useState(false);
   const [directing, setDirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -201,10 +201,10 @@ export function FilmDirectorView({
             <input
               type="checkbox"
               checked={generateImages}
-              onChange={(e) => setGenerateImages(e.target.checked)}
+              disabled
               className="rounded bg-[#090B10] border-white/20"
             />
-            Szenenbilder direkt mit FLUX.1 Schnell (Free Cloud) erzeugen
+            Szenenbilder (Cloud-Generierung derzeit deaktiviert; Drehbuch & Szenenplanung funktionieren)
           </label>
 
           {error && (
