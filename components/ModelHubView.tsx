@@ -283,7 +283,7 @@ export function ModelHubView({
                 Swift-Paket „{iosRuntime.packageRoot}“ —{' '}
                 {iosRuntime.readyForDeployment
                   ? `Ready for Deployment (${iosRuntime.totalFilesChecked} Dateien)`
-                  : 'Unvollständig'}
+                   : 'Modellgewichte fehlen · Installation erforderlich'}
               </h2>
             </div>
 
