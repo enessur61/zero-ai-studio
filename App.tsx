@@ -76,6 +76,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [authStatusLoading, setAuthStatusLoading] = useState(true);
+  const [showIosInstallHint, setShowIosInstallHint] = useState(false);
 
   const [models, setModels] = useState<ModelDefinition[]>([]);
   const [budgetGuard, setBudgetGuard] = useState<BudgetGuardState | null>(null);
@@ -99,6 +100,15 @@ export default function App() {
   const [videoSoundtrack, setVideoSoundtrack] = useState<{ url: string; title: string } | null>(
     null
   );
+
+  useEffect(() => {
+    const userAgent = window.navigator.userAgent;
+    const isIos = /iPhone|iPad|iPod/i.test(userAgent);
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+    setShowIosInstallHint(isIos && !isStandalone);
+  }, []);
 
   const loadAllData = useCallback(async () => {
     setLoading(true);
@@ -415,6 +425,22 @@ export default function App() {
 
         {/* Active Studio Viewport */}
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 pb-28 lg:pb-12">
+          {showIosInstallHint && (
+            <section className="mb-5 rounded-2xl border border-rose-400/20 bg-[#11151E] p-4" aria-label="ZERO auf dem iPhone installieren">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold tracking-[0.16em] text-rose-300">ZERO AUF DEM IPHONE</p>
+                  <p className="mt-1 text-sm font-semibold text-white">Als App zum Home-Bildschirm hinzufügen</p>
+                  <p className="mt-2 text-xs leading-relaxed text-slate-300">
+                    In Safari auf „Teilen“ tippen, „Zum Home-Bildschirm“ auswählen und anschließend „Hinzufügen“ bestätigen.
+                  </p>
+                </div>
+                <button type="button" onClick={() => setShowIosInstallHint(false)} className="min-h-[36px] min-w-[36px] rounded-lg text-slate-400 hover:text-white" aria-label="Installationshinweis schließen">
+                  <X className="mx-auto h-4 w-4" />
+                </button>
+              </div>
+            </section>
+          )}
           {activeTab === 'home' && (
             <HomeView
               models={models}
