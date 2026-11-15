@@ -353,7 +353,15 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-2">
+          {authEnabled && (
+            <button
+              onClick={() => void handleLogout()}
+              className="min-h-[38px] px-3 py-1.5 rounded-lg border border-white/10 text-xs text-slate-300 hover:text-white"
+            >
+              Abmelden
+            </button>
+          )}
           <button
             onClick={() => navigateTo('director')}
             className="min-h-[38px] px-4 py-1.5 rounded-lg bg-[#F43F5E] hover:bg-[#E11D48] text-xs font-medium text-white transition-colors whitespace-nowrap shrink-0"
@@ -578,6 +586,14 @@ export default function App() {
                 );
               })}
             </div>
+            {authEnabled && (
+              <button
+                onClick={() => void handleLogout()}
+                className="w-full min-h-[44px] rounded-xl border border-white/10 text-sm text-slate-300"
+              >
+                Sicher abmelden
+              </button>
+            )}
           </div>
         </div>
       )}
