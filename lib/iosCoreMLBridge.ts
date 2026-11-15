@@ -11,6 +11,9 @@ export interface CoreMLBridgeResponse {
   deviceModel?: string;
   estimatedRamGB?: number;
   compiledModelPresent?: boolean;
+  available?: boolean;
+  germanSupported?: boolean;
+  message?: string;
   error?: string;
 }
 
@@ -19,7 +22,8 @@ export type NativeIOSTextModelId =
   | 'llama-3.2-3b-coreml'
   | 'qwen-2.5-3b-coreml'
   | 'gemma-3-4b-it'
-  | 'deepseek-r1-distill-1.5b';
+  | 'deepseek-r1-distill-1.5b'
+  | 'apple-foundation-model';
 
 interface WebKitMessageHandler {
   postMessage: (payload: Record<string, unknown>) => void;
@@ -111,7 +115,7 @@ export async function runNativeCoreMLPrompt(params: {
       prompt: params.prompt,
     },
     params.onToken,
-    `Apple CoreML/MLX Laufzeit für "${params.modelId}" erfordert die native iPhone 16 Pro Max WKWebView-App (ios/ZeroCoreML). Wähle im Browser ein aktives Free-Cloud-Modell (Gemini 4 Hydrogen, Gemini 3.1 Flash Lite oder GPT-OSS 20B).`
+    `Lokale iOS-Laufzeit für "${params.modelId}" erfordert die native ZERO WKWebView-App (ios/ZeroCoreML). Apple Foundation Models benötigt zusätzlich iOS 26+, aktivierte Apple Intelligence und ein bereitgestelltes deutsches On-Device-Modell.`
   );
 }
 
