@@ -11,6 +11,91 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Block committed local data and secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden=$(git ls-files | grep -E '(^|/)(\.env($|\.)|zero-studio-db\.json|.*\.(pem|key|p12|pfx|sqlite|db))
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run build
+      - name: Production server smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=4179 NODE_ENV=production npm start > /tmp/zero-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat /tmp/zero-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s /tmp/zero-health.json
+          node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60) process.exit(1); console.log(JSON.stringify(h))"
+          node --input-type=module <<'NODE'
+          const base = 'http://127.0.0.1:4179';
+          const modelResponse = await fetch(base + '/api/models');
+          if (!modelResponse.ok) throw new Error('Model catalog endpoint failed');
+          const { models } = await modelResponse.json();
+          for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
+            const model = models.find((entry) => entry.id === id);
+            if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
+              throw new Error('Unsafe/unverified model state: ' + id);
+            }
+            const toggle = await fetch(base + '/api/models/' + id + '/toggle', { method: 'POST' });
+            if (toggle.status !== 400) throw new Error('Unavailable model can be toggled: ' + id);
+          }
+          for (const id of ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding']) {
+            const model = models.find((entry) => entry.id === id);
+            if (!model || model.status !== 'INSTALLATION ERFORDERLICH' || model.testPassed) {
+              throw new Error('Gemini model falsely marked live without API credentials: ' + id);
+            }
+          }
+          for (const id of ['qwen-2.5-3b-coreml', 'llama-3.2-1b-coreml', 'llama-3.2-3b-coreml', 'gemma-3-4b-it', 'deepseek-r1-distill-1.5b', 'piper-tts-de', 'whisper-cpp-small', 'kokoro-82m']) {
+            const model = models.find((entry) => entry.id === id);
+            if (!model || model.enabled || model.status !== 'INSTALLATION ERFORDERLICH') {
+              throw new Error('iOS model incorrectly marked ready: ' + id);
+            }
+            const toggle = await fetch(base + '/api/models/' + id + '/toggle', { method: 'POST' });
+            if (toggle.status !== 400) throw new Error('Uninstalled iOS model can be enabled: ' + id);
+          }
+          const iosRuntime = await fetch(base + '/api/models/ios-runtime');
+          const iosStatus = await iosRuntime.json();
+          if (iosStatus.readyForDeployment !== false) throw new Error('iOS runtime claims readiness without model weights');
+          const image = await fetch(base + '/api/image/generate', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'smoke test' })
+          });
+          if (image.status !== 503) throw new Error('Image route did not fail closed');
+          const brain = await fetch(base + '/api/brain/chat', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ message: 'smoke test', modelId: 'gpt-oss-20b-free' })
+          });
+          if (brain.status !== 503) throw new Error('Unverified GPT-OSS route did not fail closed');
+          console.log('Verified unavailable providers stay disabled; no paid fallback.');
+          NODE
+
+
+  ios-swift-package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Swift toolchain
+        run: swift --version
+      - name: Build iOS Swift package sources
+        run: swift build --package-path ios/ZeroCoreML
+ || true)
+          if [ -n "$forbidden" ]; then
+            printf 'Forbidden local data or secret files are tracked:\n%s\n' "$forbidden"
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
