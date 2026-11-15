@@ -449,7 +449,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
   await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
 
   try {
-    if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+    if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL && process.env.ZERO_ALLOW_EPHEMERAL_DB !== 'true') {
       throw new Error('DATABASE_URL fehlt. ZERO startet in Produktion nicht mit flüchtiger Dateispeicherung.');
     }
     const stored = process.env.DATABASE_URL
