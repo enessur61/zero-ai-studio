@@ -85,7 +85,7 @@ function createSessionCookie(): string {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
   const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt).digest('hex');
   const secure = IS_PRODUCTION ? '; Secure' : '';
-  return \`\${AUTH_COOKIE_NAME}=\${expiresAt}.\${signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=\${SESSION_DURATION_SECONDS}\${secure}\`;
+  return `${AUTH_COOKIE_NAME}=${expiresAt}.${signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DURATION_SECONDS}${secure}`;
 }
 
 app.use('/api', (req, res, next) => {
@@ -148,7 +148,7 @@ app.post('/api/auth/logout', (_req, res) => {
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader(
     'Set-Cookie',
-    \`\${AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0\${secure}\`
+    `${AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`
   );
   res.json({ ok: true });
 });
