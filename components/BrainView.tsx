@@ -74,6 +74,14 @@ export function BrainView({
     e.preventDefault();
     if (!input.trim() || chatLoading) return;
     setChatError(null);
+    const promptText = input.trim();
+    const pendingId = `msg-pending-${Date.now()}`;
+    const pendingTimestamp = new Date().toISOString();
+    // Show the user's message immediately; do not wait for the model/server.
+    setMessages((prev) => [
+      ...prev,
+      { id: pendingId, role: 'user', content: promptText, timestamp: pendingTimestamp },
+    ]);
     setChatLoading(true);
     try {
       if (
@@ -83,15 +91,14 @@ export function BrainView({
         selectedModel === 'gemma-3-4b-it' ||
         selectedModel === 'deepseek-r1-distill-1.5b'
       ) {
-        const promptText = input.trim();
         const res = await runNativeCoreMLPrompt({
           modelId: selectedModel,
           prompt: promptText,
         });
         const now = new Date().toISOString();
         setMessages((prev) => [
-          ...prev,
-          { id: `msg-u-${Date.now()}`, role: 'user', content: promptText, timestamp: now },
+          ...prev.filter((message) => message.id !== pendingId),
+          { id: pendingId, role: 'user', content: promptText, timestamp: pendingTimestamp },
           {
             id: `msg-a-${Date.now() + 1}`,
             role: 'assistant',
@@ -105,10 +112,11 @@ export function BrainView({
         ]);
         setInput('');
       } else {
+        setInput('');
         const data = await apiRequest<{ messages: ChatMessage[] }>('/api/brain/chat', {
           method: 'POST',
           body: JSON.stringify({
-            message: input.trim(),
+            message: promptText,
             modelId: selectedModel,
             useWebSearch,
             projectId: selectedProjectId,
@@ -118,6 +126,7 @@ export function BrainView({
         setInput('');
       }
     } catch (err) {
+      // Keep the pending user bubble visible so a failed/slow request never looks unsent.
       setChatError(err instanceof Error ? err.message : 'Fehler bei ZERO BRAIN');
     } finally {
       setChatLoading(false);
