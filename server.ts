@@ -457,37 +457,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     let routingSteps: string[] = [];
 
     if (requestedModel === 'gpt-oss-20b-free') {
-      recordBudgetAudit(db, {
-        adapterId: 'pollinations-gpt-oss-adapter',
-        modelId: 'gpt-oss-20b-free',
-        action: 'BRAIN_CHAT',
-        decision: 'ERLAUBT_0_EUR',
-        reason: 'Kostenloser Open-Cloud Aufruf ohne API-Key (0,00 €).',
-        costEur: 0,
+      return res.status(503).json({
+        error: 'GPT-OSS Open Cloud ist deaktiviert: kein verifizierter, dauerhaft kostenloser Zugriff. Bitte ein freigegebenes Gemini-Free-Tier-Modell mit eigenem API-Key wählen. Kein kostenpflichtiger Fallback.',
       });
+    }
 
-      const historyMsgs = db.chatHistory
-        .slice(-6)
-        .filter((m): m is typeof m & { role: 'user' | 'assistant' } =>
-          m.role === 'user' || m.role === 'assistant'
-        )
-        .map((m) => ({ role: m.role, content: m.content }));
-
-      const openRes = await withTransientRetry(() =>
-        generateFreeOpenText({
-          messages: [
-            { role: 'system', content: systemInstruction },
-            ...historyMsgs,
-            { role: 'user', content: message },
-          ],
-        })
-      );
-      replyText = openRes.text;
-      routingSteps = [
-        `ZERO CORE Router -> GPT-OSS 20B Open Cloud (0,00 €, kein API-Key)`,
-        ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
-      ];
-    } else {
       assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
@@ -646,6 +620,9 @@ app.post('/api/image/generate', async (req, res) => {
     const style = String(req.body?.style ?? '').trim();
 
     if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
+    return res.status(503).json({
+      error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
+    });
 
     let finalPrompt = rawPrompt;
     if (characterId) {
