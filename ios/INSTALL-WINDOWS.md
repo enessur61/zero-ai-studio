@@ -19,7 +19,7 @@ Der iOS-App-Host wird in GitHub Actions als **unsignierte IPA** gebaut. iOS inst
 3. Lade das Artefakt **ZEROAIStudio-unsigned-IPA** herunter.
 4. Entpacke das Artefakt. Darin liegt `ZEROAIStudio-unsigned.ipa`.
 
-Artefakte werden nur begrenzt gespeichert. Lade die IPA zeitnah herunter.
+GitHub hält das IPA-Artefakt 90 Tage vor. Danach kannst du den Workflow unter Actions mit **Run workflow** erneut starten, um eine neue IPA zu erzeugen.
 
 ## 2. AltStore auf Windows installieren
 
