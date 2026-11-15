@@ -50,6 +50,20 @@ jobs:
           console.log('No local database or secret files are tracked.');
           NODE
       - run: npm install --no-audit --no-fund
+      - name: Verify Gemini calls are blocked unless free-only billing is confirmed
+        shell: bash
+        run: |
+          GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false node --import tsx --input-type=module <<'NODE'
+          import { getGeminiClient } from './server/geminiClient.ts';
+          let blocked = false;
+          try {
+            getGeminiClient();
+          } catch (error) {
+            blocked = String(error).includes('ZERO_GEMINI_FREE_TIER_ONLY=true');
+          }
+          if (!blocked) throw new Error('Gemini API was not blocked without explicit free-only billing confirmation');
+          console.log('Gemini API correctly blocked until billing-disabled confirmation.');
+          NODE
       - run: npm run lint
       - run: npm run build
       - name: Production server smoke test
