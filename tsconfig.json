@@ -33,6 +33,8 @@
     "App.tsx",
     "main.tsx",
     "server.ts",
+    "start-server.ts",
+    "dev-server.ts",
     "vite.config.ts",
     "components/**/*.tsx",
     "lib/**/*.ts",
