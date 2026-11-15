@@ -16,6 +16,7 @@ import type {
 import { StatusLabel } from './StatusLabel.tsx';
 import {
   checkWebGPULocalModelSupport,
+  generateWebGPULocalChat,
   isWebGPULocalModelLoaded,
   loadWebGPULocalModel,
   WEBGPU_LOCAL_MODEL_DOWNLOAD_MB,
@@ -61,7 +62,42 @@ export function ModelHubView({
   const [webGpuProgress, setWebGpuProgress] = useState(0);
   const [webGpuProgressText, setWebGpuProgressText] = useState('');
   const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
+  const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
+
+  async function verifyAndActivateLoadedWebGpuModel() {
+    if (!isWebGPULocalModelLoaded() || webGpuProbeRef.current) return;
+    webGpuProbeRef.current = true;
+    try {
+      const probe = await generateWebGPULocalChat([
+        { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
+      ]);
+      if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
+      const model = models.find((item) => item.id === 'webgpu-llama-3.2-1b');
+      if (model) {
+        onModelUpdated({
+          ...model,
+          enabled: true,
+          testPassed: true,
+          status: 'LOKAL INSTALLIERT',
+          lastTestedAt: new Date().toISOString(),
+          lastTestLatencyMs: null,
+          lastTestMessage: 'Lokaler WebGPU-Inferenztest auf diesem Gerät erfolgreich. Kein Cloud- oder Paid-Fallback.',
+        });
+      }
+      setWebGpuLoaded(true);
+      setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert.');
+    } catch (err) {
+      setWebGpuMessage(err instanceof Error ? err.message : 'Lokaler Inferenztest fehlgeschlagen.');
+      webGpuProbeRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (webGpuLoaded) void verifyAndActivateLoadedWebGpuModel();
+    // The browser runtime is a shared singleton; verify it once when the Hub opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const registryRef = useRef<ModelRegistry>(new ModelRegistry(models));
 
@@ -151,7 +187,12 @@ export function ModelHubView({
         setWebGpuProgressText(progress.text);
       });
       setWebGpuLoaded(true);
-      setFeedback('Llama 3.2 1B wurde lokal im Browser geladen. Die Inferenz läuft auf dem Gerät; es wurde kein Cloud- oder Paid-Fallback verwendet.');
+      await verifyAndActivateLoadedWebGpuModel();
+      setFeedback(
+        webGpuProbeRef.current
+          ? 'Llama 3.2 1B wurde lokal geladen und der Inferenztest gestartet.'
+          : 'Llama 3.2 1B wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.'
+      );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
     } finally {
