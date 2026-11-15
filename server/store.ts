@@ -221,6 +221,7 @@ function createDefaultDatabase(): ZeroDatabase {
       autoUpgradeDisabled: true,
       freeQuotaUsage: {
         'gemini-3.8-flash': { requestsToday: 0, dailySoftLimit: 250, exhausted: false },
+        'gemini-2.5-flash-lite': { requestsToday: 0, dailySoftLimit: 100, exhausted: false },
         'gemini-3.1-flash-lite': { requestsToday: 0, dailySoftLimit: 400, exhausted: false },
         'gemini-3.8-flash-lite-tts': { requestsToday: 0, dailySoftLimit: 120, exhausted: false },
         'gemini-3.8-flash-tts': { requestsToday: 0, dailySoftLimit: 80, exhausted: false },
