@@ -160,7 +160,14 @@ export async function runLiveModelTest(
 
   // Real FREE CLOUD probes
   try {
-    if (model.id === 'gemini-3.8-flash' || model.id === 'gemini-3.1-flash-lite') {
+    if ([
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+    ].includes(model.id)) {
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
@@ -171,10 +178,11 @@ export async function runLiveModelTest(
             model: model.id,
             contents: 'Antworte exakt mit einem Wort: BEREIT',
             config: {
-              thinkingConfig: {
-                thinkingLevel:
-                  model.id === 'gemini-3.8-flash' ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL,
-              },
+              ...(model.id === 'gemini-3.8-flash'
+                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                : model.id === 'gemini-3.1-flash-lite'
+                  ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
+                  : {}),
             },
           }),
         1
