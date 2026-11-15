@@ -141,7 +141,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 ## 4. Datenbank & Persistenz
 
 - **Format**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`), keine externen Cloud-Datenbankkosten.
-- **Migration / Initialisierung**: Beim ersten Start ohne `data/zero-studio-db.json` erzeugt `server/store.ts` automatisch das vollständige Schema inkl. 31-Modelle-Katalog, 0 € Budget-Guard, Beispiel-Charakter (*Elena Vance*), Beispiel-Kurzfilm (*Schatten über Mitte*, 58s) und Initial-Erinnerungen. Beim Laden vorhandener Datenbanken werden neue Katalogmodelle automatisch zusammengeführt, ohne bestehende Testergebnisse zu überschreiben.
+- **Migration / Initialisierung**: Beim ersten Start ohne `data/zero-studio-db.json` erzeugt `server/store.ts` automatisch das vollständige Schema inkl. 35-Modelle-Katalog, 0 € Budget-Guard, Beispiel-Charakter (*Elena Vance*), Beispiel-Kurzfilm (*Schatten über Mitte*, 58s) und Initial-Erinnerungen. Beim Laden vorhandener Datenbanken werden neue Katalogmodelle automatisch zusammengeführt, ohne bestehende Testergebnisse zu überschreiben.
 
 ---
 
