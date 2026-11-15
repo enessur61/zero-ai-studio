@@ -14,6 +14,14 @@ import type {
   ModelDefinition,
 } from '../types/zero.ts';
 import { StatusLabel } from './StatusLabel.tsx';
+import {
+  checkWebGPULocalModelSupport,
+  isWebGPULocalModelLoaded,
+  loadWebGPULocalModel,
+  WEBGPU_LOCAL_MODEL_DOWNLOAD_MB,
+  WEBGPU_LOCAL_MODEL_ID,
+  WEBGPU_LOCAL_MODEL_VRAM_MB,
+} from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 
 interface ModelHubViewProps {
@@ -47,6 +55,12 @@ export function ModelHubView({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [iosRuntime, setIosRuntime] = useState<IOSRuntimeSuiteInfo | null>(null);
   const [registryReport, setRegistryReport] = useState<RegistryVerificationResult | null>(null);
+  const [webGpuSupported, setWebGpuSupported] = useState<boolean | null>(null);
+  const [webGpuMessage, setWebGpuMessage] = useState('Noch nicht geprüft.');
+  const [webGpuLoading, setWebGpuLoading] = useState(false);
+  const [webGpuProgress, setWebGpuProgress] = useState(0);
+  const [webGpuProgressText, setWebGpuProgressText] = useState('');
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
   const registryRef = useRef<ModelRegistry>(new ModelRegistry(models));
@@ -121,6 +135,29 @@ export function ModelHubView({
       return true;
     });
   }, [models, execFilter, catFilter, tierFilter, search]);
+
+  async function handleLoadWebGpuModel() {
+    if (webGpuLoading || webGpuLoaded) return;
+    setWebGpuLoading(true);
+    setWebGpuProgress(0);
+    setFeedback(null);
+    try {
+      const support = await checkWebGPULocalModelSupport();
+      setWebGpuSupported(support.supported);
+      setWebGpuMessage(support.message);
+      if (!support.supported) throw new Error(support.message);
+      await loadWebGPULocalModel((progress) => {
+        setWebGpuProgress(progress.progress);
+        setWebGpuProgressText(progress.text);
+      });
+      setWebGpuLoaded(true);
+      setFeedback('Llama 3.2 1B wurde lokal im Browser geladen. Die Inferenz läuft auf dem Gerät; es wurde kein Cloud- oder Paid-Fallback verwendet.');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
+    } finally {
+      setWebGpuLoading(false);
+    }
+  }
 
   async function handleTest(model: ModelDefinition) {
     setTestingId(model.id);
@@ -208,6 +245,32 @@ export function ModelHubView({
           Alle Modelle prüfen
         </button>
       </div>
+
+      {/* Browser-local WebGPU model, independent from the native iOS/CoreML package. */}
+      <section className="bg-[#11151E] border border-sky-500/25 rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-xs font-mono text-sky-300">ZERO LOCAL RUNTIME · WEBGPU</p>
+            <h2 className="text-base font-semibold text-white">Llama 3.2 1B · direkt auf diesem iPhone</h2>
+            <p className="text-xs text-slate-400">Modell-ID: {WEBGPU_LOCAL_MODEL_ID}</p>
+            <p className="text-xs text-slate-300">Einmaliger Download: ca. {WEBGPU_LOCAL_MODEL_DOWNLOAD_MB} MB · geschätzter GPU-Speicher: {WEBGPU_LOCAL_MODEL_VRAM_MB} MB · kostenlos und lokal.</p>
+          </div>
+          <span className={`text-xs font-medium ${webGpuLoaded ? 'text-emerald-300' : webGpuSupported === false ? 'text-rose-300' : 'text-slate-300'}`}>
+            {webGpuLoaded ? 'Lokal geladen' : webGpuLoading ? 'Wird geladen…' : webGpuSupported === false ? 'Nicht unterstützt' : 'Noch nicht geladen'}
+          </span>
+        </div>
+        <p className="text-xs text-slate-300">{webGpuMessage}</p>
+        {webGpuLoading && (
+          <div className="space-y-1.5">
+            <div className="h-2 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-sky-400 transition-all" style={{ width: `${Math.round(webGpuProgress * 100)}%` }} /></div>
+            <p className="text-[11px] text-slate-400">{Math.round(webGpuProgress * 100)}% · {webGpuProgressText}</p>
+          </div>
+        )}
+        <button type="button" onClick={() => void handleLoadWebGpuModel()} disabled={webGpuLoading || webGpuLoaded} className="min-h-[44px] px-4 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sm font-medium text-sky-200 disabled:opacity-50">
+          {webGpuLoading ? 'Modell wird heruntergeladen…' : webGpuLoaded ? 'Modell ist geladen' : 'Kostenloses lokales Modell herunterladen & laden'}
+        </button>
+        <p className="text-[11px] text-amber-200/80">Hinweis: Der Download benötigt eine stabile WLAN-Verbindung und ausreichend freien Gerätespeicher. Safari kann große GPU-Modelle je nach iOS-Speicherverwaltung abbrechen; ein erfolgreicher Download allein gilt noch nicht als Inferenztest.</p>
+      </section>
 
       {/* Filters */}
       <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
