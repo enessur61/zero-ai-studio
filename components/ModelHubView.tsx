@@ -73,20 +73,13 @@ export function ModelHubView({
         { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
       ]);
       if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
-      const model = models.find((item) => item.id === 'webgpu-llama-3.2-1b');
-      if (model) {
-        onModelUpdated({
-          ...model,
-          enabled: true,
-          testPassed: true,
-          status: 'LOKAL INSTALLIERT',
-          lastTestedAt: new Date().toISOString(),
-          lastTestLatencyMs: null,
-          lastTestMessage: 'Lokaler WebGPU-Inferenztest auf diesem Gerät erfolgreich. Kein Cloud- oder Paid-Fallback.',
-        });
-      }
+      const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
+        method: 'POST',
+        body: JSON.stringify({ probeResponse: probe.slice(0, 1000) }),
+      });
+      onModelUpdated(data.model);
       setWebGpuLoaded(true);
-      setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert.');
+      setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert und gespeichert.');
     } catch (err) {
       setWebGpuMessage(err instanceof Error ? err.message : 'Lokaler Inferenztest fehlgeschlagen.');
       webGpuProbeRef.current = false;
