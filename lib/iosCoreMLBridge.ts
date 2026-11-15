@@ -19,7 +19,8 @@ export type NativeIOSTextModelId =
   | 'llama-3.2-3b-coreml'
   | 'qwen-2.5-3b-coreml'
   | 'gemma-3-4b-it'
-  | 'deepseek-r1-distill-1.5b';
+  | 'deepseek-r1-distill-1.5b'
+  | 'apple-foundation-model';
 
 interface WebKitMessageHandler {
   postMessage: (payload: Record<string, unknown>) => void;
@@ -158,5 +159,24 @@ export async function runNativeIOSDiagnostics(
     },
     undefined,
     `WKWebView Bridge im Browser nicht aktiv — Fallback auf serverseitige Swift 6 Adapter-Prüfung für "${modelId}".`
+  );
+}
+
+/**
+ * Runs Apple's built-in Foundation Model directly on the device.
+ * Requires a native ZERO WKWebView host, iOS 26+, and Apple Intelligence availability.
+ */
+export async function runNativeAppleFoundationModel(params: {
+  prompt: string;
+  onToken?: (token: string) => void;
+}): Promise<CoreMLBridgeResponse> {
+  return dispatchBridgeAction(
+    {
+      action: 'generate',
+      modelId: 'apple-foundation-model',
+      prompt: params.prompt,
+    },
+    params.onToken,
+    'Apple Foundation Models benötigt die native ZERO-iOS-App, iOS 26 oder neuer und ein kompatibles Gerät mit verfügbarer Apple Intelligence.'
   );
 }
