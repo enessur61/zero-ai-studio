@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chooseZeroChatModel } from '../server/zeroRouter.ts';
+import { chooseZeroChatModel, chooseZeroMediaModel } from '../server/zeroRouter.ts';
 import type { BudgetGuardState, ModelDefinition } from '../src/types/zero.ts';
 
 const makeModel = (id: string): ModelDefinition => ({
@@ -68,6 +68,15 @@ const fallback = chooseZeroChatModel(
 );
 assert.equal(fallback?.modelId, 'gemini-3.6-flash');
 
+const staleQuotaBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash': { requestsToday: 10, dailySoftLimit: 10, exhausted: true, lastResetDate: '2026-11-15' },
+  },
+};
+assert.equal(chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now)?.modelId, 'gemini-3.8-flash');
+
 const untested = makeModel('gemini-3.8-flash');
 untested.testPassed = false;
 assert.equal(chooseZeroChatModel([untested], budget, undefined, now), null);
@@ -77,9 +86,6 @@ noPaid.requiresPaidKey = true;
 assert.equal(chooseZeroChatModel([noPaid], budget, undefined, now), null);
 
 console.log('ZERO CORE router tests passed.');
-
-
-import { chooseZeroMediaModel } from '../server/zeroRouter.ts';
 
 const makeMediaModel = (id: string, category: ModelDefinition['category']): ModelDefinition => ({
   ...makeModel(id),
@@ -95,7 +101,7 @@ const ttsBudget: BudgetGuardState = {
   },
 };
 assert.equal(
-  chooseZeroMediaModel([ttsModel], ttsBudget, 'text-to-speech', [], now)?.modelId,
+  chooseZeroMediaModel([ttsModel], ttsBudget, 'text-to-speech', [], now, 'gemini-3.8-flash-lite-tts')?.modelId,
   'gemini-3.8-flash-lite-tts',
 );
 
