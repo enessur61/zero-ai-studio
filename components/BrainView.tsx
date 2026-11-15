@@ -252,9 +252,7 @@ export function BrainView({
               >
                 <option value="gemini-3.8-flash">Gemini 3.8 Flash (Free-Tier, API-Key erforderlich)</option>
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Schnell · 0 €)</option>
-                <option value="gemini-3.7-flash">Gemini 3.7 Flash (Free-Tier)</option>
                 <option value="gemini-3.6-flash">Gemini 3.6 Flash (Free-Tier)</option>
-                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Free-Tier)</option>
                 <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Free-Tier · Schnell)</option>
                 <option value="gpt-oss-20b-free">
                   GPT-OSS 20B (Open Cloud · kein API-Key · 0 €)
