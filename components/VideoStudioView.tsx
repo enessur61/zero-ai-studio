@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2 } from 'lucide-react';
+import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 
@@ -24,6 +24,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [progress, setProgress] = useState({ pct: 0, label: '' });
   const [result, setResult] = useState<VideoRenderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wanWorker, setWanWorker] = useState({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...' });
+  const [wanBusy, setWanBusy] = useState(false);
+  const [wanProgress, setWanProgress] = useState('');
+  const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
+  const [wanClipScene, setWanClipScene] = useState('');
+
 
   useEffect(() => {
     if (currentProject) {
@@ -36,6 +42,77 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setSelectedAudioUrl(soundtrack.url);
     }
   }, [soundtrack]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/video/engine/status', { credentials: 'include', cache: 'no-store' })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Wan-Status nicht verfügbar.');
+        if (active) setWanWorker({
+          online: payload.online === true,
+          status: String(payload.status || 'UNKNOWN'),
+          message: String(payload.message || 'Kein Status verfügbar.'),
+        });
+      })
+      .catch((err) => {
+        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.' });
+      });
+    return () => { active = false; };
+  }, []);
+
+  async function handleWanSceneGeneration(scene: FilmScene) {
+    if (wanBusy || !wanWorker.online) return;
+    setWanBusy(true);
+    setWanProgress('Sende Szene an den Wan-GPU-Worker...');
+    setError(null);
+    setWanClipUrl(null);
+    try {
+      const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
+      if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
+      const created = await fetch('/api/video/engine/jobs', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+      });
+      const createdPayload = await created.json();
+      if (!created.ok || typeof createdPayload.job?.id !== 'string') {
+        throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
+      }
+      const jobId = createdPayload.job.id as string;
+      setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
+      let completed = false;
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 10000));
+        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
+        const statusPayload = await statusResponse.json();
+        if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
+        const job = statusPayload.job;
+        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        if (job.status === 'succeeded') {
+          setWanProgress('MP4 wird auf ZERO übertragen...');
+          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
+          if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
+          const blob = await videoResponse.blob();
+          if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
+          setWanClipUrl(URL.createObjectURL(blob));
+          setWanClipScene(scene.title);
+          setWanProgress('Echter Wan-2.1-Clip fertig · 5 Sekunden · MP4');
+          completed = true;
+          break;
+        }
+        setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
+      }
+      if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
+      setWanProgress('');
+    } finally {
+      setWanBusy(false);
+    }
+  }
+
 
   const projectAudioAssets = (currentProject?.assets ?? []).filter(
     (a) => a.type === 'music' || a.type === 'audio'
@@ -245,6 +322,25 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               className="block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-[#2563EB] file:px-3 file:py-2 file:text-white"
             />
           </div>
+          <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-white">ZERO NEURAL VIDEO · Wan 2.1</span>
+              <span className={`text-[10px] font-semibold rounded-full px-2 py-1 ${wanWorker.online ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                {wanWorker.online ? 'GPU ONLINE' : 'GPU NICHT VERBUNDEN'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">{wanWorker.message}</p>
+            <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p · kein kostenpflichtiger Fallback. Die GPU muss separat bereitgestellt werden.</p>
+            {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
+            {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
+            {wanClipUrl && (
+              <div className="space-y-2">
+                <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
+                <video src={wanClipUrl} controls playsInline className="w-full rounded-xl bg-black" />
+                <a href={wanClipUrl} download="zero-wan-shot.mp4" className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white"><Download className="w-4 h-4" />Wan-MP4 herunterladen</a>
+              </div>
+            )}
+          </div>
           {scenes.map((scene) => (
             <div
               key={scene.id}
@@ -279,6 +375,15 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 </div>
 
                 <p className="text-xs text-slate-300 line-clamp-2">{scene.subtitleText}</p>
+                <button
+                  type="button"
+                  onClick={() => void handleWanSceneGeneration(scene)}
+                  disabled={!wanWorker.online || wanBusy}
+                  className="min-h-[38px] rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 text-[11px] font-medium text-violet-200 disabled:opacity-40 inline-flex items-center gap-2"
+                >
+                  {wanBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {wanBusy ? 'Wan rendert...' : 'Echten 5s-Wan-Clip generieren'}
+                </button>
 
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   <select
