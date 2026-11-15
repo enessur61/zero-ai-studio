@@ -223,9 +223,7 @@ function createDefaultDatabase(): ZeroDatabase {
       freeQuotaUsage: {
         'gemini-3.8-flash': { requestsToday: 0, dailySoftLimit: 250, exhausted: false },
         'gemini-2.5-flash-lite': { requestsToday: 0, dailySoftLimit: 100, exhausted: false },
-        'gemini-3.7-flash': { requestsToday: 0, dailySoftLimit: 150, exhausted: false },
         'gemini-3.6-flash': { requestsToday: 0, dailySoftLimit: 150, exhausted: false },
-        'gemini-3.5-flash': { requestsToday: 0, dailySoftLimit: 120, exhausted: false },
         'gemini-3.5-flash-lite': { requestsToday: 0, dailySoftLimit: 250, exhausted: false },
         'gemini-3.1-flash-lite': { requestsToday: 0, dailySoftLimit: 400, exhausted: false },
         'gemini-3.8-flash-lite-tts': { requestsToday: 0, dailySoftLimit: 120, exhausted: false },
@@ -515,6 +513,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
         : def;
       return enrichModelMetadata(merged);
     });
+    // Remove persisted quota counters for Gemini aliases retired from the catalog.
+    delete parsed.budgetGuard.freeQuotaUsage['gemini-3.7-flash'];
+    delete parsed.budgetGuard.freeQuotaUsage['gemini-3.5-flash'];
     if (!parsed.budgetGuard.freeQuotaUsage['gemini-web-grounding']) {
       parsed.budgetGuard.freeQuotaUsage['gemini-web-grounding'] = {
         requestsToday: 0,
@@ -530,9 +531,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       };
     }
     for (const [modelId, dailySoftLimit] of Object.entries({
-      'gemini-3.7-flash': 150,
       'gemini-3.6-flash': 150,
-      'gemini-3.5-flash': 120,
       'gemini-3.5-flash-lite': 250,
     })) {
       if (!parsed.budgetGuard.freeQuotaUsage[modelId]) {
