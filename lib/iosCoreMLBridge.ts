@@ -77,7 +77,8 @@ export function isNativeIOSCoreMLAvailable(): boolean {
 function dispatchBridgeAction(
   payload: Record<string, unknown>,
   onToken?: (token: string) => void,
-  unavailableMessage?: string
+  unavailableMessage?: string,
+  timeoutMs = 30_000
 ): Promise<CoreMLBridgeResponse> {
   const handler = window.webkit?.messageHandlers?.zeroCoreML;
   if (!handler) {
@@ -96,7 +97,7 @@ function dispatchBridgeAction(
     const timeoutId = window.setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error('Zeitüberschreitung bei ZeroCoreML WKWebView Bridge.'));
-    }, 30_000);
+    }, timeoutMs);
 
     pendingRequests.set(requestId, { resolve, reject, onToken, timeoutId });
     handler.postMessage({ requestId, ...payload });
@@ -115,7 +116,8 @@ export async function runNativeCoreMLPrompt(params: {
       prompt: params.prompt,
     },
     params.onToken,
-    `Lokale iOS-Laufzeit für "${params.modelId}" erfordert die native ZERO WKWebView-App (ios/ZeroCoreML). Apple Foundation Models benötigt zusätzlich iOS 26+, aktivierte Apple Intelligence und ein bereitgestelltes deutsches On-Device-Modell.`
+    `Lokale iOS-Laufzeit für "${params.modelId}" erfordert die native ZERO WKWebView-App (ios/ZeroCoreML). Apple Foundation Models benötigt zusätzlich iOS 26+, aktivierte Apple Intelligence und ein bereitgestelltes deutsches On-Device-Modell.`,
+    180_000
   );
 }
 
