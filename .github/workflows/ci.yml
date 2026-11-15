@@ -112,6 +112,17 @@ jobs:
           const authenticatedStatus = await authFetch('/api/auth/status');
           const authenticatedInfo = await authenticatedStatus.json();
           if (!authenticatedInfo.authenticated) throw new Error('Session cookie rejected: ' + JSON.stringify(authenticatedInfo));
+          const durationResponse = await authFetch('/api/projects', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: 'CI 60-second cap test',
+              scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5 }))
+            })
+          });
+          if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed');
+          const { project: durationProject } = await durationResponse.json();
+          const totalDuration = durationProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
+          if (totalDuration > 60) throw new Error('Film duration exceeded hard 60-second cap: ' + totalDuration);
           const modelResponse = await authFetch('/api/models');
           if (!modelResponse.ok) throw new Error('Model catalog endpoint failed: ' + modelResponse.status + ' ' + await modelResponse.text());
           const { models } = await modelResponse.json();
