@@ -147,7 +147,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 ## 5. Ehrliche Dokumentation offener / externer Bestandteile
 
-1. **Keine Geheimnisse im Export**: `.env`, `node_modules/`, `dist/` und die lokale Datenbank gehören nicht in Git oder Projekt-Archive. Für Gemini-Free-Tier-Funktionen ist ein eigener `GEMINI_API_KEY` als Server-Secret erforderlich; ohne Key werden keine Gemini-Aufrufe ausgeführt.
+1. **Keine Geheimnisse im Export**: `.env`, `node_modules/`, `dist/` und die lokale Datenbank gehören nicht in Git oder Projekt-Archive. Für Gemini-Free-Tier-Funktionen ist ein eigener `GEMINI_API_KEY` als Server-Secret erforderlich. Zusätzlich bleibt Gemini gesperrt, solange `ZERO_GEMINI_FREE_TIER_ONLY` nicht ausdrücklich auf `true` gesetzt ist. Das darfst du erst tun, nachdem du im Google-Cloud-Projekt bestätigt hast, dass keine Abrechnung aktiviert ist; ZERO kann den externen Billing-Status nicht selbst prüfen.
 2. **Anmeldung**: In Produktion sind alle privaten `/api/*`-Routen mit einem Admin-Login geschützt. `npm start` aktiviert diesen Schutz standardmäßig. Der lokale Entwicklungsserver (`npm run dev`) deaktiviert den Login nur für lokale Entwicklung und darf nicht öffentlich bereitgestellt werden.
 3. **Native iOS-Modelle (Phase 12 – noch nicht einsatzbereit)**: Für acht lokale Modelle (Llama 3.2 1B/3B CoreML, Qwen 2.5 3B, DeepSeek-R1 1.5B, Gemma 3 4B, `whisper.cpp`, Piper ONNX DE, Kokoro-82M) liegt Swift-Adapter-Quellcode samt WKWebView-Bridge vor. Die Binärgewichte (ca. 0,07–2,6 GB) sind noch nicht im Repository enthalten; sie müssen in `ios/ZeroCoreML/Models/` bereitgestellt und in eine native iOS-App integriert werden. Der Swift-Paket-Build läuft in macOS-CI, bestätigt aber weder Modellgewichte noch einen echten iPhone-Gerätetest. Diese Modelle bleiben deshalb auf `INSTALLATION ERFORDERLICH`.
 4. **0 € Budget-Schutz**: Kostenpflichtige oder nicht verifizierte Provider bleiben serverseitig gesperrt. Google Search Grounding wird bewusst über `gemini-2.5-flash-lite` ausgeführt, dessen offizieller Free-Tier Search-Grounding-Zugang begrenzt ist; ZERO setzt zusätzlich ein eigenes Tageslimit von 100. Der Suchaufruf wird nicht an Gemini 3.8 Flash angehängt, da dessen Free Tier Google Search Grounding nicht anbietet.
@@ -158,15 +158,16 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 
 In Produktion sind alle privaten `/api/*`-Routen (Projekte, Chats, Memory, Backups, Modellverwaltung und Studios) standardmäßig durch eine Anmeldung geschützt. Nur `/api/health` sowie die Auth-Status- und Login-Routen bleiben öffentlich erreichbar.
 
-Vor dem Start in einer Hosting-Umgebung müssen diese drei Variablen als **Server-Secrets** gesetzt werden:
+Vor dem Start in einer Hosting-Umgebung müssen diese vier Variablen als **Server-Secrets** gesetzt werden:
 
 - `GEMINI_API_KEY`: eigener Google Gemini API-Key für die kostenlosen, kontingentbegrenzten Gemini-Funktionen
+- `ZERO_GEMINI_FREE_TIER_ONLY`: erst nach eigener Prüfung, dass Google-Cloud-Abrechnung deaktiviert ist, exakt `true` setzen; sonst bleiben Gemini-Aufrufe gesperrt
 - `ZERO_ADMIN_PASSWORD`: eigenes starkes Passwort mit mindestens 12 Zeichen
 - `ZERO_SESSION_SECRET`: zufälliger, geheimer Wert mit mindestens 32 Zeichen
 
-Alle drei Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. Beim Google-Projekt keine kostenpflichtige Abrechnung aktivieren, wenn ZERO strikt bei 0 € bleiben soll. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
+Alle vier Werte ausschließlich im Secret-/Environment-Bereich des Hosters hinterlegen, niemals in Git committen oder im Frontend eintragen. `ZERO_GEMINI_FREE_TIER_ONLY=true` ist eine bewusste Nutzerbestätigung, kein automatischer Billing-Nachweis. Ohne beide Werte verweigert der Produktionsserver den Zugriff auf private APIs. Die Anmeldung verwendet ein HttpOnly-, SameSite-Strict-Session-Cookie mit 12 Stunden Laufzeit und begrenzt fehlgeschlagene Login-Versuche.
 
 Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung deaktiviert. `.env.example` enthält nur leere Platzhalter.
 
 
-`npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für die tägliche Nutzung muss der Hoster `GEMINI_API_KEY`, `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` bereitstellen. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
+`npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für die tägliche Nutzung muss der Hoster `GEMINI_API_KEY`, `ZERO_GEMINI_FREE_TIER_ONLY`, `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` bereitstellen. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
