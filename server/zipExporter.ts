@@ -173,7 +173,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
         valid: false,
         fileCount: 0,
         files: [],
-        missingCoreFiles: ['package.json', 'server.ts', 'src/App.tsx'],
+        missingCoreFiles: ['package.json', 'server.ts', 'App.tsx'],
         errors: ['ZIP-Datei ist zu klein oder leer.'],
       },
       extractedFiles,
@@ -196,7 +196,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
         valid: false,
         fileCount: 0,
         files: [],
-        missingCoreFiles: ['package.json', 'server.ts', 'src/App.tsx'],
+        missingCoreFiles: ['package.json', 'server.ts', 'App.tsx'],
         errors: ['EOCD-Signatur fehlt — beschädigtes ZIP-Archiv.'],
       },
       extractedFiles,
@@ -257,7 +257,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
     'package.json',
     'server.ts',
     'index.html',
-    'src/App.tsx',
+    'App.tsx',
     'data/zero-studio-db.json',
   ];
   const missingCoreFiles = requiredCore.filter((req) => !extractedFiles.has(req));
