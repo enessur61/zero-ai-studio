@@ -82,8 +82,10 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
    In `.env`:
    ```env
    GEMINI_API_KEY="DEIN_KOSTENLOSER_GEMINI_API_KEY"
+   ZERO_GEMINI_FREE_TIER_ONLY=true  # Nur nachdem Google-Cloud-Abrechnung deaktiviert wurde
    APP_URL="http://localhost:3000"
    ```
+   > **Wichtig für 0 €:** Die kostenlose Gemini-Stufe hat providerseitige Tageslimits. Wenn für das Google-Cloud-Projekt Abrechnung aktiviert ist, können Anfragen nach Erreichen von Freikontingenten kostenpflichtig werden. ZERO kann den Google-Abrechnungsstatus nicht auslesen. Deshalb bleiben alle Gemini-Aufrufe standardmäßig gesperrt, bis du die Abrechnung im Google-Cloud-Projekt deaktiviert und die Einstellung `ZERO_GEMINI_FREE_TIER_ONLY=true` bewusst gesetzt hast. ZERO verwendet keinen kostenpflichtigen Fallback.
 
 3. Entwicklungsserver starten (Port 3000):
    ```bash
