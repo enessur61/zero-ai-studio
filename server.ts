@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import {
   assertZeroBudgetModelAllowed,
@@ -52,6 +53,106 @@ const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
 app.use(express.json({ limit: '25mb' }));
+
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
+const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
+const AUTH_COOKIE_NAME = 'zero_session';
+const SESSION_DURATION_SECONDS = 12 * 60 * 60;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_LOGIN_ATTEMPTS = 8;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function hasValidSession(req: express.Request): boolean {
+  const cookieHeader = req.headers.cookie ?? '';
+  const token = cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))
+    ?.slice(AUTH_COOKIE_NAME.length + 1);
+  if (!token) return false;
+
+  const [expiresAt, signature] = decodeURIComponent(token).split('.');
+  if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) {
+    return false;
+  }
+  const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt).digest('hex');
+  if (signature.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+}
+
+function createSessionCookie(): string {
+  const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
+  const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt).digest('hex');
+  const secure = IS_PRODUCTION ? '; Secure' : '';
+  return \`\${AUTH_COOKIE_NAME}=\${expiresAt}.\${signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=\${SESSION_DURATION_SECONDS}\${secure}\`;
+}
+
+app.use('/api', (req, res, next) => {
+  if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
+    return next();
+  }
+  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
+    return res.status(503).json({
+      error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
+    });
+  }
+  if (!hasValidSession(req)) {
+    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+  }
+  return next();
+});
+
+app.get('/api/auth/status', (_req, res) => {
+  const configured =
+    !IS_PRODUCTION ||
+    (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
+  res.json({
+    required: IS_PRODUCTION,
+    configured,
+    authenticated: !IS_PRODUCTION || (configured && hasValidSession(_req)),
+  });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  if (!IS_PRODUCTION) return res.json({ ok: true, authenticated: true });
+  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
+    return res.status(503).json({ error: 'Serveranmeldung ist noch nicht konfiguriert.' });
+  }
+
+  const now = Date.now();
+  const ip = req.ip || 'unknown';
+  const attempt = loginAttempts.get(ip);
+  const current = !attempt || attempt.resetAt <= now
+    ? { count: 0, resetAt: now + LOGIN_WINDOW_MS }
+    : attempt;
+  if (current.count >= MAX_LOGIN_ATTEMPTS) {
+    return res.status(429).json({ error: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.' });
+  }
+  current.count += 1;
+  loginAttempts.set(ip, current);
+
+  const supplied = Buffer.from(String(req.body?.password ?? ''));
+  const expected = Buffer.from(ZERO_ADMIN_PASSWORD);
+  const valid = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  if (!valid) {
+    return res.status(401).json({ error: 'Passwort ist nicht korrekt.' });
+  }
+
+  loginAttempts.delete(ip);
+  res.setHeader('Set-Cookie', createSessionCookie());
+  return res.json({ ok: true, authenticated: true });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  const secure = IS_PRODUCTION ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    \`\${AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0\${secure}\`
+  );
+  res.json({ ok: true });
+});
+
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (!a.length || a.length !== b.length) return 0;
