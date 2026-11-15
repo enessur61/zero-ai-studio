@@ -90,9 +90,7 @@ app.get('/api/health', async (_req, res) => {
   const activeCount = db.models.filter(
     (m) =>
       m.enabled &&
-      (m.status === 'FUNKTIONIERT' ||
-        m.status === 'LOKAL INSTALLIERT' ||
-        m.status === 'Ready for Deployment')
+      (m.status === 'FUNKTIONIERT' || m.status === 'LOKAL INSTALLIERT')
   ).length;
   res.json({
     ok: true,
