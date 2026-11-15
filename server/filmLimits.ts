@@ -54,3 +54,19 @@ export function clampScenesToMax60Seconds<T extends { durationSec: number }>(sce
     durationSec: durations[index],
   }));
 }
+
+/**
+ * Normalize each scene before rendering without silently changing the overall
+ * timeline. The compositor performs the separate 60-second total-duration check.
+ */
+export function normalizeSceneDurationsForRender<T extends { durationSec: number }>(
+  scenes: T[]
+): T[] {
+  return scenes.map((scene) => ({
+    ...scene,
+    durationSec: Math.max(
+      2,
+      Math.round(Number.isFinite(scene.durationSec) ? scene.durationSec : 2)
+    ),
+  }));
+}
