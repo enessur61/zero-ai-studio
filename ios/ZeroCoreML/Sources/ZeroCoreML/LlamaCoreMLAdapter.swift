@@ -72,7 +72,7 @@ public final class LlamaCoreMLAdapter: @unchecked Sendable {
         let modelURL = Self.locateCompiledModelURL(for: config.variant)
         return CoreMLDeploymentStatus(
             modelId: config.variant.rawValue,
-            status: "Ready for Deployment",
+            status: "NATIVE APP INTEGRATION ERFORDERLICH",
             runtime: "Apple CoreML (MLModel + MLState · A18 Pro Neural Engine)",
             deviceModel: "iPhone 16 Pro Max (8 GB Unified RAM)",
             neuralEngineTargeted: config.computeUnits == .cpuAndNeuralEngine || config.computeUnits == .all,
