@@ -509,6 +509,13 @@ export async function loadDb(): Promise<ZeroDatabase> {
         exhausted: false,
       };
     }
+    if (!parsed.budgetGuard.freeQuotaUsage['gemini-2.5-flash-lite']) {
+      parsed.budgetGuard.freeQuotaUsage['gemini-2.5-flash-lite'] = {
+        requestsToday: 0,
+        dailySoftLimit: 100,
+        exhausted: false,
+      };
+    }
     if (!parsed.backupConfig) {
       const now = new Date().toISOString();
       parsed.backupConfig = {
