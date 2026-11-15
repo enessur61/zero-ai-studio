@@ -183,6 +183,12 @@ export function BrainView({
           modelId: selectedModel,
           prompt: promptText,
         });
+        if (selectedModel === 'apple-foundation-model' && res.text.trim()) {
+          await apiRequest<{ model: { id: string } }>('/api/models/native/activate', {
+            method: 'POST',
+            body: JSON.stringify({ probeResponse: res.text.slice(0, 1000) }),
+          });
+        }
         const now = new Date().toISOString();
         setMessages((prev) => [
           ...prev.filter((message) => message.id !== pendingId),
