@@ -556,12 +556,6 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      if (useWebSearch) {
-        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', db.budgetGuard, (e) =>
-          recordBudgetAudit(db, e)
-        );
-      }
-
       const ai = getGeminiClient();
       const recentHistory = db.chatHistory
         .slice(-8)
@@ -570,27 +564,52 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         .join('\n\n');
 
       const fullPrompt = recentHistory ? `${recentHistory}\n\nNutzer: ${message}` : message;
+      let groundingContext = '';
+
+      if (useWebSearch) {
+        // Google Search grounding is not available on the Gemini 3.8 Free tier.
+        // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
+        // then pass the retrieved context to the user's selected reasoning model.
+        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', db.budgetGuard, (e) =>
+          recordBudgetAudit(db, e)
+        );
+        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', db.budgetGuard, (e) =>
+          recordBudgetAudit(db, e)
+        );
+        const searchResponse = await withTransientRetry(() =>
+          ai.models.generateContent({
+            model: 'gemini-2.5-flash-lite',
+            contents: `Recherchiere aktuelle Fakten und liefere eine knappe, belegorientierte Zusammenfassung zu dieser Anfrage:\n\n${fullPrompt}`,
+            config: {
+              systemInstruction: 'Du bist der Recherche-Agent von ZERO. Nutze Google Search. Erfinde keine Fakten. Unterscheide bestätigte Angaben von Unsicherheiten.',
+              tools: [{ googleSearch: {} }],
+            },
+          })
+        );
+        groundingContext = (searchResponse.text ?? '').trim();
+        const searchChunks = searchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+        sources = searchChunks
+          .map((chunk) => chunk.web)
+          .filter((web): web is { uri: string; title: string } => Boolean(web?.uri))
+          .map((web) => ({ title: web.title || web.uri, uri: web.uri }));
+      }
 
       const response = await withTransientRetry(() =>
         ai.models.generateContent({
           model: requestedModel,
-          contents: fullPrompt,
+          contents: groundingContext
+            ? `${fullPrompt}\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n${groundingContext}\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.`
+            : fullPrompt,
           config: {
             systemInstruction,
             ...(requestedModel === 'gemini-3.8-flash'
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
               : {}),
-            ...(useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
           },
         })
       );
 
       replyText = (response.text ?? 'Keine Antwort erhalten.').trim();
-      const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-      sources = rawChunks
-        .map((c) => c.web)
-        .filter((w): w is { uri: string; title: string } => Boolean(w?.uri))
-        .map((w) => ({ title: w.title || w.uri, uri: w.uri }));
 
       routingSteps = [
         `ZERO CORE Router -> ${requestedModel} (Gemini Free Tier; Kontingent beachten)`,
@@ -659,14 +678,17 @@ app.post('/api/web/research', async (req, res) => {
     assertZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
+    assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
+      recordBudgetAudit(db, e)
+    );
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash-lite',
         contents: `Recherchiere sachlich, strukturiert und auf Deutsch zu folgender Anfrage. Nenne nur belegbare Fakten aus den Suchergebnissen:\n\n${query}`,
         config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction: 'Du bist ZERO WEB INTELLIGENCE. Nutze Google Search, belege wichtige Aussagen und erfinde keine Quellen.',
           tools: [{ googleSearch: {} }],
         },
       })
@@ -682,7 +704,7 @@ app.post('/api/web/research', async (req, res) => {
     res.json({
       report: (response.text ?? '').trim(),
       sources,
-      modelUsed: 'gemini-3.8-flash + Google Search Grounding',
+      modelUsed: 'gemini-2.5-flash-lite + Google Search Grounding (Free Tier)',
       costEur: 0,
     });
   } catch (err) {
