@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PORT=4179 NODE_ENV=production npm start > /tmp/zero-server.log 2>&1 &
+          PORT=4179 NODE_ENV=production ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
@@ -57,7 +57,23 @@ jobs:
           node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60) process.exit(1); console.log(JSON.stringify(h))"
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:4179';
-          const modelResponse = await fetch(base + '/api/models');
+          const unauthenticated = await fetch(base + '/api/projects');
+          if (unauthenticated.status !== 401) throw new Error('Private API is accessible without login');
+          const authStatus = await fetch(base + '/api/auth/status');
+          const authInfo = await authStatus.json();
+          if (!authInfo.required || !authInfo.configured || authInfo.authenticated) throw new Error('Production auth status is incorrect');
+          const login = await fetch(base + '/api/auth/login', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ password: 'zero-ci-password-123' })
+          });
+          if (!login.ok) throw new Error('Production login failed');
+          const cookie = login.headers.get('set-cookie')?.split(';')[0];
+          if (!cookie) throw new Error('Login did not set a session cookie');
+          const authFetch = (path, options = {}) => fetch(base + path, {
+            ...options,
+            headers: { 'content-type': 'application/json', ...(options.headers ?? {}), cookie }
+          });
+          const modelResponse = await authFetch('/api/models');
           if (!modelResponse.ok) throw new Error('Model catalog endpoint failed');
           const { models } = await modelResponse.json();
           for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
@@ -65,7 +81,7 @@ jobs:
             if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
               throw new Error('Unsafe/unverified model state: ' + id);
             }
-            const toggle = await fetch(base + '/api/models/' + id + '/toggle', { method: 'POST' });
+            const toggle = await authFetch('/api/models/' + id + '/toggle', { method: 'POST' });
             if (toggle.status !== 400) throw new Error('Unavailable model can be toggled: ' + id);
           }
           for (const id of ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding']) {
@@ -82,14 +98,14 @@ jobs:
             const toggle = await fetch(base + '/api/models/' + id + '/toggle', { method: 'POST' });
             if (toggle.status !== 400) throw new Error('Uninstalled iOS model can be enabled: ' + id);
           }
-          const iosRuntime = await fetch(base + '/api/models/ios-runtime');
+          const iosRuntime = await authFetch('/api/models/ios-runtime');
           const iosStatus = await iosRuntime.json();
           if (iosStatus.readyForDeployment !== false) throw new Error('iOS runtime claims readiness without model weights');
-          const image = await fetch(base + '/api/image/generate', {
+          const image = await authFetch('/api/image/generate', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'smoke test' })
           });
           if (image.status !== 503) throw new Error('Image route did not fail closed');
-          const brain = await fetch(base + '/api/brain/chat', {
+          const brain = await authFetch('/api/brain/chat', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ message: 'smoke test', modelId: 'gpt-oss-20b-free' })
           });
