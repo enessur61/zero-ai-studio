@@ -1069,6 +1069,84 @@ app.post('/api/music/compose', async (req, res) => {
   }
 });
 
+// === ZERO VIDEO ENGINE BRIDGE (OPTIONAL SELF-HOSTED WAN WORKER) ===
+// The GPU worker is deliberately external: the Render web service is not a video-generation GPU.
+// Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
+app.get('/api/video/engine/status', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
+  if (!configuredUrl) {
+    return res.json({
+      configured: false,
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'GPU_WORKER_NOT_CONFIGURED',
+      message: 'Noch kein eigener Wan-GPU-Worker verbunden. ZERO verwendet weiterhin den lokalen Storyboard-Export.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  }
+
+  let endpoint: URL;
+  try {
+    endpoint = new URL(configuredUrl);
+    if (IS_PRODUCTION && endpoint.protocol !== 'https:') {
+      throw new Error('HTTPS erforderlich');
+    }
+    if (!['https:', 'http:'].includes(endpoint.protocol)) throw new Error('Ungültiges Protokoll');
+  } catch {
+    return res.status(503).json({
+      configured: true,
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'INVALID_WORKER_URL',
+      message: 'Die konfigurierte ZERO_VIDEO_ENGINE_URL ist ungültig. In Produktion ist HTTPS erforderlich.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(new URL('/health', endpoint), {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
+    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string };
+    const online = payload.ok === true && (!payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || ''));
+    return res.json({
+      configured: true,
+      online,
+      engine: 'Wan 2.1',
+      status: online ? 'WORKER_ONLINE' : 'WORKER_PROTOCOL_MISMATCH',
+      message: online
+        ? 'Wan-Worker erreichbar. Die Generierungsroute wird erst nach Prüfung des Worker-Auftragsprotokolls freigeschaltet.'
+        : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  } catch {
+    return res.json({
+      configured: true,
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'WORKER_OFFLINE',
+      message: 'Wan-GPU-Worker ist derzeit nicht erreichbar. Es wird kein kostenpflichtiger Ersatzdienst verwendet.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
 app.post('/api/film/direct', async (req, res) => {
   const db = await loadDb();
