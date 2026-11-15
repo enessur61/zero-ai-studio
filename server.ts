@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import {
   assertZeroBudgetModelAllowed,
@@ -60,32 +60,30 @@ const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const activeSessions = new Map<string, number>();
 
 function hasValidSession(req: express.Request): boolean {
   const cookieHeader = req.headers.cookie ?? '';
-  const token = cookieHeader
-    .split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))
-    ?.slice(AUTH_COOKIE_NAME.length + 1);
+  const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
-
-  const [expiresAt, signature] = token.split('.');
-  if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) {
-    return false;
-  }
-  const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt).digest('hex');
-  if (signature.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  const [expiresAt, nonce, signature] = token.split('.');
+  if (!expiresAt || !nonce || !signature || !/^\\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
+  const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+  return activeSessions.get(token) === Number(expiresAt);
 }
 
 function createSessionCookie(): string {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
-  const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt).digest('hex');
+  const nonce = randomBytes(24).toString('hex');
+  const payload = expiresAt + '.' + nonce;
+  const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(payload).digest('hex');
+  const token = payload + '.' + signature;
+  for (const [session, expiry] of activeSessions) if (expiry <= Date.now()) activeSessions.delete(session);
+  activeSessions.set(token, Number(expiresAt));
   const secure = IS_PRODUCTION ? '; Secure' : '';
-  return `${AUTH_COOKIE_NAME}=${expiresAt}.${signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DURATION_SECONDS}${secure}`;
+  return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
 }
-
 app.use('/api', (req, res, next) => {
   if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
     return next();
@@ -144,12 +142,12 @@ app.post('/api/auth/login', (req, res) => {
   return res.json({ ok: true, authenticated: true });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
+app.post('/api/auth/logout', (req, res) => {
+  const cookieHeader = req.headers.cookie ?? '';
+  const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
+  if (token) activeSessions.delete(decodeURIComponent(token));
   const secure = IS_PRODUCTION ? '; Secure' : '';
-  res.setHeader(
-    'Set-Cookie',
-    `${AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`
-  );
+  res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
 });
 
