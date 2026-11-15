@@ -77,14 +77,15 @@ export function isNativeIOSCoreMLAvailable(): boolean {
 function dispatchBridgeAction(
   payload: Record<string, unknown>,
   onToken?: (token: string) => void,
-  unavailableMessage?: string
+  unavailableMessage?: string,
+  timeoutMs = 30_000
 ): Promise<CoreMLBridgeResponse> {
   const handler = window.webkit?.messageHandlers?.zeroCoreML;
   if (!handler) {
     return Promise.reject(
       new Error(
         unavailableMessage ||
-          'Native iOS Laufzeit im Web-Browser nicht aktiv: Das Swift-6-Paket ios/ZeroCoreML ist fertig (Ready for Deployment) und startet in der nativen iPhone 16 Pro Max WKWebView-App mit lokalen Modellgewichten.'
+          'Native iOS Laufzeit im Web-Browser nicht aktiv. Für lokale CoreML-/MLX-Inferenz wird die signierte ZERO-iOS-App mit installierten Modellgewichten benötigt.'
       )
     );
   }
@@ -96,7 +97,7 @@ function dispatchBridgeAction(
     const timeoutId = window.setTimeout(() => {
       pendingRequests.delete(requestId);
       reject(new Error('Zeitüberschreitung bei ZeroCoreML WKWebView Bridge.'));
-    }, 30_000);
+    }, timeoutMs);
 
     pendingRequests.set(requestId, { resolve, reject, onToken, timeoutId });
     handler.postMessage({ requestId, ...payload });
@@ -115,7 +116,8 @@ export async function runNativeCoreMLPrompt(params: {
       prompt: params.prompt,
     },
     params.onToken,
-    `Lokale iOS-Laufzeit für "${params.modelId}" erfordert die native ZERO WKWebView-App (ios/ZeroCoreML). Apple Foundation Models benötigt zusätzlich iOS 26+, aktivierte Apple Intelligence und ein bereitgestelltes deutsches On-Device-Modell.`
+    `Lokale iOS-Laufzeit für "${params.modelId}" erfordert die native ZERO WKWebView-App (ios/ZeroCoreML). Apple Foundation Models benötigt zusätzlich iOS 26+, aktivierte Apple Intelligence und ein bereitgestelltes deutsches On-Device-Modell.`,
+    180_000
   );
 }
 
@@ -132,7 +134,7 @@ export async function runNativeIOSSynthesize(params: {
       voiceName: params.voiceName ?? 'af_heart',
     },
     undefined,
-    `Lokale iOS Sprachsynthese (${params.modelId}) erfordert den Xcode iOS App-Build (ios/ZeroCoreML). Im Browser stehen "WAV generieren (0 €)" (Gemini 3.8 TTS) und "iOS / Lokal vorlesen" sofort bereit.`
+    `Lokale iOS Sprachsynthese (${params.modelId}) erfordert die native ZERO-iOS-App sowie installierte Sprachmodellgewichte.`
   );
 }
 
@@ -148,7 +150,7 @@ export async function runNativeIOSTranscribe(params: {
       language: params.language ?? 'de',
     },
     undefined,
-    'whisper.cpp Metal/CoreML erfordert die native iPhone 16 Pro Max App (ios/ZeroCoreML). Im Browser stehen Gemini 3.5 Transcribe und Live-Diktat direkt bereit.'
+    'whisper.cpp Metal/CoreML erfordert die native ZERO-iOS-App sowie installierte Whisper-Modellgewichte.'
   );
 }
 

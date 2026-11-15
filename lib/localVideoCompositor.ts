@@ -28,6 +28,21 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+function loadVideo(src: string): Promise<HTMLVideoElement> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.onloadeddata = () => resolve(video);
+    video.onerror = () => reject(new Error('Ein generierter Szenenclip konnte nicht geladen werden.'));
+    video.src = src;
+    video.load();
+  });
+}
+
+
 async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<AudioBuffer> {
   try {
     const res = await fetch(url);
@@ -44,7 +59,7 @@ async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<Audio
 
 function drawCoverFrame(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement | null,
+  img: HTMLImageElement | HTMLVideoElement | null,
   width: number,
   height: number,
   progress: number,
@@ -58,17 +73,67 @@ function drawCoverFrame(
   ctx.globalAlpha = alpha;
 
   if (!img) {
+    // Cinematic graphic-storyboard fallback: always produce designed frames
+    // when no generated/user image exists. This is intentionally not presented
+    // as photorealistic AI footage.
     const grad = ctx.createLinearGradient(0, 0, width, height);
-    grad.addColorStop(0, '#0D1320');
-    grad.addColorStop(1, '#1A2338');
+    grad.addColorStop(0, '#080D18');
+    grad.addColorStop(0.52, '#17263B');
+    grad.addColorStop(1, '#321D2B');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#94A3B8';
-    ctx.font = '600 22px Manrope, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(title, width / 2, height / 2);
+
+    const pulse = 0.5 + 0.5 * Math.sin(progress * Math.PI * 2);
+    ctx.globalAlpha = 0.10 + pulse * 0.05;
+    ctx.strokeStyle = '#B9C9E8';
+    ctx.lineWidth = Math.max(2, width * 0.0015);
+    for (let i = 0; i < 7; i++) {
+      const radius = width * (0.10 + i * 0.075 + progress * 0.018);
+      ctx.beginPath();
+      ctx.arc(width * (0.72 - progress * 0.08), height * 0.38, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    const shade = ctx.createLinearGradient(0, height * 0.28, 0, height);
+    shade.addColorStop(0, 'rgba(3,6,12,0.02)');
+    shade.addColorStop(1, 'rgba(3,6,12,0.92)');
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#A8B8D2';
+    ctx.font = `600 ${Math.round(width * 0.018)}px Arial, sans-serif`;
+    ctx.fillText('ZERO  /  CINEMATIC STORYBOARD', width * 0.075, height * 0.13);
+
+    ctx.fillStyle = 'rgba(226,232,240,0.24)';
+    ctx.fillRect(width * 0.075, height * 0.18, width * 0.12, Math.max(3, height * 0.004));
+
+    ctx.fillStyle = '#F8FAFC';
+    ctx.font = `700 ${Math.round(width * 0.052)}px Arial, sans-serif`;
+    const titleWords = title.split(' ');
+    const titleLines: string[] = [];
+    let titleLine = '';
+    const titleMax = width * 0.82;
+    for (const word of titleWords) {
+      const test = titleLine ? titleLine + ' ' + word : word;
+      if (ctx.measureText(test).width > titleMax && titleLine) {
+        titleLines.push(titleLine);
+        titleLine = word;
+      } else titleLine = test;
+    }
+    if (titleLine) titleLines.push(titleLine);
+    titleLines.slice(0, 3).forEach((line, i) =>
+      ctx.fillText(line, width * 0.075, height * (0.64 + i * 0.065))
+    );
+
+    ctx.fillStyle = '#C5D0E0';
+    ctx.font = `500 ${Math.round(width * 0.019)}px Arial, sans-serif`;
+    ctx.fillText('SZENENENTWURF  •  BEWEGTE TYPOGRAFIE', width * 0.075, height * 0.91);
   } else {
-    const baseScale = Math.max(width / img.width, height / img.height);
+    const sourceWidth = img instanceof HTMLVideoElement ? img.videoWidth : img.width;
+    const sourceHeight = img instanceof HTMLVideoElement ? img.videoHeight : img.height;
+    const baseScale = Math.max(width / sourceWidth, height / sourceHeight);
     let zoom = 1.05;
     let panX = 0;
     let panY = 0;
@@ -88,8 +153,8 @@ function drawCoverFrame(
       panY = (0.5 - progress) * 50;
     }
 
-    const drawW = img.width * baseScale * zoom;
-    const drawH = img.height * baseScale * zoom;
+    const drawW = sourceWidth * baseScale * zoom;
+    const drawH = sourceHeight * baseScale * zoom;
     const drawX = (width - drawW) / 2 + panX;
     const drawY = (height - drawH) / 2 + panY;
     ctx.drawImage(img, drawX, drawY, drawW, drawH);
@@ -174,11 +239,37 @@ export async function renderTimelineVideoMax60s(
     );
   }
 
+  onProgress?.(7, 'Lade generierte KI-Videoclips...');
+  const loadedVideos = await Promise.all(
+    renderScenes.map(async (scene) => {
+      if (!scene.videoUrl) return null;
+      try {
+        return await loadVideo(scene.videoUrl);
+      } catch {
+        return null;
+      }
+    })
+  );
+  const failedVideoIndex = renderScenes.findIndex(
+    (scene, index) => Boolean(scene.videoUrl) && !loadedVideos[index]
+  );
+  if (failedVideoIndex >= 0) {
+    throw new Error(
+      `Der KI-Videoclip für „${renderScenes[failedVideoIndex].title}“ konnte nicht geladen werden.`
+    );
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D Kontext nicht verfügbar.');
+
+  if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
+    throw new Error(
+      'Dein Browser unterstützt den ZERO-Videoexport nicht. Bitte öffne ZERO in Safari auf einem aktuellen iPhone oder iPad.'
+    );
+  }
 
   const canvasStream = canvas.captureStream(fps);
   const combinedTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
@@ -248,18 +339,53 @@ export async function renderTimelineVideoMax60s(
   }
 
   const finalStream = new MediaStream(combinedTracks);
+  // Safari on iPhone generally prefers MP4/H.264; Chromium browsers commonly
+  // prefer WebM. Probe support instead of assuming one container is available.
   const preferredMimes = hasAudioTrack
     ? [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4',
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
         'video/webm',
-        'video/mp4',
       ]
-    : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
-  const mimeType = preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) || '';
-  const recorder = mimeType
-    ? new MediaRecorder(finalStream, { mimeType, videoBitsPerSecond: 10_000_000 })
-    : new MediaRecorder(finalStream);
+    : [
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+      ];
+  const supportedMimes = typeof MediaRecorder.isTypeSupported === 'function'
+    ? preferredMimes.filter((candidate) => MediaRecorder.isTypeSupported(candidate))
+    : [];
+  let recorder: MediaRecorder | null = null;
+  let mimeType = '';
+  let recorderError: unknown;
+  for (const candidate of supportedMimes) {
+    try {
+      recorder = new MediaRecorder(finalStream, {
+        mimeType: candidate,
+        videoBitsPerSecond: 6_000_000,
+      });
+      mimeType = candidate;
+      break;
+    } catch (error) {
+      recorderError = error;
+    }
+  }
+  if (!recorder) {
+    try {
+      recorder = new MediaRecorder(finalStream, { videoBitsPerSecond: 6_000_000 });
+      mimeType = recorder.mimeType || '';
+    } catch (error) {
+      finalStream.getTracks().forEach((track) => track.stop());
+      if (audioCtx) await audioCtx.close().catch(() => {});
+      throw new Error(
+        `ZERO konnte keinen kompatiblen Videoexport starten. Aktualisiere iOS und öffne ZERO erneut. ${error instanceof Error ? error.message : recorderError instanceof Error ? recorderError.message : ''}`
+      );
+    }
+  }
 
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (ev) => {
@@ -300,7 +426,14 @@ export async function renderTimelineVideoMax60s(
   try {
     for (let sIdx = 0; sIdx < renderScenes.length; sIdx++) {
       const scene = renderScenes[sIdx];
-      const img = loadedImages[sIdx];
+      const img = loadedVideos[sIdx] ?? loadedImages[sIdx];
+      const sceneVideo = loadedVideos[sIdx];
+      if (sceneVideo) {
+        sceneVideo.currentTime = 0;
+        await sceneVideo.play().catch(() => {
+          throw new Error(`Der KI-Videoclip für „${scene.title}“ konnte nicht abgespielt werden.`);
+        });
+      }
       const sceneFrames = Math.floor(scene.durationSec * fps);
 
       for (let f = 0; f < sceneFrames; f++) {
@@ -309,19 +442,52 @@ export async function renderTimelineVideoMax60s(
         ctx.fillStyle = '#090B10';
         ctx.fillRect(0, 0, width, height);
 
-        const fadeInAlpha = f < 10 ? f / 10 : 1;
-        drawCoverFrame(
-          ctx,
-          img,
-          width,
-          height,
-          progress,
-          scene.cameraMovement,
-          scene.title,
-          scene.subtitleText || scene.narrationText,
-          burnSubtitles,
-          fadeInAlpha
-        );
+        // Smoothly crossfade adjacent scenes instead of flashing through black.
+        // Keep the transition short so the timeline remains exactly the requested duration.
+        const transitionFrames = Math.min(14, Math.max(1, Math.floor(fps * 0.55)));
+        if (sIdx > 0 && f < transitionFrames) {
+          const previousScene = renderScenes[sIdx - 1];
+          const previousImage = loadedVideos[sIdx - 1] ?? loadedImages[sIdx - 1];
+          const blend = (f + 1) / transitionFrames;
+          drawCoverFrame(
+            ctx,
+            previousImage,
+            width,
+            height,
+            1,
+            previousScene.cameraMovement,
+            previousScene.title,
+            previousScene.subtitleText || previousScene.narrationText,
+            burnSubtitles,
+            1 - blend
+          );
+          drawCoverFrame(
+            ctx,
+            img,
+            width,
+            height,
+            progress,
+            scene.cameraMovement,
+            scene.title,
+            scene.subtitleText || scene.narrationText,
+            burnSubtitles,
+            blend
+          );
+        } else {
+          const fadeInAlpha = sIdx === 0 && f < 10 ? f / 10 : 1;
+          drawCoverFrame(
+            ctx,
+            img,
+            width,
+            height,
+            progress,
+            scene.cameraMovement,
+            scene.title,
+            scene.subtitleText || scene.narrationText,
+            burnSubtitles,
+            fadeInAlpha
+          );
+        }
 
         frameIndex++;
         if (frameIndex % 12 === 0) {
@@ -330,12 +496,14 @@ export async function renderTimelineVideoMax60s(
         }
         await new Promise((r) => setTimeout(r, 1000 / fps));
       }
+      sceneVideo?.pause();
     }
   } finally {
     window.clearTimeout(hardTimeoutId);
     if (recorder.state === 'recording') {
       recorder.stop();
     }
+    loadedVideos.forEach((video) => video?.pause());
     scheduledSources.forEach((s) => {
       try {
         s.stop();

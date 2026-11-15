@@ -14,6 +14,15 @@ import type {
   ModelDefinition,
 } from '../types/zero.ts';
 import { StatusLabel } from './StatusLabel.tsx';
+import {
+  checkWebGPULocalModelSupport,
+  generateWebGPULocalChat,
+  isWebGPULocalModelLoaded,
+  loadWebGPULocalModel,
+  WEBGPU_LOCAL_MODEL_DOWNLOAD_MB,
+  WEBGPU_LOCAL_MODEL_ID,
+  WEBGPU_LOCAL_MODEL_VRAM_MB,
+} from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 
 interface ModelHubViewProps {
@@ -47,7 +56,41 @@ export function ModelHubView({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [iosRuntime, setIosRuntime] = useState<IOSRuntimeSuiteInfo | null>(null);
   const [registryReport, setRegistryReport] = useState<RegistryVerificationResult | null>(null);
+  const [webGpuSupported, setWebGpuSupported] = useState<boolean | null>(null);
+  const [webGpuMessage, setWebGpuMessage] = useState('Noch nicht geprüft.');
+  const [webGpuLoading, setWebGpuLoading] = useState(false);
+  const [webGpuProgress, setWebGpuProgress] = useState(0);
+  const [webGpuProgressText, setWebGpuProgressText] = useState('');
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
+  const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
+
+  async function verifyAndActivateLoadedWebGpuModel() {
+    if (!isWebGPULocalModelLoaded() || webGpuProbeRef.current) return;
+    webGpuProbeRef.current = true;
+    try {
+      const probe = await generateWebGPULocalChat([
+        { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
+      ]);
+      if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
+      const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
+        method: 'POST',
+        body: JSON.stringify({ probeResponse: probe.slice(0, 1000) }),
+      });
+      onModelUpdated(data.model);
+      setWebGpuLoaded(true);
+      setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert und gespeichert.');
+    } catch (err) {
+      setWebGpuMessage(err instanceof Error ? err.message : 'Lokaler Inferenztest fehlgeschlagen.');
+      webGpuProbeRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (webGpuLoaded) void verifyAndActivateLoadedWebGpuModel();
+    // The browser runtime is a shared singleton; verify it once when the Hub opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const registryRef = useRef<ModelRegistry>(new ModelRegistry(models));
 
@@ -122,6 +165,34 @@ export function ModelHubView({
     });
   }, [models, execFilter, catFilter, tierFilter, search]);
 
+  async function handleLoadWebGpuModel() {
+    if (webGpuLoading || webGpuLoaded) return;
+    setWebGpuLoading(true);
+    setWebGpuProgress(0);
+    setFeedback(null);
+    try {
+      const support = await checkWebGPULocalModelSupport();
+      setWebGpuSupported(support.supported);
+      setWebGpuMessage(support.message);
+      if (!support.supported) throw new Error(support.message);
+      await loadWebGPULocalModel((progress) => {
+        setWebGpuProgress(progress.progress);
+        setWebGpuProgressText(progress.text);
+      });
+      setWebGpuLoaded(true);
+      await verifyAndActivateLoadedWebGpuModel();
+      setFeedback(
+        webGpuProbeRef.current
+          ? 'Llama 3.2 1B wurde lokal geladen und der Inferenztest gestartet.'
+          : 'Llama 3.2 1B wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.'
+      );
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
+    } finally {
+      setWebGpuLoading(false);
+    }
+  }
+
   async function handleTest(model: ModelDefinition) {
     setTestingId(model.id);
     setFeedback(null);
@@ -150,11 +221,11 @@ export function ModelHubView({
       const okCount = data.models.filter(
         (m) =>
           m.status === 'FUNKTIONIERT' ||
-          m.status === 'LOKAL INSTALLIERT' ||
-          m.status === 'Ready for Deployment'
+          m.status === 'LOKAL INSTALLIERT'
       ).length;
+      const activeCount = data.models.filter((m) => m.enabled).length;
       setFeedback(
-        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle aktiv oder Ready for Deployment (0,00 €).`
+        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle erfolgreich getestet; ${activeCount} kostenlose, lauffähige Modelle automatisch aktiviert (0,00 €).`
       );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'Komplettprüfung fehlgeschlagen');
@@ -209,6 +280,32 @@ export function ModelHubView({
           Alle Modelle prüfen
         </button>
       </div>
+
+      {/* Browser-local WebGPU model, independent from the native iOS/CoreML package. */}
+      <section className="bg-[#11151E] border border-sky-500/25 rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <p className="text-xs font-mono text-sky-300">ZERO LOCAL RUNTIME · WEBGPU</p>
+            <h2 className="text-base font-semibold text-white">Llama 3.2 1B · direkt auf diesem iPhone</h2>
+            <p className="text-xs text-slate-400">Modell-ID: {WEBGPU_LOCAL_MODEL_ID}</p>
+            <p className="text-xs text-slate-300">Einmaliger Download: ca. {WEBGPU_LOCAL_MODEL_DOWNLOAD_MB} MB · geschätzter GPU-Speicher: {WEBGPU_LOCAL_MODEL_VRAM_MB} MB · kostenlos und lokal.</p>
+          </div>
+          <span className={`text-xs font-medium ${webGpuLoaded ? 'text-emerald-300' : webGpuSupported === false ? 'text-rose-300' : 'text-slate-300'}`}>
+            {webGpuLoaded ? 'Lokal geladen' : webGpuLoading ? 'Wird geladen…' : webGpuSupported === false ? 'Nicht unterstützt' : 'Noch nicht geladen'}
+          </span>
+        </div>
+        <p className="text-xs text-slate-300">{webGpuMessage}</p>
+        {webGpuLoading && (
+          <div className="space-y-1.5">
+            <div className="h-2 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-sky-400 transition-all" style={{ width: `${Math.round(webGpuProgress * 100)}%` }} /></div>
+            <p className="text-[11px] text-slate-400">{Math.round(webGpuProgress * 100)}% · {webGpuProgressText}</p>
+          </div>
+        )}
+        <button type="button" onClick={() => void handleLoadWebGpuModel()} disabled={webGpuLoading || webGpuLoaded} className="min-h-[44px] px-4 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sm font-medium text-sky-200 disabled:opacity-50">
+          {webGpuLoading ? 'Modell wird heruntergeladen…' : webGpuLoaded ? 'Modell ist geladen' : 'Kostenloses lokales Modell herunterladen & laden'}
+        </button>
+        <p className="text-[11px] text-amber-200/80">Hinweis: Der Download benötigt eine stabile WLAN-Verbindung und ausreichend freien Gerätespeicher. Safari kann große GPU-Modelle je nach iOS-Speicherverwaltung abbrechen; ein erfolgreicher Download allein gilt noch nicht als Inferenztest.</p>
+      </section>
 
       {/* Filters */}
       <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
@@ -280,19 +377,19 @@ export function ModelHubView({
             <div>
               <p className="text-xs font-mono text-teal-300 inline-flex items-center gap-1.5">
                 <Rocket className="w-3.5 h-3.5" />
-                ModelRegistry · iPhone 16 Pro Max Swift 6 Runtime ({iosRuntime.models.length} Lokale Modelle)
+                ModelRegistry · ZERO Swift 6 Runtime ({iosRuntime.models.length} Modelladapter)
               </p>
               <h2 className="text-sm font-semibold text-white mt-0.5">
                 Swift-Paket „{iosRuntime.packageRoot}“ —{' '}
-                {iosRuntime.readyForDeployment
-                  ? `Ready for Deployment (${iosRuntime.totalFilesChecked} Dateien)`
-                   : 'Modellgewichte fehlen · Installation erforderlich'}
+                {iosRuntime.allFilesPresent
+                  ? `Quellpaket vollständig geprüft (${iosRuntime.totalFilesChecked} Dateien) · Modellinferenz nicht bestätigt`
+                  : 'Quellpaket unvollständig · Dateien fehlen'}
               </h2>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-mono text-slate-300">
-                WKWebView Bridge: {nativeBridgeActive ? 'Aktiv (iOS App)' : 'Web-Vorschau (iOS Xcode Build)'}
+                WKWebView Bridge: {nativeBridgeActive ? 'Handler vorhanden' : 'Nicht verbunden (Web/PWA)'}
               </span>
               <button
                 type="button"
@@ -381,7 +478,7 @@ export function ModelHubView({
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">iPhone 16 Pro Max</span>
+                  <span className="text-slate-500 block">iOS-Kompatibilität</span>
                   <span className={m.iosCompatible ? 'text-emerald-400' : 'text-slate-400'}>
                     {m.iosCompatible ? 'Kompatibel' : 'GPU-Server nötig'}
                   </span>

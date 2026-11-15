@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Film, Loader2, Music, Play } from 'lucide-react';
+import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
+import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -16,7 +17,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeVoiceovers, setIncludeVoiceovers] = useState(true);
   const [selectedAudioUrl, setSelectedAudioUrl] = useState<string>(soundtrack?.url ?? '');
@@ -24,11 +25,42 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [progress, setProgress] = useState({ pct: 0, label: '' });
   const [result, setResult] = useState<VideoRenderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wanWorker, setWanWorker] = useState({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...' });
+  const [wanBusy, setWanBusy] = useState(false);
+  const [wanProgress, setWanProgress] = useState('');
+  const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
+  const [wanClipScene, setWanClipScene] = useState('');
+
 
   useEffect(() => {
-    if (currentProject) {
-      setScenes(currentProject.scenes);
+    let active = true;
+    if (!currentProject) {
+      setScenes([]);
+      return () => { active = false; };
     }
+    setScenes(currentProject.scenes);
+    Promise.all(currentProject.scenes.map(async (scene) => {
+      try {
+        const blob = await loadSceneVideoClip(currentProject.id, scene.id);
+        return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
+      } catch {
+        return null;
+      }
+    })).then((restored) => {
+      if (!active) {
+        restored.forEach((item) => { if (item) URL.revokeObjectURL(item.url); });
+        return;
+      }
+      const urls = new Map(restored.filter((item): item is { sceneId: string; url: string } => Boolean(item))
+        .map((item) => [item.sceneId, item.url]));
+      if (urls.size) {
+        setScenes((previous) => previous.map((scene) => {
+          const url = urls.get(scene.id);
+          return url ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene;
+        }));
+      }
+    });
+    return () => { active = false; };
   }, [selectedProjectId, currentProject]);
 
   useEffect(() => {
@@ -37,6 +69,92 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     }
   }, [soundtrack]);
 
+  useEffect(() => {
+    let active = true;
+    fetch('/api/video/engine/status', { credentials: 'include', cache: 'no-store' })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Wan-Status nicht verfügbar.');
+        if (active) setWanWorker({
+          online: payload.online === true,
+          status: String(payload.status || 'UNKNOWN'),
+          message: String(payload.message || 'Kein Status verfügbar.'),
+        });
+      })
+      .catch((err) => {
+        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.' });
+      });
+    return () => { active = false; };
+  }, []);
+
+  async function handleWanSceneGeneration(scene: FilmScene) {
+    if (wanBusy || !wanWorker.online) return;
+    setWanBusy(true);
+    setWanProgress('Sende Szene an den Wan-GPU-Worker...');
+    setError(null);
+    setWanClipUrl(null);
+    try {
+      const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
+      if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
+      const created = await fetch('/api/video/engine/jobs', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+      });
+      const createdPayload = await created.json();
+      if (!created.ok || typeof createdPayload.job?.id !== 'string') {
+        throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
+      }
+      const jobId = createdPayload.job.id as string;
+      setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
+      let completed = false;
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 10000));
+        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
+        const statusPayload = await statusResponse.json();
+        if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
+        const job = statusPayload.job;
+        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        if (job.status === 'succeeded') {
+          setWanProgress('MP4 wird auf ZERO übertragen...');
+          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
+          if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
+          const blob = await videoResponse.blob();
+          if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
+          const clipUrl = URL.createObjectURL(blob);
+          setWanClipUrl(clipUrl);
+          let persistedLocally = false;
+          if (currentProject?.id) {
+            try {
+              await saveSceneVideoClip(currentProject.id, scene.id, blob);
+              persistedLocally = true;
+            } catch {
+              persistedLocally = false;
+            }
+          }
+          setWanClipScene(scene.title);
+          setScenes((previous) => previous.map((item) =>
+            item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
+          ));
+          setWanProgress(persistedLocally
+            ? 'Echter Wan-2.1-Clip fertig · 5 Sekunden · lokal auf diesem iPhone gespeichert'
+            : 'Clip erzeugt, aber nicht lokal gespeichert. Bitte vor dem Neuladen exportieren.');
+          completed = true;
+          break;
+        }
+        setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
+      }
+      if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
+      setWanProgress('');
+    } finally {
+      setWanBusy(false);
+    }
+  }
+
+
   const projectAudioAssets = (currentProject?.assets ?? []).filter(
     (a) => a.type === 'music' || a.type === 'audio'
   );
@@ -44,6 +162,46 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   const totalDuration = scenes.reduce((sum, s) => sum + s.durationSec, 0);
   const exceedsLimit = totalDuration > 60;
+
+  async function handleImportSceneImages(files: FileList | null) {
+    if (!files?.length || !scenes.length) return;
+    const selected = Array.from(files).filter((file) => file.type.startsWith('image/')).slice(0, 10);
+    if (!selected.length) {
+      setError('Bitte wähle gültige Bilddateien aus.');
+      return;
+    }
+    try {
+      const optimized = await Promise.all(selected.map(async (file) => {
+        if (file.size > 20 * 1024 * 1024) {
+          throw new Error(`„${file.name}“ ist größer als 20 MB.`);
+        }
+        const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
+          img.src = url;
+        });
+        const scale = Math.min(1, 1920 / Math.max(source.width, source.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(source.width * scale));
+        canvas.height = Math.max(1, Math.round(source.height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Bildverarbeitung ist auf diesem Gerät nicht verfügbar.');
+        context.drawImage(source, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', 0.84);
+      }));
+      setScenes((previous) => previous.map((scene, index) => ({
+        ...scene,
+        imageUrl: optimized[index % optimized.length],
+        status: 'Bild bereit',
+      })));
+      setResult(null);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bilder konnten nicht importiert werden.');
+    }
+  }
 
   function updateSceneDuration(id: string, val: number) {
     const safeVal = Math.max(3, Math.min(30, val));
@@ -73,6 +231,34 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         return { ...s, durationSec: d };
       })
     );
+  }
+
+  async function handleShareVideo() {
+    if (!result) return;
+    try {
+      const response = await fetch(result.videoUrl);
+      if (!response.ok) throw new Error('Der fertige Film konnte nicht geöffnet werden.');
+      const blob = await response.blob();
+      const extension = result.mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const safeTitle = (currentProject?.title || 'zero-film').replace(/[^a-z0-9-_]+/gi, '-').slice(0, 48);
+      const file = new File([blob], `${safeTitle}.${extension}`, { type: result.mimeType });
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: currentProject?.title || 'ZERO AI STUDIO Video',
+          text: 'Erstellt mit ZERO AI STUDIO',
+        });
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = result.videoUrl;
+      link.download = file.name;
+      link.click();
+      setError('Der Teilen-Dialog wird von diesem Browser nicht unterstützt. Der Download wurde gestartet; auf dem iPhone findest du die Datei normalerweise unter „Dateien“.');
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setError(err instanceof Error ? err.message : 'Video konnte nicht geteilt werden.');
+    }
   }
 
   async function handleExportVideo() {
@@ -163,6 +349,39 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Scene Timeline */}
         <div className="lg:col-span-7 space-y-3">
+          <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-2">
+            <label className="text-sm font-medium text-white block">Eigene Szenenbilder vom iPhone hinzufügen</label>
+            <p className="text-xs text-slate-400">Wähle bis zu 10 Fotos oder Grafiken aus deiner Mediathek. ZERO verteilt sie automatisch auf die Szenen und nutzt sie für den Videoexport.</p>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                void handleImportSceneImages(event.target.files);
+                event.currentTarget.value = '';
+              }}
+              className="block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-[#2563EB] file:px-3 file:py-2 file:text-white"
+            />
+          </div>
+          <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-white">ZERO NEURAL VIDEO · Wan 2.1</span>
+              <span className={`text-[10px] font-semibold rounded-full px-2 py-1 ${wanWorker.online ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                {wanWorker.online ? 'GPU ONLINE' : 'GPU NICHT VERBUNDEN'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400">{wanWorker.message}</p>
+            <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
+            {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
+            {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
+            {wanClipUrl && (
+              <div className="space-y-2">
+                <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
+                <video src={wanClipUrl} controls playsInline className="w-full rounded-xl bg-black" />
+                <a href={wanClipUrl} download="zero-wan-shot.mp4" className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white"><Download className="w-4 h-4" />Wan-MP4 herunterladen</a>
+              </div>
+            )}
+          </div>
           {scenes.map((scene) => (
             <div
               key={scene.id}
@@ -197,6 +416,16 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 </div>
 
                 <p className="text-xs text-slate-300 line-clamp-2">{scene.subtitleText}</p>
+                {scene.videoUrl && <p className="text-[10px] font-semibold text-emerald-300">NEURAL CLIP BEREIT · wird im finalen Export verwendet</p>}
+                <button
+                  type="button"
+                  onClick={() => void handleWanSceneGeneration(scene)}
+                  disabled={!wanWorker.online || wanBusy}
+                  className="min-h-[38px] rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 text-[11px] font-medium text-violet-200 disabled:opacity-40 inline-flex items-center gap-2"
+                >
+                  {wanBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {wanBusy ? 'Wan rendert...' : 'Echten 5s-Wan-Clip generieren'}
+                </button>
 
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   <select
@@ -349,6 +578,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 playsInline
                 className="w-full rounded-xl bg-black border border-white/[0.08]"
               />
+              <button
+                type="button"
+                onClick={() => void handleShareVideo()}
+                className="w-full min-h-[46px] rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] border border-[#2563EB] text-xs font-semibold text-white inline-flex items-center justify-center gap-2"
+              >
+                <Share2 className="w-4 h-4" />
+                Auf dem iPhone teilen oder sichern
+              </button>
               <a
                 href={result.videoUrl}
                 download={`zero-film-${currentProject?.title || 'export'}.${

@@ -48,14 +48,17 @@ export function BrainView({
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState<
+    | 'auto'
     | 'gemini-3.8-flash'
     | 'gemini-3.1-flash-lite'
+    | 'gemini-3.6-flash'
+    | 'gemini-3.5-flash-lite'
     | 'gpt-oss-20b-free'
     | 'webgpu-llama-3.2-1b'
     | NativeIOSTextModelId
-  >('gemini-3.8-flash');
+  >('auto');
   const [useWebSearch, setUseWebSearch] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [webgpuModelLoaded, setWebgpuModelLoaded] = useState(isWebGPULocalModelLoaded());
@@ -88,10 +91,18 @@ export function BrainView({
     setWebgpuProgress({ progress: 0, text: 'Prüfe WebGPU-GPU-Adapter …' });
     try {
       await loadWebGPULocalModel(setWebgpuProgress);
+      const probe = await generateWebGPULocalChat([
+        { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
+      ]);
+      if (!probe.trim()) throw new Error('Das lokale Modell hat den Inferenztest nicht bestanden.');
+      await apiRequest<{ model: { id: string } }>('/api/models/webgpu/activate', {
+        method: 'POST',
+        body: JSON.stringify({ probeResponse: probe.slice(0, 1000) }),
+      });
       setWebgpuModelLoaded(true);
       setWebgpuProgress({
         progress: 1,
-        text: 'Llama 3.2 1B ist lokal geladen und einsatzbereit.',
+        text: 'Llama 3.2 1B ist lokal geladen, erfolgreich getestet und automatisch aktiviert.',
       });
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Lokales Modell konnte nicht geladen werden.');
@@ -175,6 +186,13 @@ export function BrainView({
           modelId: selectedModel,
           prompt: promptText,
         });
+        const responseText = res.text ?? '';
+        if (selectedModel === 'apple-foundation-model' && responseText.trim()) {
+          await apiRequest<{ model: { id: string } }>('/api/models/native/activate', {
+            method: 'POST',
+            body: JSON.stringify({ probeResponse: responseText.slice(0, 1000) }),
+          });
+        }
         const now = new Date().toISOString();
         setMessages((prev) => [
           ...prev.filter((message) => message.id !== pendingId),
@@ -182,7 +200,7 @@ export function BrainView({
           {
             id: `msg-a-${Date.now() + 1}`,
             role: 'assistant',
-            content: res.text || '',
+            content: responseText,
             modelUsed: selectedModel,
             routingSteps: [
               `ZERO CORE -> native iOS (${selectedModel} · On-Device · 0,00 €)`,
@@ -193,17 +211,57 @@ export function BrainView({
         setInput('');
       } else {
         setInput('');
-        const data = await apiRequest<{ messages: ChatMessage[] }>('/api/brain/chat', {
+        setWebgpuAssistantDraft('');
+        const response = await fetch('/api/brain/chat', {
           method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+          },
           body: JSON.stringify({
             message: promptText,
-            modelId: selectedModel,
+            ...(selectedModel === 'auto' ? {} : { modelId: selectedModel }),
             useWebSearch,
             projectId: selectedProjectId,
           }),
         });
-        setMessages(data.messages);
-        setInput('');
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error || 'ZERO-Fehler (HTTP ' + response.status + ')');
+        }
+        if (!response.body) throw new Error('ZERO-Streaming wird von diesem Browser nicht unterstützt.');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalMessages: ChatMessage[] | null = null;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() ?? '';
+          for (const event of events) {
+            const line = event.split('\n').find((part) => part.startsWith('data: '));
+            if (!line) continue;
+            const payload = JSON.parse(line.slice(6)) as {
+              type: 'start' | 'delta' | 'done' | 'error';
+              text?: string;
+              error?: string;
+              messages?: ChatMessage[];
+            };
+            if (payload.type === 'delta' && payload.text) {
+              setWebgpuAssistantDraft((previous) => previous + payload.text);
+            } else if (payload.type === 'done' && payload.messages) {
+              finalMessages = payload.messages;
+            } else if (payload.type === 'error') {
+              throw new Error(payload.error || 'ZERO-Streaming fehlgeschlagen.');
+            }
+          }
+        }
+        if (!finalMessages) throw new Error('ZERO hat den Antwort-Stream unerwartet beendet.');
+        setMessages(finalMessages);
+        setWebgpuAssistantDraft('');
       }
     } catch (err) {
       // Keep the pending user bubble visible so a failed/slow request never looks unsent.
@@ -322,8 +380,11 @@ export function BrainView({
                 onChange={(e) =>
                   setSelectedModel(
                     e.target.value as
+                      | 'auto'
                       | 'gemini-3.8-flash'
                       | 'gemini-3.1-flash-lite'
+                      | 'gemini-3.6-flash'
+                      | 'gemini-3.5-flash-lite'
                       | 'gpt-oss-20b-free'
                       | 'webgpu-llama-3.2-1b'
                       | NativeIOSTextModelId
@@ -331,11 +392,12 @@ export function BrainView({
                 }
                 className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB]"
               >
+                <option value="auto">ZERO AUTO · beste geprüfte kostenlose Engine</option>
                 <option value="gemini-3.8-flash">Gemini 3.8 Flash (Free-Tier, API-Key erforderlich)</option>
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Schnell · 0 €)</option>
                 <option value="gemini-3.6-flash">Gemini 3.6 Flash (Free-Tier)</option>
                 <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Free-Tier · Schnell)</option>
-                <option value="gpt-oss-20b-free">
+                <option value="gpt-oss-20b-free" disabled>
                   GPT-OSS 20B (Open Cloud · kein API-Key · 0 €)
                 </option>
                 <option value="llama-3.2-1b-coreml">
@@ -498,10 +560,10 @@ export function BrainView({
                 </div>
               </div>
             ))}
-            {webgpuAssistantDraft && (
+            {(webgpuAssistantDraft || (chatLoading && selectedModel !== 'webgpu-llama-3.2-1b')) && (
               <div className="flex flex-col items-start">
                 <div className="max-w-[92%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-[#161B26] border border-sky-500/20 text-slate-100">
-                  {webgpuAssistantDraft}
+                  {webgpuAssistantDraft || 'ZERO denkt nach …'}
                 </div>
               </div>
             )}

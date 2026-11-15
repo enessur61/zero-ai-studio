@@ -19,6 +19,10 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 ├── ios/
 │   ├── ZeroCoreML/                  # Swift-Quellcodepaket + WKWebView-Bridge
 │   └── ZEROAIStudio/                # XcodeGen-Projekt für den nativen iPhone-WKWebView-App-Host
+├── gpu-worker/                     # Optional authenticated Wan 2.1 CUDA inference worker
+│   ├── app.py                      # FastAPI queue, WanPipeline inference & MP4 delivery
+│   ├── Dockerfile                  # CUDA runtime container
+│   └── README.md                   # GPU host deployment and API contract
 ├── server/
 │   ├── adapters.ts                  # Gemini-Free-Tier-Adapter, deaktivierte nicht verifizierte Cloud-Provider, iOS-Quellcodeprüfung
 │   ├── coremlAdapter.ts             # Verifizierer für das iPhone 16 Pro Max Swift-6-Paket (9 Dateien, 8 Modelle)
@@ -103,6 +107,21 @@ ZERO AI STUDIO ist als installierbare PWA vorbereitet. Öffne die veröffentlich
    npm run build
    npm start
    ```
+
+---
+
+## Wan 2.1 GPU Worker (optional)
+
+ZERO now includes an optional self-hosted Wan 2.1 T2V-1.3B worker in `gpu-worker/`. The worker accepts authenticated generation jobs and returns short MP4 shots; the ZERO backend proxies job creation, status, and video downloads without exposing the worker token to the browser.
+
+- One worker job produces one 5-second 480p shot; the final ZERO timeline remains hard-capped at 60 seconds.
+- Requires a separate NVIDIA CUDA GPU host. The iPhone and Render web service do not run this model.
+- Model weights download on first inference; no weights or GPU compute are bundled.
+- Configure `ZERO_VIDEO_ENGINE_URL` and the matching `ZERO_VIDEO_ENGINE_TOKEN` on the ZERO server. The worker itself also requires the same token.
+- See [gpu-worker/README.md](gpu-worker/README.md) for Docker deployment and API details.
+- No paid provider fallback is implemented. Open weights do not make GPU compute or hosting permanently free.
+
+The worker source, authenticated proxy routes, per-scene Wan controls, and final-timeline video-clip playback are prepared in this repository. No GPU worker is deployed and no generation run has been verified yet.
 
 ---
 

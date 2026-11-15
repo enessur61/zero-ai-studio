@@ -38,6 +38,7 @@ import {
   saveDb,
   toggleZipBackupProtection,
 } from './server/store.ts';
+import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -368,6 +369,51 @@ app.post('/api/models/test-all', async (_req, res) => {
   });
 });
 
+// The WebGPU engine runs in the user's browser, so the server cannot execute its probe.
+// Persist activation only after the browser reports a non-empty response from real local inference.
+app.post('/api/models/webgpu/activate', async (req, res) => {
+  const db = await loadDb();
+  const model = db.models.find((item) => item.id === 'webgpu-llama-3.2-1b');
+  const probeResponse = String(req.body?.probeResponse ?? '').trim();
+  if (!model || model.adapterId !== 'webllm' || model.executionMode !== 'LOCAL ON-DEVICE') {
+    return res.status(404).json({ error: 'Das lokale WebGPU-Modell ist nicht registriert.' });
+  }
+  if (!probeResponse || probeResponse.length > 1000) {
+    return res.status(400).json({ error: 'Lokaler Inferenztest fehlt oder ist ungültig.' });
+  }
+  model.hasRealAdapter = true;
+  model.testPassed = true;
+  model.enabled = true;
+  model.status = 'LOKAL INSTALLIERT';
+  model.lastTestedAt = new Date().toISOString();
+  model.lastTestLatencyMs = null;
+  model.lastTestMessage = 'Der Browser hat eine echte lokale WebGPU-Inferenzantwort bestätigt. Kein Cloud- oder Paid-Fallback.';
+  await saveDb(db);
+  res.json({ model });
+});
+
+// Apple Foundation Models can only be probed inside the signed native iOS host.
+app.post('/api/models/native/activate', async (req, res) => {
+  const db = await loadDb();
+  const model = db.models.find((item) => item.id === 'apple-foundation-model');
+  const probeResponse = String(req.body?.probeResponse ?? '').trim();
+  if (!model || model.adapterId !== 'apple-foundation-model' || model.executionMode !== 'LOCAL ON-DEVICE') {
+    return res.status(404).json({ error: 'Apple Foundation Models sind nicht registriert.' });
+  }
+  if (!probeResponse || probeResponse.length > 1000) {
+    return res.status(400).json({ error: 'Native Inferenzantwort fehlt oder ist ungültig.' });
+  }
+  model.hasRealAdapter = true;
+  model.testPassed = true;
+  model.enabled = true;
+  model.status = 'LOKAL INSTALLIERT';
+  model.lastTestedAt = new Date().toISOString();
+  model.lastTestLatencyMs = null;
+  model.lastTestMessage = 'Native Apple Foundation Models Inferenz auf diesem iPhone erfolgreich bestätigt. Kein Cloud- oder Paid-Fallback.';
+  await saveDb(db);
+  res.json({ model });
+});
+
 app.post('/api/models/registry/register', async (req, res) => {
   const db = await loadDb();
   const started = Date.now();
@@ -502,19 +548,36 @@ app.get('/api/brain/history', async (_req, res) => {
 
 app.post('/api/brain/chat', async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  let routedModelId = '';
   try {
     const database = await loadDb();
     db = database;
     const message = String(req.body?.message ?? '').trim();
-    const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
+    const requestedModel = String(req.body?.modelId ?? '');
     const useWebSearch = Boolean(req.body?.useWebSearch);
     const projectId = req.body?.projectId ? String(req.body.projectId) : undefined;
+    const requestStartedAt = Date.now();
+    const isSimpleRequest = !useWebSearch && !projectId && message.length <= 180 && /^(hi|hallo|hey|moin|guten morgen|guten tag|guten abend|test|ping|danke|ok|okay|wer bist du|was kannst du|stelle dich vor)[.!?\s]*$/i.test(message);
+    const needsFullContext = !isSimpleRequest;
 
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
 
+    const routeDecision = chooseZeroChatModel(
+      database.models,
+      database.budgetGuard,
+      requestedModel || undefined,
+    );
+    if (!routeDecision) {
+      return res.status(503).json({
+        error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Textmodell. Bitte im Modell-Hub einen echten Modelltest ausführen. Es wird kein kostenpflichtiger Fallback gestartet.',
+      });
+    }
+    const selectedModel = routeDecision.modelId;
+    routedModelId = selectedModel;
+
     const activeProject = projectId
       ? database.projects.find((p) => p.id === projectId)
-      : database.projects[0];
+      : undefined;
 
     const availableModelsSummary = database.models
       .filter(
@@ -527,7 +590,9 @@ app.post('/api/brain/chat', async (req, res) => {
       .map((m) => `${m.name} [${m.executionMode}]`)
       .join(', ');
 
-    const relevantMemories = database.memories.slice(0, 6).map((m) => `- ${m.title}: ${m.content}`).join('\n');
+    const relevantMemories = needsFullContext
+      ? database.memories.slice(0, 4).map((m) => `- ${m.title}: ${m.content}`).join('\n')
+      : '';
 
     const systemInstruction = `Du bist ZERO BRAIN, der zentrale KI-Assistent von ZERO AI STUDIO ("BEYOND LIMITS").
 Zielgerät: iPhone 16 Pro Max. Budget-Regel: strikt 0 € laufende Kosten. Maximale Videolänge: 60 Sekunden (bevorzugt 55–60s).
@@ -546,12 +611,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(requestedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
+      assertZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
         recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
-      const recentHistory = database.chatHistory
-        .slice(-8)
+      const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
         .join('\n\n');
@@ -587,27 +651,45 @@ Langzeitgedächtnis:\n${relevantMemories}`;
           .map((web) => ({ title: web.title || web.uri, uri: web.uri }));
       }
 
-      const response = await withTransientRetry(() =>
-        ai.models.generateContent({
-          model: requestedModel,
-          contents: groundingContext
-            ? `${fullPrompt}\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n${groundingContext}\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.`
-            : fullPrompt,
-          config: {
-            systemInstruction,
-            ...(requestedModel === 'gemini-3.8-flash'
-              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
-              : {}),
-          },
-        })
-      );
-
-      replyText = (response.text ?? 'Keine Antwort erhalten.').trim();
+      const streamContents = groundingContext
+        ? fullPrompt + '\n\nVERIFIZIERTER WEB-RECHERCHEKONTEXT:\n' + groundingContext + '\n\nNutze den Recherchekontext kritisch. Behaupte nichts, was daraus nicht hervorgeht.'
+        : fullPrompt;
+      const streamConfig = {
+        systemInstruction,
+        ...(selectedModel === 'gemini-3.8-flash' && needsFullContext
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } }
+          : {}),
+      };
+      const wantsStream = req.headers.accept?.includes('text/event-stream') ?? false;
+      if (wantsStream) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
+      }
+      const responseStream = await ai.models.generateContentStream({
+        model: selectedModel,
+        contents: streamContents,
+        config: streamConfig,
+      });
+      for await (const chunk of responseStream) {
+        const piece = chunk.text ?? '';
+        if (!piece) continue;
+        replyText += piece;
+        if (wantsStream) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+        }
+      }
+      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
-        `ZERO CORE Router -> ${requestedModel} (Gemini Free Tier; Kontingent beachten)`,
+        `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
         ...(useWebSearch ? [`Google Search über gemini-2.5-flash-lite Free Tier (${sources.length} Quellen)`] : []),
         ...(activeProject ? [`Projektkontext geladen: "${activeProject.title}"`] : []),
+        `Kontextmodus: ${isSimpleRequest ? 'Schnellmodus' : 'Kontextmodus'}`,
+        `ZERO Antwortzeit: ${Date.now() - requestStartedAt} ms`,
       ];
 
     const now = new Date().toISOString();
@@ -617,7 +699,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         id: `msg-a-${Date.now() + 1}`,
         role: 'assistant',
         content: replyText,
-        modelUsed: requestedModel,
+        modelUsed: selectedModel,
         routingSteps,
         sources,
         timestamp: new Date().toISOString(),
@@ -628,15 +710,21 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     }
     await saveDb(db);
 
-    res.json({
+    const chatResult = {
       reply: replyText,
-      modelUsed: requestedModel,
+      modelUsed: selectedModel,
       routingSteps,
       sources,
+      performance: { totalMs: Date.now() - requestStartedAt, contextMode: isSimpleRequest ? 'fast' : 'full' },
       messages: database.chatHistory,
-    });
+    };
+    if (req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'done', ...chatResult }) + '\n\n');
+      return res.end();
+    }
+    return res.json(chatResult);
   } catch (err) {
-    const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
+    const requestedModel = routedModelId || String(req.body?.modelId ?? '');
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
@@ -648,11 +736,14 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       }
       await saveDb(db);
     }
-    res.status(db ? 400 : 503).json({
-      error: db
-        ? formatGermanApiError(err)
-        : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.',
-    });
+    const errorMessage = db
+      ? formatGermanApiError(err)
+      : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.';
+    if (res.headersSent && req.headers.accept?.includes('text/event-stream')) {
+      res.write('data: ' + JSON.stringify({ type: 'error', error: errorMessage }) + '\n\n');
+      return res.end();
+    }
+    return res.status(db ? 400 : 503).json({ error: errorMessage });
   }
 });
 
@@ -802,12 +893,18 @@ app.post('/api/image/analyze', async (req, res) => {
 // === ZERO AUDIO STUDIO ===
 app.post('/api/audio/tts', async (req, res) => {
   const useExpressiveModel = Boolean(req.body?.expressive);
-  const modelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+  const preferredModelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+  let modelId = preferredModelId;
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
   try {
     const database = await loadDb();
     db = database;
+    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'text-to-speech', [], new Date(), preferredModelId);
+    if (!routeDecision) {
+      return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses TTS-Modell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
+    }
+    modelId = routeDecision.modelId;
     const text = String(req.body?.text ?? '').trim();
     const voiceName = String(req.body?.voiceName ?? 'Kore');
     const style = String(req.body?.style ?? 'Ruhige, klare deutsche Erzählstimme').trim();
@@ -884,6 +981,11 @@ app.post('/api/audio/transcribe', async (req, res) => {
   try {
     const database = await loadDb();
     db = database;
+    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'transcription');
+    if (!routeDecision) {
+      return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Transkriptionsmodell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
+    }
+    const selectedTranscriptionModel = routeDecision.modelId;
     const audioDataUrl = String(req.body?.audioDataUrl ?? '');
     const audio = parseBase64DataUrl(
       audioDataUrl,
@@ -907,14 +1009,14 @@ app.post('/api/audio/transcribe', async (req, res) => {
       });
     }
 
-    assertZeroBudgetModelAllowed('gemini-3.5-transcribe', 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
+    assertZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
       recordBudgetAudit(database, e)
     );
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
       ai.models.generateContent({
-        model: 'gemini-3.5-transcribe',
+        model: selectedTranscriptionModel,
         contents: [
           {
             role: 'user',
@@ -948,7 +1050,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
     res.json({
       transcript: formattedTranscript,
       rawText: rawTranscript,
-      modelUsed: 'gemini-3.5-transcribe',
+      modelUsed: selectedTranscriptionModel,
       costEur: 0,
     });
   } catch (err) {
@@ -1021,6 +1123,191 @@ app.post('/api/music/compose', async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
+  }
+});
+
+// === ZERO VIDEO ENGINE BRIDGE (OPTIONAL SELF-HOSTED WAN WORKER) ===
+// The GPU worker is deliberately external: the Render web service is not a video-generation GPU.
+// Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
+app.get('/api/video/engine/status', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
+  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  if (!configuredUrl || !token) {
+    return res.json({
+      configured: Boolean(configuredUrl),
+      online: false,
+      engine: 'Wan 2.1',
+      status: configuredUrl ? 'WORKER_TOKEN_MISSING' : 'GPU_WORKER_NOT_CONFIGURED',
+      message: configuredUrl
+        ? 'ZERO_VIDEO_ENGINE_TOKEN fehlt. Der Worker wird ohne gemeinsames Geheimnis nicht freigeschaltet.'
+        : 'Noch kein eigener Wan-GPU-Worker verbunden. ZERO verwendet weiterhin den lokalen Storyboard-Export.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  }
+
+  let endpoint: URL;
+  try {
+    endpoint = new URL(configuredUrl);
+    if (IS_PRODUCTION && endpoint.protocol !== 'https:') {
+      throw new Error('HTTPS erforderlich');
+    }
+    if (!['https:', 'http:'].includes(endpoint.protocol)) throw new Error('Ungültiges Protokoll');
+  } catch {
+    return res.status(503).json({
+      configured: true,
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'INVALID_WORKER_URL',
+      message: 'Die konfigurierte ZERO_VIDEO_ENGINE_URL ist ungültig. In Produktion ist HTTPS erforderlich.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(new URL('/health', endpoint), {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
+    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean };
+    const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
+    const online = payload.ok === true && payload.cuda_available === true && engineMatches;
+    return res.json({
+      configured: true,
+      online,
+      gpuAvailable: payload.cuda_available === true,
+      engine: 'Wan 2.1',
+      status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
+      message: online
+        ? 'Wan-Worker und CUDA-GPU erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
+        : payload.cuda_available === false
+          ? 'Worker erreichbar, aber keine CUDA-GPU verfügbar. Wan-Inferenz ist nicht startbereit.'
+          : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  } catch {
+    return res.json({
+      configured: true,
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'WORKER_OFFLINE',
+      message: 'Wan-GPU-Worker ist derzeit nicht erreichbar. Es wird kein kostenpflichtiger Ersatzdienst verwendet.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+// Authenticated server-side proxy for the self-hosted Wan worker.
+// The browser never receives the worker URL or its bearer token.
+function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
+  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
+  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  if (!configuredUrl || !token) return null;
+  try {
+    const baseUrl = new URL(configuredUrl);
+    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    baseUrl.pathname = '/';
+    baseUrl.search = '';
+    baseUrl.hash = '';
+    return { baseUrl, headers: { Accept: 'application/json', Authorization: `Bearer ${token}` } };
+  } catch {
+    return null;
+  }
+}
+
+app.post('/api/video/engine/jobs', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+  const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
+  const seed = Number.isInteger(req.body?.seed) && req.body.seed >= 0 && req.body.seed <= 2147483647
+    ? req.body.seed
+    : undefined;
+  if (prompt.length < 8 || prompt.length > 1800) {
+    return res.status(400).json({ error: 'Der Wan-Prompt muss zwischen 8 und 1.800 Zeichen lang sein.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(new URL('/jobs', worker.baseUrl), {
+      method: 'POST',
+      headers: { ...worker.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }) }),
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
+    if (typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || payload.status !== 'queued') {
+      return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
+    }
+    return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.get('/api/video/engine/jobs/:id', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}`, worker.baseUrl), {
+      headers: worker.headers, signal: controller.signal, redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
+    return res.json({ job: payload, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}/video`, worker.baseUrl), {
+      headers: worker.headers, signal: controller.signal, redirect: 'error',
+    });
+    if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
+    const length = Number(response.headers.get('content-length') ?? 0);
+    if (length > 100 * 1024 * 1024) return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < 1024 || bytes.length > 100 * 1024 * 1024) return res.status(502).json({ error: 'Ungültige oder zu große MP4-Datei vom Wan-Worker.' });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="zero-wan-${id}.mp4"`);
+    res.setHeader('Content-Length', String(bytes.length));
+    return res.send(bytes);
+  } catch {
+    return res.status(503).json({ error: 'Wan-Video konnte nicht geladen werden.' });
+  } finally {
+    clearTimeout(timeout);
   }
 });
 
@@ -1152,6 +1439,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
 
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
 
+    const imageGenerationWarnings: string[] = [];
     if (generateImages) {
       await Promise.all(
         mappedScenes.map(async (scene, idx) => {
@@ -1159,13 +1447,17 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
-              aspectRatio: '16:9',
+              aspectRatio: '9:16',
               seed: 1000 + idx * 37,
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
-          } catch {
-            // Leave imageUrl undefined so UI clearly marks it as Entwurf without faking
+          } catch (imageError) {
+            // Never label a film as being in production when no scene artwork exists.
+            scene.status = 'Bildgenerierung nicht verfügbar';
+            imageGenerationWarnings.push(
+              imageError instanceof Error ? imageError.message : 'Szenenbild konnte nicht generiert werden.'
+            );
           }
         })
       );
@@ -1195,7 +1487,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
           totalDurationSec: totalSec,
         },
       ],
-      status: generateImages ? 'In Produktion' : 'Konzept',
+      status: mappedScenes.some((scene) => Boolean(scene.imageUrl)) ? 'In Produktion' : 'Konzept',
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -1215,7 +1507,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
     await saveDb(db);
     await maybeAutoCreateZipBackup(`Filmprojekt "${newProject.title}" generiert (${totalSec}s)`);
 
-    res.json({ project: newProject });
+    res.json({ project: newProject, imageGenerationWarnings });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }

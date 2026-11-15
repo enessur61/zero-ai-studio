@@ -1,0 +1,43 @@
+# ZERO Wan 2.1 GPU Worker
+
+Optional self-hosted inference worker for ZERO AI STUDIO. This is a real model runtime, not a mock API. It runs the open-weight Wan 2.1 T2V-1.3B Diffusers checkpoint on an NVIDIA CUDA GPU.
+
+## Important limits
+
+- One request creates one **5-second, 480p shot** (81 frames at 16 fps).
+- ZERO's final assembled video must remain at or below **60 seconds**.
+- The worker has no hosted inference provider and no paid fallback.
+- The model weights are downloaded from Hugging Face on first generation. They are not included in this repository or Docker image.
+- An NVIDIA CUDA GPU is mandatory. For this Diffusers pipeline, plan for roughly 11 GB VRAM as a starting point; actual memory depends on driver, precision, offload behavior, and runtime versions. CUDA availability alone does not guarantee enough memory. CPU-only and iPhone execution are not supported.
+- The health endpoint does not load/download the model.
+
+## Run with Docker
+
+On a Linux host with an NVIDIA GPU, Docker, and NVIDIA Container Toolkit installed:
+
+1. Create a strong random token and set it as `ZERO_VIDEO_ENGINE_TOKEN`.
+2. Build: `docker build -t zero-wan-worker gpu-worker`
+3. Run: `docker run --gpus all -p 8000:8000 --env ZERO_VIDEO_ENGINE_TOKEN='YOUR_TOKEN' zero-wan-worker`
+4. Put the worker behind HTTPS before connecting it to a production ZERO instance.
+
+Set these environment variables on the ZERO server:
+
+- `ZERO_VIDEO_ENGINE_URL=https://your-worker.example` (base URL, no path)
+- `ZERO_VIDEO_ENGINE_TOKEN=the-same-token`
+
+The worker token must be long and random. Never put it in browser code or the public repository.
+
+## API
+
+All endpoints except `GET /health` require `Authorization: Bearer <token>`.
+
+- `GET /health` — runtime/CUDA status, without loading model weights.
+- `POST /jobs` — enqueue a shot. JSON: `{"prompt":"...","duration_sec":5,"aspect_ratio":"16:9","seed":42}`. Returns HTTP 202 and a job ID.
+- `GET /jobs/{id}` — queued/running/succeeded/failed status.
+- `GET /jobs/{id}/video` — download completed MP4.
+
+The worker serializes GPU inference, limits the in-memory job registry, validates UUIDs and prompts, and never attempts a paid fallback. Jobs and generated files are ephemeral; restarting the worker clears the queue.
+
+## Hardware and cost
+
+The model is open-weight, but GPU compute, electricity, storage, and network hosting are not inherently free. This repository does not claim a permanently free GPU host. Do not deploy it to a paid service unless you intentionally choose to do so.
