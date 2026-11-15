@@ -129,8 +129,13 @@ jobs:
             if (toggle.status !== 400) throw new Error('Uninstalled iOS model can be enabled: ' + id);
           }
           const groundingFeature = models.find((entry) => entry.id === 'gemini-web-grounding');
-          if (!groundingFeature || !groundingFeature.enabled || !groundingFeature.provider.includes('gemini-2.5-flash-lite')) {
-            throw new Error('Web grounding is not routed through the verified free-tier model');
+          const groundingMetadata = String(groundingFeature?.provider ?? '') + String(groundingFeature?.limitations ?? '');
+          if (!groundingFeature || !groundingFeature.enabled || !groundingMetadata.includes('gemini-2.5-flash-lite')) {
+            throw new Error('Web grounding metadata is incorrect: ' + JSON.stringify(groundingFeature));
+          }
+          const serverSource = await (await import('node:fs/promises')).readFile('server.ts', 'utf8');
+          if (!serverSource.includes("model: 'gemini-2.5-flash-lite'") || serverSource.includes("model: 'gemini-3.8-flash',\n        contents: `Recherchiere sachlich")) {
+            throw new Error('Search requests are not isolated on the free-tier model');
           }
           const iosRuntime = await authFetch('/api/models/ios-runtime');
           const iosStatus = await iosRuntime.json();
