@@ -67,7 +67,7 @@ function hasValidSession(req: express.Request): boolean {
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
   const [expiresAt, nonce, signature] = token.split('.');
-  if (!expiresAt || !nonce || !signature || !/^\\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
+  if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
   return activeSessions.get(token) === Number(expiresAt);
