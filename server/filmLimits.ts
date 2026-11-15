@@ -1,5 +1,5 @@
 export const MAX_VIDEO_DURATION_SEC = 60;
-export const MAX_VIDEO_SCENES = 60;
+export const MAX_VIDEO_SCENES = 30;
 
 /**
  * Normalize scene durations and guarantee that the exported film timeline
@@ -9,7 +9,7 @@ export function clampScenesToMax60Seconds<T extends { durationSec: number }>(sce
   const normalized = scenes.slice(0, MAX_VIDEO_SCENES).map((scene) => ({
     ...scene,
     durationSec: Math.max(
-      1,
+      2,
       Math.round(Number.isFinite(scene.durationSec) ? scene.durationSec : 1)
     ),
   }));
@@ -29,7 +29,7 @@ export function clampScenesToMax60Seconds<T extends { durationSec: number }>(sce
   while (assigned > MAX_VIDEO_DURATION_SEC) {
     let candidate = -1;
     for (let index = 0; index < durations.length; index += 1) {
-      if (durations[index] > 1 && (candidate === -1 || durations[index] > durations[candidate])) {
+      if (durations[index] > 2 && (candidate === -1 || durations[index] > durations[candidate])) {
         candidate = index;
       }
     }
