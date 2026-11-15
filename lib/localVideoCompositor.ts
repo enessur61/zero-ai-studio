@@ -398,19 +398,52 @@ export async function renderTimelineVideoMax60s(
         ctx.fillStyle = '#090B10';
         ctx.fillRect(0, 0, width, height);
 
-        const fadeInAlpha = f < 10 ? f / 10 : 1;
-        drawCoverFrame(
-          ctx,
-          img,
-          width,
-          height,
-          progress,
-          scene.cameraMovement,
-          scene.title,
-          scene.subtitleText || scene.narrationText,
-          burnSubtitles,
-          fadeInAlpha
-        );
+        // Smoothly crossfade adjacent scenes instead of flashing through black.
+        // Keep the transition short so the timeline remains exactly the requested duration.
+        const transitionFrames = Math.min(14, Math.max(1, Math.floor(fps * 0.55)));
+        if (sIdx > 0 && f < transitionFrames) {
+          const previousScene = renderScenes[sIdx - 1];
+          const previousImage = loadedImages[sIdx - 1];
+          const blend = (f + 1) / transitionFrames;
+          drawCoverFrame(
+            ctx,
+            previousImage,
+            width,
+            height,
+            1,
+            previousScene.cameraMovement,
+            previousScene.title,
+            previousScene.subtitleText || previousScene.narrationText,
+            burnSubtitles,
+            1 - blend
+          );
+          drawCoverFrame(
+            ctx,
+            img,
+            width,
+            height,
+            progress,
+            scene.cameraMovement,
+            scene.title,
+            scene.subtitleText || scene.narrationText,
+            burnSubtitles,
+            blend
+          );
+        } else {
+          const fadeInAlpha = sIdx === 0 && f < 10 ? f / 10 : 1;
+          drawCoverFrame(
+            ctx,
+            img,
+            width,
+            height,
+            progress,
+            scene.cameraMovement,
+            scene.title,
+            scene.subtitleText || scene.narrationText,
+            burnSubtitles,
+            fadeInAlpha
+          );
+        }
 
         frameIndex++;
         if (frameIndex % 12 === 0) {
