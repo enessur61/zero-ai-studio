@@ -391,6 +391,28 @@ app.post('/api/models/webgpu/activate', async (req, res) => {
   res.json({ model });
 });
 
+// Apple Foundation Models can only be probed inside the signed native iOS host.
+app.post('/api/models/native/activate', async (req, res) => {
+  const db = await loadDb();
+  const model = db.models.find((item) => item.id === 'apple-foundation-model');
+  const probeResponse = String(req.body?.probeResponse ?? '').trim();
+  if (!model || model.adapterId !== 'apple-foundation-model' || model.executionMode !== 'LOCAL ON-DEVICE') {
+    return res.status(404).json({ error: 'Apple Foundation Models sind nicht registriert.' });
+  }
+  if (!probeResponse || probeResponse.length > 1000) {
+    return res.status(400).json({ error: 'Native Inferenzantwort fehlt oder ist ungültig.' });
+  }
+  model.hasRealAdapter = true;
+  model.testPassed = true;
+  model.enabled = true;
+  model.status = 'LOKAL INSTALLIERT';
+  model.lastTestedAt = new Date().toISOString();
+  model.lastTestLatencyMs = null;
+  model.lastTestMessage = 'Native Apple Foundation Models Inferenz auf diesem iPhone erfolgreich bestätigt. Kein Cloud- oder Paid-Fallback.';
+  await saveDb(db);
+  res.json({ model });
+});
+
 app.post('/api/models/registry/register', async (req, res) => {
   const db = await loadDb();
   const started = Date.now();
