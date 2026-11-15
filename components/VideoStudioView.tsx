@@ -124,19 +124,22 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
           const clipUrl = URL.createObjectURL(blob);
           setWanClipUrl(clipUrl);
+          let persistedLocally = false;
           if (currentProject?.id) {
             try {
               await saveSceneVideoClip(currentProject.id, scene.id, blob);
-              setWanProgress('Clip erzeugt und lokal auf diesem iPhone gespeichert...');
+              persistedLocally = true;
             } catch {
-              setWanProgress('Clip erzeugt; lokale Speicherung fehlgeschlagen. Bitte vor dem Neuladen exportieren.');
+              persistedLocally = false;
             }
           }
           setWanClipScene(scene.title);
           setScenes((previous) => previous.map((item) =>
             item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
           ));
-          setWanProgress('Echter Wan-2.1-Clip fertig · 5 Sekunden · wird im finalen Timeline-Export verwendet');
+          setWanProgress(persistedLocally
+            ? 'Echter Wan-2.1-Clip fertig · 5 Sekunden · lokal auf diesem iPhone gespeichert'
+            : 'Clip erzeugt, aber nicht lokal gespeichert. Bitte vor dem Neuladen exportieren.');
           completed = true;
           break;
         }
