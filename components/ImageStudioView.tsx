@@ -44,7 +44,6 @@ export function ImageStudioView({
   const [savingToProject, setSavingToProject] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [style, setStyle] = useState('Leica 35mm cinema photography, high contrast');
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [gallery, setGallery] = useState<GeneratedImageItem[]>([
@@ -71,36 +70,9 @@ export function ImageStudioView({
   const [analyzing, setAnalyzing] = useState(false);
   const [processingLocal, setProcessingLocal] = useState(false);
 
-  async function handleGenerate(e: React.FormEvent) {
+  function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim() || loading) return;
-    setLoading(true);
-    setError(null);
-    setAnalysisText(null);
-    try {
-      const data = await apiRequest<{
-        imageDataUrl: string;
-        engine: string;
-        optimizedPrompt: string;
-      }>('/api/image/generate', {
-        method: 'POST',
-        body: JSON.stringify({ prompt, model, aspectRatio, characterId, style }),
-      });
-      const item: GeneratedImageItem = {
-        id: `img-${Date.now()}`,
-        url: data.imageDataUrl,
-        prompt: data.optimizedPrompt,
-        engine: data.engine,
-        aspectRatio,
-        createdAt: new Date().toISOString(),
-      };
-      setGallery((prev) => [item, ...prev]);
-      setActiveImage(item);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bildgenerierung fehlgeschlagen');
-    } finally {
-      setLoading(false);
-    }
+    setError('Cloud-Bildgenerierung ist derzeit deaktiviert. Upload und lokale Bildbearbeitung bleiben verfügbar.');
   }
 
   async function handleLocalEdit(preset: ImageFilterPreset) {
@@ -271,7 +243,7 @@ export function ImageStudioView({
               disabled
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
             >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+              <Wand2 className="w-4 h-4" />
               Cloud-Bildgenerierung pausiert
             </button>
 
