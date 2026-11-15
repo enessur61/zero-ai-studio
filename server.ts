@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import {
@@ -164,23 +165,6 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
-}
-
-function clampScenesToMax60Seconds(scenes: FilmScene[]): FilmScene[] {
-  const maxTotal = 60;
-  const total = scenes.reduce((sum, s) => sum + Math.max(4, s.durationSec), 0);
-  if (total <= maxTotal) return scenes;
-  const scale = maxTotal / total;
-  let running = 0;
-  return scenes.map((s, idx) => {
-    if (idx === scenes.length - 1) {
-      const rem = Math.max(4, maxTotal - running);
-      return { ...s, durationSec: rem };
-    }
-    const scaled = Math.max(4, Math.floor(s.durationSec * scale));
-    running += scaled;
-    return { ...s, durationSec: scaled };
-  });
 }
 
 // === SYSTEM & AUDIT ===
