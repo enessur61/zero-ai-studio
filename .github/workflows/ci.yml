@@ -145,11 +145,15 @@ jobs:
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
           }
-          const billingGateResponse = await authFetch('/api/models/gemini-3.7-flash/test', { method: 'POST' });
+          const removedLegacyModel = await authFetch('/api/models/gemini-3.7-flash/test', { method: 'POST' });
+          if (removedLegacyModel.status !== 404) {
+            throw new Error('Deprecated Gemini alias is still exposed by the API');
+          }
+          const billingGateResponse = await authFetch('/api/models/gemini-3.8-flash/test', { method: 'POST' });
           const billingGate = await billingGateResponse.json();
-          if (!billingGateResponse.ok || billingGate.model.status !== 'INSTALLATION ERFORDERLICH' ||
-              !billingGate.model.lastTestMessage.includes('ZERO_GEMINI_FREE_TIER_ONLY=true')) {
-            throw new Error('Gemini billing safety gate is not clearly enforced: ' + JSON.stringify(billingGate.model));
+          if (!billingGateResponse.ok || billingGate.model?.status !== 'INSTALLATION ERFORDERLICH' ||
+              !billingGate.model?.lastTestMessage?.includes('ZERO_GEMINI_FREE_TIER_ONLY=true')) {
+            throw new Error('Gemini billing safety gate is not clearly enforced: ' + JSON.stringify(billingGate));
           }
           const modelResponse = await authFetch('/api/models');
           if (!modelResponse.ok) throw new Error('Model catalog endpoint failed: ' + modelResponse.status + ' ' + await modelResponse.text());
@@ -168,7 +172,7 @@ jobs:
             const toggle = await authFetch('/api/models/' + id + '/toggle', { method: 'POST' });
             if (toggle.status !== 400) throw new Error('Unavailable model can be toggled: ' + id);
           }
-          for (const id of ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding']) {
+          for (const id of ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding']) {
             const model = models.find((entry) => entry.id === id);
             if (!model || model.status !== 'INSTALLATION ERFORDERLICH' || model.testPassed) {
               throw new Error('Gemini model falsely marked live without API credentials: ' + id);
