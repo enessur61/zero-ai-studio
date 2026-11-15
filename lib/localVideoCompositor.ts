@@ -296,18 +296,61 @@ export async function renderTimelineVideoMax60s(
   }
 
   const finalStream = new MediaStream(combinedTracks);
+  if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
+    finalStream.getTracks().forEach((track) => track.stop());
+    if (audioCtx) await audioCtx.close().catch(() => {});
+    throw new Error(
+      'Dein Browser unterstützt den ZERO-Videoexport nicht. Bitte öffne ZERO in Safari auf einem aktuellen iPhone oder iPad.'
+    );
+  }
+
+  // Safari on iPhone generally prefers MP4/H.264; Chromium browsers commonly
+  // prefer WebM. Probe support instead of assuming one container is available.
   const preferredMimes = hasAudioTrack
     ? [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4',
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
         'video/webm',
-        'video/mp4',
       ]
-    : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
-  const mimeType = preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) || '';
-  const recorder = mimeType
-    ? new MediaRecorder(finalStream, { mimeType, videoBitsPerSecond: 10_000_000 })
-    : new MediaRecorder(finalStream);
+    : [
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+      ];
+  const supportedMimes = typeof MediaRecorder.isTypeSupported === 'function'
+    ? preferredMimes.filter((candidate) => MediaRecorder.isTypeSupported(candidate))
+    : [];
+  let recorder: MediaRecorder;
+  let mimeType = '';
+  let recorderError: unknown;
+  for (const candidate of supportedMimes) {
+    try {
+      recorder = new MediaRecorder(finalStream, {
+        mimeType: candidate,
+        videoBitsPerSecond: 6_000_000,
+      });
+      mimeType = candidate;
+      break;
+    } catch (error) {
+      recorderError = error;
+    }
+  }
+  if (!recorder!) {
+    try {
+      recorder = new MediaRecorder(finalStream, { videoBitsPerSecond: 6_000_000 });
+      mimeType = recorder.mimeType || '';
+    } catch (error) {
+      finalStream.getTracks().forEach((track) => track.stop());
+      if (audioCtx) await audioCtx.close().catch(() => {});
+      throw new Error(
+        `ZERO konnte keinen kompatiblen Videoexport starten. Aktualisiere iOS und öffne ZERO erneut. ${error instanceof Error ? error.message : recorderError instanceof Error ? recorderError.message : ''}`
+      );
+    }
+  }
 
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (ev) => {
