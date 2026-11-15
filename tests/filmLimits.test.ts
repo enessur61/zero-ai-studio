@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { clampScenesToMax60Seconds } from '../server/filmLimits.ts';
+import { clampScenesToMax60Seconds, normalizeSceneDurationsForRender } from '../server/filmLimits.ts';
 
 function totalDuration(scenes: Array<{ durationSec: number }>): number {
   return scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
@@ -37,3 +37,14 @@ assert.deepEqual(invalidDurations.map((scene) => scene.durationSec), [2, 2]);
 assert.ok(totalDuration(invalidDurations) <= 60);
 
 console.log('Film timeline tests passed: all generated timelines are <= 60 seconds.');
+
+const renderSafe = normalizeSceneDurationsForRender([
+  { id: 'nan', durationSec: Number.NaN },
+  { id: 'negative', durationSec: -5 },
+  { id: 'fraction', durationSec: 3.6 },
+  { id: 'normal', durationSec: 8 },
+]);
+assert.deepEqual(renderSafe.map((scene) => scene.durationSec), [2, 2, 4, 8]);
+assert.equal(totalDuration(renderSafe), 16);
+
+console.log('Render normalization tests passed: invalid durations cannot corrupt frame timing.');

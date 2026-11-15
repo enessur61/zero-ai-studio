@@ -1,4 +1,5 @@
 import type { FilmScene } from '../types/zero.ts';
+import { normalizeSceneDurationsForRender } from '../server/filmLimits.ts';
 
 export interface VideoRenderOptions {
   scenes: FilmScene[];
@@ -27,13 +28,17 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<AudioBuffer | null> {
+async function decodeAudioFromUrl(ctx: AudioContext, url: string): Promise<AudioBuffer> {
   try {
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const arr = await res.arrayBuffer();
+    if (!arr.byteLength) throw new Error('leere Audiodatei');
     return await ctx.decodeAudioData(arr);
   } catch {
-    return null;
+    throw new Error(
+      'Eine ausgewählte Audiospur konnte nicht geladen oder dekodiert werden. Bitte eine gültige WAV-, MP3- oder M4A-Datei auswählen.'
+    );
   }
 }
 
@@ -130,12 +135,13 @@ export async function renderTimelineVideoMax60s(
 ): Promise<VideoRenderResult> {
   const { scenes, aspectRatio, burnSubtitles, audioUrl, includeSceneVoiceovers = true, onProgress } =
     options;
-  if (!scenes.length) {
+  const renderScenes = normalizeSceneDurationsForRender(scenes);
+  if (!renderScenes.length) {
     throw new Error('Keine Szenen zum Rendern vorhanden.');
   }
 
   // HARD CAP: MAXIMAL 60 SEKUNDEN
-  const rawTotal = scenes.reduce((sum, s) => sum + Math.max(2, s.durationSec), 0);
+  const rawTotal = renderScenes.reduce((sum, scene) => sum + scene.durationSec, 0);
   if (rawTotal > 60) {
     throw new Error(
       `Videolimit überschritten (${rawTotal}s > 60s). ZERO AI STUDIO erlaubt maximal 60 Sekunden pro Video.`
@@ -148,7 +154,7 @@ export async function renderTimelineVideoMax60s(
 
   onProgress?.(5, 'Lade Szenenbilder...');
   const loadedImages = await Promise.all(
-    scenes.map(async (s) => {
+    renderScenes.map(async (s) => {
       if (!s.imageUrl) return null;
       try {
         return await loadImage(s.imageUrl);
@@ -157,6 +163,14 @@ export async function renderTimelineVideoMax60s(
       }
     })
   );
+  const failedImageIndex = renderScenes.findIndex(
+    (scene, index) => Boolean(scene.imageUrl) && !loadedImages[index]
+  );
+  if (failedImageIndex >= 0) {
+    throw new Error(
+      `Das Szenenbild für „${renderScenes[failedImageIndex].title}“ konnte nicht geladen werden.`
+    );
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -172,7 +186,7 @@ export async function renderTimelineVideoMax60s(
   let hasAudioTrack = false;
   const scheduledSources: AudioBufferSourceNode[] = [];
 
-  const hasVoiceovers = includeSceneVoiceovers && scenes.some((s) => Boolean(s.audioDataUrl));
+  const hasVoiceovers = includeSceneVoiceovers && renderScenes.some((s) => Boolean(s.audioDataUrl));
   if (audioUrl || hasVoiceovers) {
     try {
       onProgress?.(8, 'Dekodiere Audiospuren...');
@@ -184,36 +198,32 @@ export async function renderTimelineVideoMax60s(
 
       if (audioUrl) {
         const bgBuf = await decodeAudioFromUrl(audioCtx, audioUrl);
-        if (bgBuf) {
-          const bgSource = audioCtx.createBufferSource();
-          bgSource.buffer = bgBuf;
-          bgSource.loop = bgBuf.duration < rawTotal;
-          const bgGain = audioCtx.createGain();
-          bgGain.gain.value = hasVoiceovers ? 0.38 : 0.85;
-          bgSource.connect(bgGain).connect(dest);
-          scheduledSources.push(bgSource);
-          hasAudioTrack = true;
-        }
+        const bgSource = audioCtx.createBufferSource();
+        bgSource.buffer = bgBuf;
+        bgSource.loop = bgBuf.duration < rawTotal;
+        const bgGain = audioCtx.createGain();
+        bgGain.gain.value = hasVoiceovers ? 0.38 : 0.85;
+        bgSource.connect(bgGain).connect(dest);
+        scheduledSources.push(bgSource);
+        hasAudioTrack = true;
       }
 
       if (hasVoiceovers) {
         let offsetSec = 0;
-        for (const sc of scenes) {
+        for (const sc of renderScenes) {
           if (sc.audioDataUrl) {
             const voiceBuf = await decodeAudioFromUrl(audioCtx, sc.audioDataUrl);
-            if (voiceBuf) {
-              const voiceSource = audioCtx.createBufferSource();
-              voiceSource.buffer = voiceBuf;
-              const vGain = audioCtx.createGain();
-              vGain.gain.value = 1.0;
-              voiceSource.connect(vGain).connect(dest);
-              // Store start offset in custom property
-              (voiceSource as AudioBufferSourceNode & { _startOffset?: number })._startOffset =
-                offsetSec;
-              (voiceSource as AudioBufferSourceNode & { _maxDur?: number })._maxDur = sc.durationSec;
-              scheduledSources.push(voiceSource);
-              hasAudioTrack = true;
-            }
+            const voiceSource = audioCtx.createBufferSource();
+            voiceSource.buffer = voiceBuf;
+            const vGain = audioCtx.createGain();
+            vGain.gain.value = 1.0;
+            voiceSource.connect(vGain).connect(dest);
+            // Store start offset in custom property
+            (voiceSource as AudioBufferSourceNode & { _startOffset?: number })._startOffset =
+              offsetSec;
+            (voiceSource as AudioBufferSourceNode & { _maxDur?: number })._maxDur = sc.durationSec;
+            scheduledSources.push(voiceSource);
+            hasAudioTrack = true;
           }
           offsetSec += sc.durationSec;
         }
@@ -225,12 +235,13 @@ export async function renderTimelineVideoMax60s(
         await audioCtx.close();
         audioCtx = null;
       }
-    } catch {
+    } catch (audioError) {
       if (audioCtx) {
         await audioCtx.close().catch(() => {});
         audioCtx = null;
       }
-      hasAudioTrack = false;
+      canvasStream.getTracks().forEach((track) => track.stop());
+      throw audioError;
     }
   }
 
@@ -285,8 +296,8 @@ export async function renderTimelineVideoMax60s(
   let frameIndex = 0;
 
   try {
-    for (let sIdx = 0; sIdx < scenes.length; sIdx++) {
-      const scene = scenes[sIdx];
+    for (let sIdx = 0; sIdx < renderScenes.length; sIdx++) {
+      const scene = renderScenes[sIdx];
       const img = loadedImages[sIdx];
       const sceneFrames = Math.floor(scene.durationSec * fps);
 
@@ -313,7 +324,7 @@ export async function renderTimelineVideoMax60s(
         frameIndex++;
         if (frameIndex % 12 === 0) {
           const pct = Math.min(98, Math.round(10 + (frameIndex / totalFrames) * 88));
-          onProgress?.(pct, `Rendere Szene ${sIdx + 1}/${scenes.length}...`);
+          onProgress?.(pct, `Rendere Szene ${sIdx + 1}/ ${renderScenes.length}...`);
         }
         await new Promise((r) => setTimeout(r, 1000 / fps));
       }
