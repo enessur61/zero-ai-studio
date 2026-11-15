@@ -16,7 +16,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeVoiceovers, setIncludeVoiceovers] = useState(true);
   const [selectedAudioUrl, setSelectedAudioUrl] = useState<string>(soundtrack?.url ?? '');
@@ -44,6 +44,46 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   const totalDuration = scenes.reduce((sum, s) => sum + s.durationSec, 0);
   const exceedsLimit = totalDuration > 60;
+
+  async function handleImportSceneImages(files: FileList | null) {
+    if (!files?.length || !scenes.length) return;
+    const selected = Array.from(files).filter((file) => file.type.startsWith('image/')).slice(0, 10);
+    if (!selected.length) {
+      setError('Bitte wähle gültige Bilddateien aus.');
+      return;
+    }
+    try {
+      const optimized = await Promise.all(selected.map(async (file) => {
+        if (file.size > 20 * 1024 * 1024) {
+          throw new Error(`„${file.name}“ ist größer als 20 MB.`);
+        }
+        const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
+          img.src = url;
+        });
+        const scale = Math.min(1, 1920 / Math.max(source.width, source.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(source.width * scale));
+        canvas.height = Math.max(1, Math.round(source.height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Bildverarbeitung ist auf diesem Gerät nicht verfügbar.');
+        context.drawImage(source, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', 0.84);
+      }));
+      setScenes((previous) => previous.map((scene, index) => ({
+        ...scene,
+        imageUrl: optimized[index % optimized.length],
+        status: 'Bild bereit',
+      })));
+      setResult(null);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bilder konnten nicht importiert werden.');
+    }
+  }
 
   function updateSceneDuration(id: string, val: number) {
     const safeVal = Math.max(3, Math.min(30, val));
@@ -163,6 +203,20 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Scene Timeline */}
         <div className="lg:col-span-7 space-y-3">
+          <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-2">
+            <label className="text-sm font-medium text-white block">Eigene Szenenbilder vom iPhone hinzufügen</label>
+            <p className="text-xs text-slate-400">Wähle bis zu 10 Fotos oder Grafiken aus deiner Mediathek. ZERO verteilt sie automatisch auf die Szenen und nutzt sie für den Videoexport.</p>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                void handleImportSceneImages(event.target.files);
+                event.currentTarget.value = '';
+              }}
+              className="block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-[#2563EB] file:px-3 file:py-2 file:text-white"
+            />
+          </div>
           {scenes.map((scene) => (
             <div
               key={scene.id}
