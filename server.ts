@@ -1197,6 +1197,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
 
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
 
+    const imageGenerationWarnings: string[] = [];
     if (generateImages) {
       await Promise.all(
         mappedScenes.map(async (scene, idx) => {
@@ -1204,13 +1205,17 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
-              aspectRatio: '16:9',
+              aspectRatio: '9:16',
               seed: 1000 + idx * 37,
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
-          } catch {
-            // Leave imageUrl undefined so UI clearly marks it as Entwurf without faking
+          } catch (imageError) {
+            // Never label a film as being in production when no scene artwork exists.
+            scene.status = 'Bildgenerierung nicht verfügbar';
+            imageGenerationWarnings.push(
+              imageError instanceof Error ? imageError.message : 'Szenenbild konnte nicht generiert werden.'
+            );
           }
         })
       );
@@ -1240,7 +1245,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
           totalDurationSec: totalSec,
         },
       ],
-      status: generateImages ? 'In Produktion' : 'Konzept',
+      status: mappedScenes.some((scene) => Boolean(scene.imageUrl)) ? 'In Produktion' : 'Konzept',
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -1260,7 +1265,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
     await saveDb(db);
     await maybeAutoCreateZipBackup(`Filmprojekt "${newProject.title}" generiert (${totalSec}s)`);
 
-    res.json({ project: newProject });
+    res.json({ project: newProject, imageGenerationWarnings });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
