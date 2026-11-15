@@ -89,7 +89,8 @@ export function BrainView({
         selectedModel === 'llama-3.2-3b-coreml' ||
         selectedModel === 'qwen-2.5-3b-coreml' ||
         selectedModel === 'gemma-3-4b-it' ||
-        selectedModel === 'deepseek-r1-distill-1.5b'
+        selectedModel === 'deepseek-r1-distill-1.5b' ||
+        selectedModel === 'apple-foundation-model'
       ) {
         const res = await runNativeCoreMLPrompt({
           modelId: selectedModel,
@@ -105,7 +106,7 @@ export function BrainView({
             content: res.text || '',
             modelUsed: selectedModel,
             routingSteps: [
-              `ZERO CORE -> iOS WKWebView Bridge (${selectedModel} · A18 Pro Neural Engine/MLX · 0,00 €)`,
+              `ZERO CORE -> native iOS (${selectedModel} · On-Device · 0,00 €)`,
             ],
             timestamp: new Date().toISOString(),
           },
@@ -271,6 +272,9 @@ export function BrainView({
                 </option>
                 <option value="gemma-3-4b-it">
                   Gemma 3 4B IT (MediaPipe · iPhone Lokal · 0 €)
+                </option>
+                <option value="apple-foundation-model">
+                  Apple Foundation Models (iOS 26+ · Apple Intelligence · lokal · 0 €)
                 </option>
               </select>
 
