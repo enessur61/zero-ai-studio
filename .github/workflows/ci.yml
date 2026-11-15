@@ -122,11 +122,15 @@ jobs:
           }
           for (const id of ['qwen-2.5-3b-coreml', 'llama-3.2-1b-coreml', 'llama-3.2-3b-coreml', 'gemma-3-4b-it', 'deepseek-r1-distill-1.5b', 'piper-tts-de', 'whisper-cpp-small', 'kokoro-82m']) {
             const model = models.find((entry) => entry.id === id);
-            if (!model || model.enabled || model.status !== 'INSTALLATION ERFORDERLICH') {
+            if (!model || model.enabled || model.hasRealAdapter || model.status !== 'INSTALLATION ERFORDERLICH') {
               throw new Error('iOS model incorrectly marked ready: ' + id);
             }
             const toggle = await authFetch('/api/models/' + id + '/toggle', { method: 'POST' });
             if (toggle.status !== 400) throw new Error('Uninstalled iOS model can be enabled: ' + id);
+          }
+          const groundingFeature = models.find((entry) => entry.id === 'gemini-web-grounding');
+          if (!groundingFeature || !groundingFeature.enabled || !groundingFeature.provider.includes('gemini-2.5-flash-lite')) {
+            throw new Error('Web grounding is not routed through the verified free-tier model');
           }
           const iosRuntime = await authFetch('/api/models/ios-runtime');
           const iosStatus = await iosRuntime.json();
