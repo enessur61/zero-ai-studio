@@ -73,7 +73,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     "modelId": modelId,
                     "status": availability.status,
                     "runtime": "Apple Foundation Models · On-Device Apple Intelligence",
-                    "deviceModel": ProcessInfo.processInfo.machineIdentifier,
+                    "deviceModel": iOS-Gerät,
                     "compiledModelPresent": availability.available,
                     "estimatedRamGB": 0
                 ])
@@ -83,7 +83,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     "modelId": modelId,
                     "status": "iOS 26 oder neuer erforderlich",
                     "runtime": "Apple Foundation Models",
-                    "deviceModel": ProcessInfo.processInfo.machineIdentifier,
+                    "deviceModel": iOS-Gerät,
                     "compiledModelPresent": false,
                     "estimatedRamGB": 0
                 ])
