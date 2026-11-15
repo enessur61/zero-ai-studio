@@ -319,6 +319,10 @@ export async function runLiveModelTest(
       model.status = 'FREE-TIER AUSGESCHÖPFT';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
+    } else if (cleanMsg.includes('GEMINI_API_KEY')) {
+      model.testPassed = false;
+      model.status = 'INSTALLATION ERFORDERLICH';
+      model.lastTestMessage = cleanMsg;
     } else {
       model.testPassed = false;
       model.status = 'ADAPTER FEHLT';
