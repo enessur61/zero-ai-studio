@@ -71,7 +71,7 @@ export async function runLiveModelTest(
   const started = Date.now();
   const now = new Date().toISOString();
   // Revoke stale activation for server-probed models. WebGPU is probed in the browser, not on this server.
-  if (model.id !== 'webgpu-llama-3.2-1b') model.enabled = false;
+  if (!['webgpu-llama-3.2-1b', 'apple-foundation-model'].includes(model.id)) model.enabled = false;
 
   if (
     !model.enabled &&
@@ -142,6 +142,19 @@ export async function runLiveModelTest(
   ) {
     model.lastTestMessage =
       'Auf diesem Gerät bereits durch echte lokale WebGPU-Inferenz bestätigt. Der Server kann die Browser-GPU nicht erneut testen.';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = 0;
+    return model;
+  }
+
+  if (
+    model.id === 'apple-foundation-model' &&
+    model.enabled &&
+    model.status === 'LOKAL INSTALLIERT' &&
+    model.testPassed
+  ) {
+    model.lastTestMessage =
+      'Auf diesem iPhone bereits durch echte native Apple-Foundation-Models-Inferenz bestätigt. Der Server kann das OS-Modell nicht selbst ausführen.';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = 0;
     return model;
