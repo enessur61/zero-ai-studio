@@ -223,8 +223,9 @@ export function ModelHubView({
           m.status === 'FUNKTIONIERT' ||
           m.status === 'LOKAL INSTALLIERT'
       ).length;
+      const activeCount = data.models.filter((m) => m.enabled).length;
       setFeedback(
-        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle erfolgreich getestet (0,00 €).`
+        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle erfolgreich getestet; ${activeCount} kostenlose, lauffähige Modelle automatisch aktiviert (0,00 €).`
       );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'Komplettprüfung fehlgeschlagen');
