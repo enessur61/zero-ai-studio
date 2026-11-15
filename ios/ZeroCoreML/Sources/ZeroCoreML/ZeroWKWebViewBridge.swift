@@ -135,8 +135,8 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                 "compiledModelPresent": d.modelPresent,
                 "estimatedRamGB": d.estimatedRamGB
             ])
-#if canImport(FoundationModels)
         } else if modelId == "apple-foundation-model" {
+#if canImport(FoundationModels)
             if #available(iOS 26.0, macOS 26.0, *) {
                 let d = AppleFoundationModelAdapter().deploymentDiagnostics()
                 emitToJS(requestId: requestId, payload: [
@@ -156,6 +156,13 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
                 ])
             }
+#else
+            emitToJS(requestId: requestId, payload: [
+                "ok": false,
+                "modelId": modelId,
+                "status": "FRAMEWORK NICHT VERFÜGBAR",
+                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
+            ])
 #endif
         } else {
             emitToJS(requestId: requestId, payload: [
@@ -221,8 +228,8 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     ])
                 }
             }
-#if canImport(FoundationModels)
         } else if modelId == "apple-foundation-model" {
+#if canImport(FoundationModels)
             if #available(iOS 26.0, macOS 26.0, *) {
                 let adapter = AppleFoundationModelAdapter()
                 Task {
@@ -249,6 +256,12 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     "error": "Apple Foundation Models benötigt iOS 26 oder neuer."
                 ])
             }
+#else
+            emitToJS(requestId: requestId, payload: [
+                "ok": false,
+                "type": "error",
+                "error": "FoundationModels.framework ist in diesem SDK nicht verfügbar."
+            ])
 #endif
         } else {
             emitToJS(requestId: requestId, payload: [
