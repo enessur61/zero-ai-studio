@@ -1,6 +1,6 @@
 # ZERO AI STUDIO
 
-**Nichts ist zufällig.**  
+**BEYOND LIMITS.**  
 
 > **Verifizierungsstatus (15.11.2026):** Die Oberfläche und die Backend-Routen sind im Quellcode vorhanden, aber nicht alle Provider sind ohne Zugangsdaten nutzbar. Gemini 3.8 Flash ist ein reales Modell laut offizieller Modellliste; der kostenlose API-Tarif ist kontingentbegrenzt und benötigt einen eigenen API-Key. Ein Modellstatus „FUNKTIONIERT“ darf erst nach erfolgreichem Live-Test gesetzt werden. Pollinations verlangt inzwischen einen API-Key für Generierungsanfragen; ein kostenfreier oder unbegrenzter Betrieb darf daher nicht pauschal zugesichert werden.
 Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safari / Native iOS Roadmap) mit **ZERO CORE**, **Model Hub**, **Film Director**, **Image/Video/Audio/Music Studios**, **Character Engine**, **Web Intelligence**, **Automation Engine** und **Langzeitgedächtnis**.
@@ -32,7 +32,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 │   │   ├── BrainView.tsx            # ZERO BRAIN Assistent, Web Intelligence & Automation Engine
 │   │   ├── FilmDirectorView.tsx     # 14-Stufen Kurzfilm-Regie (<= 60s) & Einzel-Szenen-Regenerierung
 │   │   ├── HomeView.tsx             # Übersicht, Metriken, Ist-Zustand & Entwicklungsplan
-│   │   ├── ImageStudioView.tsx      # FLUX.1 / SD Turbo Free Cloud, Img2Img, 2x Upscale & Vision-Analyse
+│   │   ├── ImageStudioView.tsx      # Img2Img, 2x Upscale & Vision-Analyse; Cloud-Generierung pausiert
 │   │   ├── MemoryView.tsx           # Langzeitgedächtnis & semantische Vektorsuche (gemini-embedding-2)
 │   │   ├── ModelHubView.tsx         # Filterbarer Modellkatalog mit Live-Testrunner
 │   │   ├── MusicStudioView.tsx      # KI-Komposition + lokale Web Audio DSP-Synthese + SFX (.wav)
@@ -122,7 +122,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (Safar
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
 | `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.1-flash-lite`, `gpt-oss-20b-free`) |
 | `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE mit verifizierten Google-Search-Quellen |
-| `POST` | `/api/image/generate` | Bildgenerierung über FLUX.1 Schnell, SD Turbo & Sana (Open Cloud) |
+| `POST` | `/api/image/generate` | Bildgenerierung über (derzeit deaktiviert; kein verifizierter dauerhaft kostenloser Provider) |
 | `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
 | `POST` | `/api/audio/transcribe` | Audio-Transkription & SRT (`gemini-3.5-transcribe`) |
