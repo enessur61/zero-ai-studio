@@ -1,0 +1,21 @@
+{
+  "backupCreatedAt": "2026-11-15T04:22:30-08:00",
+  "purpose": "Phase 1 Sicherung des Ausgangszustands vor ZERO AI STUDIO Ausbau",
+  "originalFiles": {
+    "metadata.json": {
+      "name": "",
+      "description": "",
+      "requestFramePermissions": [],
+      "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+    },
+    "packageScripts": {
+      "dev": "vite --port=3000 --host=0.0.0.0",
+      "build": "vite build",
+      "preview": "vite preview",
+      "clean": "rm -rf dist server.js",
+      "lint": "tsc --noEmit"
+    },
+    "initialAppTsx": "export default function App() { return <div></div>; }",
+    "initialStatus": "Leeres React + Vite + Tailwind Grundgerüst ohne Backend, ohne Modelladapter und ohne persistente Datenbank."
+  }
+}

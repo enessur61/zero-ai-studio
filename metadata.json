@@ -1,0 +1,6 @@
+{
+  "name": "ZERO AI STUDIO",
+  "description": "Eigenständige 0 € KI-Produktionsplattform (ZERO CORE, Model Hub, Film Director, Image/Video/Audio/Music Studios & Memory) optimiert für iPhone 16 Pro Max.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
