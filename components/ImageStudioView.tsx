@@ -268,7 +268,7 @@ export function ImageStudioView({
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="submit"
-              disabled={true || loading || !prompt.trim()}
+              disabled
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
@@ -415,7 +415,7 @@ export function ImageStudioView({
 
           {analysisText && (
             <div className="p-4 rounded-xl bg-[#090B10] border border-white/[0.08] text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
-              <p className="font-semibold text-white mb-1">Gemini 4 Vision Analyse:</p>
+              <p className="font-semibold text-white mb-1">Gemini 3.8 Flash Vision-Analyse (Free Tier · API-Key):</p>
               {analysisText}
             </div>
           )}
