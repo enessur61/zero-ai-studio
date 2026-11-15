@@ -499,8 +499,9 @@ app.get('/api/brain/history', async (_req, res) => {
 });
 
 app.post('/api/brain/chat', async (req, res) => {
-  const db = await loadDb();
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
+    db = await loadDb();
     const message = String(req.body?.message ?? '').trim();
     const requestedModel = String(req.body?.modelId ?? 'gemini-3.8-flash');
     const useWebSearch = Boolean(req.body?.useWebSearch);
@@ -636,7 +637,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
-    if (isQuotaOrRateLimitError(err)) {
+    if (db && isQuotaOrRateLimitError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
           db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
@@ -644,7 +645,11 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       }
       await saveDb(db);
     }
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(db ? 400 : 503).json({
+      error: db
+        ? formatGermanApiError(err)
+        : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte gleich erneut versuchen.',
+    });
   }
 });
 
