@@ -194,7 +194,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
 app.post('/api/auth/logout', (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
+  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
