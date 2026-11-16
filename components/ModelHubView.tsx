@@ -19,9 +19,9 @@ import {
   generateWebGPULocalChat,
   isWebGPULocalModelLoaded,
   loadWebGPULocalModel,
-  WEBGPU_LOCAL_MODEL_DOWNLOAD_MB,
   WEBGPU_LOCAL_MODEL_ID,
-  WEBGPU_LOCAL_MODEL_VRAM_MB,
+  WEBGPU_LOCAL_MODELS,
+  unloadWebGPULocalModel,
 } from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 
@@ -178,13 +178,13 @@ export function ModelHubView({
       const selectedPreset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId) ?? WEBGPU_LOCAL_MODELS[0];\n      await loadWebGPULocalModel((progress) => {
         setWebGpuProgress(progress.progress);
         setWebGpuProgressText(progress.text);
-      });
+      }, selectedPreset.modelId);
       setWebGpuLoaded(true);
       await verifyAndActivateLoadedWebGpuModel();
       setFeedback(
         webGpuProbeRef.current
-          ? 'Llama 3.2 1B wurde lokal geladen und der Inferenztest gestartet.'
-          : 'Llama 3.2 1B wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.'
+          ? '${selectedPreset.name} wurde lokal geladen und der Inferenztest gestartet.'
+          : '${selectedPreset.name} wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.'
       );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
