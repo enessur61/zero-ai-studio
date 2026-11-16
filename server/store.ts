@@ -155,7 +155,7 @@ export const DEVELOPMENT_ROADMAP: DevelopmentPhase[] = [
     phase: 4,
     title: 'ZERO AUDIO STUDIO & Sprachpipeline',
     status: 'abgeschlossen',
-    deliverables: ['Gemini-TTS-Adapter und lokales WAV-Rendering', 'Apple AVSpeech / Web Speech Deutsch', 'Transkription als Text; keine automatisch erzeugten SRT-Zeitstempel'], 
+    deliverables: ['Gemini-TTS-Adapter und lokales WAV-Rendering', 'Apple AVSpeech / Web Speech Deutsch', 'Wortgenaue Zeitstempel aus Gemini-Transkriptionsannotationen und echter SRT-Download; ohne Zeitstempel kein erfundenes SRT'], 
   },
   {
     phase: 5,
@@ -904,4 +904,3 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
     db: parsedRestoredDb,
   };
 }
-
