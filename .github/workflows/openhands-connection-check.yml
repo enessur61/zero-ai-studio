@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - security/phase-1-hardening
+    paths:
+      - .github/workflows/openhands-connection-check.yml
   workflow_dispatch:
 
 permissions:
