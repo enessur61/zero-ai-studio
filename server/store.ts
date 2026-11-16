@@ -943,10 +943,12 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   if (target.protected) {
     throw new Error('Geschütztes Backup darf nicht gelöscht werden. Hebe zuerst den Schutz auf.');
   }
-  if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
-  else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
+  // Remove metadata first. If blob cleanup subsequently fails, reconciliation
+  // reports an orphaned blob; deleting bytes first could leave a live entry broken.
   db.backupConfig.zipBackups.splice(idx, 1);
   await saveDb(db);
+  if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
+  else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
 }
 
 export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
