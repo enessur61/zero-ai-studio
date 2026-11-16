@@ -23,6 +23,7 @@ import { acquirePersistentAutoBackupLease, deleteBackupFile, inspectPersistentBa
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
+  MAX_ZIP_ARCHIVE_BYTES,
   verifyZipBuffer,
 } from './zipExporter.ts';
 
@@ -859,9 +860,22 @@ export async function getZipBackupFilePath(zipId: string): Promise<{
   const db = await loadDb();
   const record = db.backupConfig.zipBackups.find((b) => b.id === zipId);
   if (!record) throw new Error('ZIP-Version nicht gefunden.');
-  const buffer = process.env.DATABASE_URL
-    ? await readBackupFile(record.id)
-    : await fs.readFile(path.join(ZIP_BACKUP_DIR, record.filename));
+  if (!Number.isSafeInteger(record.sizeBytes) || record.sizeBytes < 0 || record.sizeBytes > MAX_ZIP_ARCHIVE_BYTES) {
+    throw new Error(`ZIP-Backup überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+  }
+  let buffer: Buffer;
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL checks octet_length before returning the BYTEA payload, avoiding
+    // an oversized blob allocation in the application process.
+    buffer = await readBackupFile(record.id, MAX_ZIP_ARCHIVE_BYTES);
+  } else {
+    const filePath = path.join(ZIP_BACKUP_DIR, record.filename);
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_ZIP_ARCHIVE_BYTES) {
+      throw new Error(`ZIP-Backup überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+    }
+    buffer = await fs.readFile(filePath);
+  }
   return { record, buffer };
 }
 
