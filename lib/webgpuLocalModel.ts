@@ -249,39 +249,44 @@ export function getLoadedWebGPULocalModelId(): WebGPULocalModelId | null {
   return loadedModelId;
 }
 
-export async function generateWebGPULocalChat(
+export function generateWebGPULocalChat(
   messages: WebGPULocalChatMessage[],
   onToken?: (token: string) => void,
   requestedModelId?: WebGPULocalModelId
 ): Promise<string> {
-  if (!engine || loadedModelIds.size === 0) {
-    throw new Error('Es ist noch kein lokales WebGPU-Modell geladen.');
-  }
-  const modelId = requestedModelId ?? loadedModelId;
-  if (!modelId || !loadedModelIds.has(modelId)) {
-    throw new Error('Das angeforderte lokale Modell ist nicht im GPU-Speicher geladen.');
-  }
-
-  const stream = (await engine.chat.completions.create({
-    model: modelId,
-    messages,
-    temperature: 0.7,
-    top_p: 0.9,
-    max_tokens: 512,
-    stream: true,
-  })) as AsyncIterable<{
-    choices?: Array<{ delta?: { content?: string } }>;
-  }>;
-
-  let answer = '';
-  for await (const chunk of stream) {
-    const token = chunk.choices?.[0]?.delta?.content;
-    if (typeof token === 'string' && token.length > 0) {
-      answer += token;
-      onToken?.(token);
+  // Keep inference and runtime mutations mutually exclusive. WebLLM must not
+  // be reloaded or unloaded while a streaming completion is using its engine.
+  return enqueueRuntimeOperation(async () => {
+    const activeEngine = engine;
+    if (!activeEngine || loadedModelIds.size === 0) {
+      throw new Error('Es ist noch kein lokales WebGPU-Modell geladen.');
     }
-  }
-  return answer.trim();
+    const modelId = requestedModelId ?? loadedModelId;
+    if (!modelId || !loadedModelIds.has(modelId)) {
+      throw new Error('Das angeforderte lokale Modell ist nicht im GPU-Speicher geladen.');
+    }
+
+    const stream = (await activeEngine.chat.completions.create({
+      model: modelId,
+      messages,
+      temperature: 0.7,
+      top_p: 0.9,
+      max_tokens: 512,
+      stream: true,
+    })) as AsyncIterable<{
+      choices?: Array<{ delta?: { content?: string } }>;
+    }>;
+
+    let answer = '';
+    for await (const chunk of stream) {
+      const token = chunk.choices?.[0]?.delta?.content;
+      if (typeof token === 'string' && token.length > 0) {
+        answer += token;
+        onToken?.(token);
+      }
+    }
+    return answer.trim();
+  });
 }
 
 export function unloadWebGPULocalModel(modelId?: WebGPULocalModelId): Promise<void> {
