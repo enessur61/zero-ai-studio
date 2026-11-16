@@ -13,11 +13,12 @@ import {
   assertZeroBudgetModelAllowed,
   formatGermanApiError,
   getGeminiClient,
-  isQuotaOrRateLimitError,
+  isQuotaExhaustionError,
   ThinkingLevel,
   Type,
   withTransientRetry,
 } from './server/geminiClient.ts';
+import { recordEmbeddingFailure } from './server/embeddingGuard.ts';
 import {
   generateFreeCloudImage,
   runAllModelTests,
@@ -938,7 +939,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
-    if (db && isQuotaOrRateLimitError(err)) {
+    if (db && isQuotaExhaustionError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
           db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
@@ -1012,7 +1013,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (isQuotaOrRateLimitError(err)) {
+    if (isQuotaExhaustionError(err)) {
       for (const quotaKey of ['gemini-web-grounding', 'gemini-2.5-flash-lite']) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
           db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
@@ -1084,7 +1085,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
       db.budgetGuard.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
       try {
         await saveDb(db);
@@ -1169,7 +1170,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
       db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
       try {
         await saveDb(db);
@@ -1279,7 +1280,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
       db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel].exhausted = true;
       try {
         await saveDb(db);
@@ -2151,6 +2152,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
   if (!title || !content) return res.status(400).json({ error: 'Titel und Inhalt erforderlich.' });
 
   let embedding: number[] | undefined;
+  let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
     try {
       assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db.budgetGuard, (e) =>
@@ -2162,8 +2164,18 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
         contents: [`${title}\n${content}`],
       });
       embedding = emb.embeddings?.[0]?.values;
-    } catch {
-      embedding = undefined;
+    } catch (err) {
+      // Never swallow a provider failure: classify it, audit it, and persist a
+      // durable exhausted lock when the provider confirms real quota exhaustion.
+      const outcome = recordEmbeddingFailure({
+        modelId: 'gemini-embedding-2',
+        action: 'MEMORY_EMBED',
+        err,
+        budgetGuard: db.budgetGuard,
+        recordAudit: (entry) => recordBudgetAudit(db, entry),
+      });
+      embeddingNotice = outcome.message;
+      if (outcome.persistedExhausted) await saveDb(db);
     }
   }
 
@@ -2186,7 +2198,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
 
   db.memories.unshift(entry);
   await saveDb(db);
-  res.json({ memory: entry });
+  res.json({ memory: entry, ...(embeddingNotice ? { embeddingNotice } : {}) });
 }));
 
 app.post('/api/memory/search', asyncRoute(async (req, res) => {
@@ -2195,6 +2207,7 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
   if (!query) return res.json({ results: db.memories.map((m) => ({ memory: m, score: 1 })) });
 
   let queryVec: number[] | null = null;
+  let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
     try {
       assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db.budgetGuard, (e) =>
@@ -2206,8 +2219,19 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
         contents: [query],
       });
       queryVec = emb.embeddings?.[0]?.values ?? null;
-    } catch {
+    } catch (err) {
+      // A failed embedding must never silently fall back: it is classified,
+      // audited, and persisted as a durable lock on real quota exhaustion.
+      const outcome = recordEmbeddingFailure({
+        modelId: 'gemini-embedding-2',
+        action: 'MEMORY_SEARCH',
+        err,
+        budgetGuard: db.budgetGuard,
+        recordAudit: (entry) => recordBudgetAudit(db, entry),
+      });
+      embeddingNotice = outcome.message;
       queryVec = null;
+      if (outcome.persistedExhausted) await saveDb(db);
     }
   }
 
@@ -2222,7 +2246,11 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
 
   scored.sort((a, b) => b.score - a.score);
   await saveDb(db);
-  res.json({ results: scored, semanticActive: Boolean(queryVec) });
+  res.json({
+    results: scored,
+    semanticActive: Boolean(queryVec),
+    ...(embeddingNotice ? { embeddingNotice } : {}),
+  });
 }));
 
 app.delete('/api/memory/:id', asyncRoute(async (req, res) => {

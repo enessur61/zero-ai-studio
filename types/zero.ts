@@ -9,6 +9,8 @@ export type ModelStatus =
   | 'ADAPTER FEHLT'
   | 'NICHT KOMPATIBEL'
   | 'FREE-TIER AUSGESCHÖPFT'
+  | 'RATE LIMIT'
+  | 'VORÜBERGEHEND AUSGELASTET'
   | 'GESPERRT';
 
 export type ModelCategory =

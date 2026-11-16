@@ -58,6 +58,22 @@ export function StatusLabel({ status }: { status: ModelStatus }) {
       </span>
     );
   }
+  if (status === 'RATE LIMIT') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-orange-300 whitespace-nowrap shrink-0">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+        RATE LIMIT
+      </span>
+    );
+  }
+  if (status === 'VORÜBERGEHEND AUSGELASTET') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-300 whitespace-nowrap shrink-0">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+        VORÜBERGEHEND AUSGELASTET
+      </span>
+    );
+  }
   if (status === 'GESPERRT') {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-rose-400 whitespace-nowrap shrink-0">

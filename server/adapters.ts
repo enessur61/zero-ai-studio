@@ -1,9 +1,9 @@
 import {
   assertZeroBudgetModelAllowed,
+  classifyProviderError,
   formatGermanApiError,
   getGeminiClient,
-  isQuotaOrRateLimitError,
-  isTransientServerError,
+  isExhaustedWithinCurrentDay,
   ThinkingLevel,
   withTransientRetry,
 } from './geminiClient.ts';
@@ -181,9 +181,26 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // Allow explicit live re-probe to recover from transient 429/503 cooldowns
-  if (db.budgetGuard.freeQuotaUsage[model.id]?.exhausted) {
-    db.budgetGuard.freeQuotaUsage[model.id].exhausted = false;
+  // A re-test must never clear a genuine quota lock. Only the proven daily
+  // rollover inside assertZeroBudgetModelAllowed may reset an exhausted quota.
+  const existingQuota = db.budgetGuard.freeQuotaUsage[model.id];
+  if (existingQuota && isExhaustedWithinCurrentDay(existingQuota)) {
+    model.testPassed = false;
+    model.status = 'FREE-TIER AUSGESCHÖPFT';
+    model.enabled = false;
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage =
+      'Free-Tier Tageskontingent ist ausgeschöpft. Ein erneuter Modelltest setzt diese Sperre nicht zurück — Freigabe erst nach dem nachgewiesenen täglichen Kontingent-Reset.';
+    recordBudgetAudit(db, {
+      adapterId: 'gemini-quota-guard',
+      modelId: model.id,
+      action: 'MODEL_TEST',
+      decision: 'GESTOPPT_KONTINGENT',
+      reason: 'Erneuter Modelltest blockiert: Tageskontingent weiterhin ausgeschöpft (kein Reset durch Re-Test).',
+      costEur: 0,
+    });
+    return model;
   }
 
   // Real FREE CLOUD probes
@@ -344,21 +361,27 @@ export async function runLiveModelTest(
     }
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
-    if (isQuotaOrRateLimitError(err)) {
+    const kind = classifyProviderError(err);
+    if (kind === 'quota-exhausted') {
+      // Genuine, provider-confirmed quota exhaustion: persist a durable lock.
       if (db.budgetGuard.freeQuotaUsage[model.id]) {
         db.budgetGuard.freeQuotaUsage[model.id].exhausted = true;
       }
       model.status = 'FREE-TIER AUSGESCHÖPFT';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
-    } else if (isTransientServerError(err)) {
-      model.status = 'FREE-TIER AUSGESCHÖPFT';
+    } else if (kind === 'rate-limited') {
+      // A temporary 429 rate limit is NOT exhausted daily quota: never persist
+      // an exhausted lock, never auto-enable the model.
+      model.status = 'RATE LIMIT';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
-    } else if (
-      cleanMsg.includes('GEMINI_API_KEY') ||
-      cleanMsg.includes('ZERO_GEMINI_FREE_TIER_ONLY')
-    ) {
+    } else if (kind === 'transient') {
+      // A temporary 503/network fault must never be shown as exhausted quota.
+      model.status = 'VORÜBERGEHEND AUSGELASTET';
+      model.testPassed = false;
+      model.lastTestMessage = cleanMsg;
+    } else if (kind === 'auth') {
       model.testPassed = false;
       model.status = 'INSTALLATION ERFORDERLICH';
       model.lastTestMessage = cleanMsg;
