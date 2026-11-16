@@ -51,7 +51,64 @@ try {
 
   const verified = verifyZipBuffer(archive.buffer);
   assert.equal(verified.result.valid, true, verified.result.errors.join('; '));
-  console.log('ZIP credential exclusion tests passed.');
+
+  const findFirstEntry = (buffer: Buffer) => {
+    const central = buffer.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    assert.notEqual(central, -1, 'fixture ZIP must contain a central-directory entry');
+    const localOffset = buffer.readUInt32LE(central + 42);
+    const nameLength = buffer.readUInt16LE(localOffset + 26);
+    const extraLength = buffer.readUInt16LE(localOffset + 28);
+    return { central, localOffset, dataOffset: localOffset + 30 + nameLength + extraLength };
+  };
+  const truncatedArchive = archive.buffer.subarray(0, archive.buffer.length - 1);
+  assert.equal(verifyZipBuffer(truncatedArchive).result.valid, false, 'truncated EOCD must be rejected');
+
+  const trailingGarbage = Buffer.concat([archive.buffer, Buffer.from([0x41])]);
+  assert.equal(verifyZipBuffer(trailingGarbage).result.valid, false, 'unaccounted trailing bytes must be rejected');
+
+  const damagedPayload = Buffer.from(archive.buffer);
+  const firstEntry = findFirstEntry(damagedPayload);
+  damagedPayload[firstEntry.dataOffset] ^= 0xff;
+  assert.equal(verifyZipBuffer(damagedPayload).result.valid, false, 'payload corruption must fail decompression or CRC validation');
+
+  const mismatchedLocalHeader = Buffer.from(archive.buffer);
+  const localMethod = mismatchedLocalHeader.readUInt16LE(firstEntry.localOffset + 8);
+  mismatchedLocalHeader.writeUInt16LE(localMethod === 8 ? 0 : 8, firstEntry.localOffset + 8);
+  assert.equal(verifyZipBuffer(mismatchedLocalHeader).result.valid, false, 'local and central compression methods must agree');
+
+  const invalidCentralOffset = Buffer.from(archive.buffer);
+  const eocd = invalidCentralOffset.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.notEqual(eocd, -1);
+  invalidCentralOffset.writeUInt32LE(0xffffffff, eocd + 16);
+  assert.equal(verifyZipBuffer(invalidCentralOffset).result.valid, false, 'out-of-range central directory must be rejected');
+
+  const wrongUncompressedSize = Buffer.from(archive.buffer);
+  wrongUncompressedSize.writeUInt32LE(wrongUncompressedSize.readUInt32LE(firstEntry.central + 24) + 1, firstEntry.central + 24);
+  assert.equal(verifyZipBuffer(wrongUncompressedSize).result.valid, false, 'central/local size disagreement must be rejected');
+
+  const unsupportedMethod = Buffer.from(archive.buffer);
+  unsupportedMethod.writeUInt16LE(99, firstEntry.central + 10);
+  unsupportedMethod.writeUInt16LE(99, firstEntry.localOffset + 8);
+  assert.equal(verifyZipBuffer(unsupportedMethod).result.valid, false, 'unknown compression methods must be rejected');
+
+  const duplicateCentralEntry = Buffer.from(archive.buffer);
+  const eocdAt = duplicateCentralEntry.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  const totalEntries = duplicateCentralEntry.readUInt16LE(eocdAt + 10);
+  duplicateCentralEntry.writeUInt16LE(totalEntries + 1, eocdAt + 8);
+  duplicateCentralEntry.writeUInt16LE(totalEntries + 1, eocdAt + 10);
+  const centralSize = duplicateCentralEntry.readUInt32LE(eocdAt + 12);
+  duplicateCentralEntry.writeUInt32LE(centralSize + (46 + duplicateCentralEntry.readUInt16LE(firstEntry.central + 28)), eocdAt + 12);
+  const duplicateRecord = Buffer.from(duplicateCentralEntry.subarray(firstEntry.central, firstEntry.central + 46 + duplicateCentralEntry.readUInt16LE(firstEntry.central + 28)));
+  duplicateCentralEntry = Buffer.concat([
+    duplicateCentralEntry.subarray(0, eocdAt),
+    duplicateRecord,
+    duplicateCentralEntry.subarray(eocdAt),
+  ]);
+  const movedEocd = duplicateCentralEntry.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  duplicateCentralEntry.writeUInt32LE(movedEocd - (centralSize + duplicateRecord.length), movedEocd + 16);
+  assert.equal(verifyZipBuffer(duplicateCentralEntry).result.valid, false, 'duplicate paths must be rejected');
+
+  console.log('ZIP credential exclusion and archive-integrity tests passed.');
 } finally {
   await rm(root, { recursive: true, force: true });
 }
