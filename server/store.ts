@@ -416,7 +416,7 @@ function createDefaultDatabase(): ZeroDatabase {
     backups: [],
     backupConfig: {
       currentVersion: '1.1.0',
-      autoZipOnChange: true,
+      autoZipOnChange: false,
       lastVerifiedAt: now,
       zipBackups: [],
       changelogHistory: [
@@ -546,7 +546,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       const now = new Date().toISOString();
       parsed.backupConfig = {
         currentVersion: '1.1.0',
-        autoZipOnChange: true,
+        autoZipOnChange: false,
         lastVerifiedAt: now,
         zipBackups: [],
         changelogHistory: [
@@ -772,18 +772,16 @@ export async function createVersionedZipBackup(params: {
   }
   db.backupConfig.lastVerifiedAt = now;
   db.backupConfig.zipBackups.unshift(record);
-  let removedZipBackups: ZipBackupVersion[] = [];
-  if (db.backupConfig.zipBackups.length > 25) {
-    // Keep all manually protected backups and at most 10 recent automatic backups.
-    const beforePrune = db.backupConfig.zipBackups;
-    const protectedItems = beforePrune.filter((b) => b.protected);
-    const unprotectedItems = beforePrune.filter((b) => !b.protected).slice(0, 10);
-    db.backupConfig.zipBackups = [...protectedItems, ...unprotectedItems].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt)
-    );
-    const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
-    removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
-  }
+  // Keep every explicitly protected backup, but cap automatic/unprotected history
+  // at 10 entries so repeated project edits cannot grow storage without bound.
+  const beforePrune = db.backupConfig.zipBackups;
+  const protectedItems = beforePrune.filter((b) => b.protected);
+  const unprotectedItems = beforePrune.filter((b) => !b.protected).slice(0, 10);
+  db.backupConfig.zipBackups = [...protectedItems, ...unprotectedItems].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+  const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
+  const removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
   await saveDb(db);
   if (process.env.DATABASE_URL) {
     await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
@@ -798,6 +796,16 @@ export async function createVersionedZipBackup(params: {
 export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBackupVersion | null> {
   const db = await loadDb();
   if (!db.backupConfig.autoZipOnChange) return null;
+
+  // Coalesce bursts of edits into at most one automatic full-project archive per 15 minutes.
+  const latestAutoBackup = db.backupConfig.zipBackups.find((backup) => backup.trigger === 'auto');
+  if (
+    latestAutoBackup &&
+    Date.now() - Date.parse(latestAutoBackup.createdAt) < 15 * 60 * 1000
+  ) {
+    return null;
+  }
+
   return createVersionedZipBackup({
     changelog,
     trigger: 'auto',
