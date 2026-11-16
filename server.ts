@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
+import { createConcurrencyGate } from './server/concurrencyGate.ts';
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
@@ -64,6 +65,10 @@ import type {
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
+
+// ZIP reads retain compressed and expanded buffers; share a small process-local
+// budget across downloads and restores to bound aggregate request memory.
+export const zipOperationGate = createConcurrencyGate(2, 5);
 
 // Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
 // makes req.ip reflect the client address for login rate limiting.
@@ -496,7 +501,7 @@ app.post('/api/system/zip-backups/settings', asyncRoute(async (req, res) => {
   res.json({ backupConfig: db.backupConfig });
 }));
 
-app.get('/api/system/zip-backups/:id/download', asyncRoute(async (req, res) => {
+app.get('/api/system/zip-backups/:id/download', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const { record, buffer } = await getZipBackupFilePath(req.params.id);
     res.setHeader('Content-Type', 'application/zip');
@@ -538,7 +543,7 @@ app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/system/zip-backups/:id/restore', restoreHandlers.zip);
+app.post('/api/system/zip-backups/:id/restore', zipOperationGate.middleware, restoreHandlers.zip);
 
 // === ZERO MODEL HUB ===
 app.get('/api/models', asyncRoute(async (_req, res) => {
