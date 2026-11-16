@@ -2,7 +2,7 @@
 
 **BEYOND LIMITS.**  
 
-> **Verifizierungsstatus (15.11.2026):** Die Oberfläche und die Backend-Routen sind im Quellcode vorhanden, aber nicht alle Provider sind ohne Zugangsdaten nutzbar. Gemini 3.8 Flash ist ein reales Modell laut offizieller Modellliste; der kostenlose API-Tarif ist kontingentbegrenzt und benötigt einen eigenen API-Key. Ein Modellstatus „FUNKTIONIERT“ darf erst nach erfolgreichem Live-Test gesetzt werden. Pollinations verlangt inzwischen einen API-Key für Generierungsanfragen; ein kostenfreier oder unbegrenzter Betrieb darf daher nicht pauschal zugesichert werden.
+> **Verifizierungsstatus (16.11.2026):** Die Oberfläche und die Backend-Routen sind im Quellcode vorhanden, aber nicht alle Provider sind ohne Zugangsdaten nutzbar. Gemini 3.8 Flash ist ein reales Modell laut offizieller Modellliste; der kostenlose API-Tarif ist kontingentbegrenzt und benötigt einen eigenen API-Key. Ein Modellstatus „FUNKTIONIERT“ darf erst nach erfolgreichem Live-Test gesetzt werden. Pollinations verlangt inzwischen einen API-Key für Generierungsanfragen; ein kostenfreier oder unbegrenzter Betrieb darf daher nicht pauschal zugesichert werden.
 Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (installierbare PWA; native On-Device-KI als separate Roadmap) mit **ZERO CORE**, **Model Hub**, **Film Director**, **Image/Video/Audio/Music Studios**, **Character Engine**, **Web Intelligence**, **Automation Engine** und **Langzeitgedächtnis**.
 
 ---
@@ -33,7 +33,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 ├── src/
 │   ├── assets/images/               # Generierte Studio- & Charakter-Assets
 │   ├── components/
-│   │   ├── AudioStudioView.tsx      # Gemini 3.8 TTS WAV, Apple Web Speech, Gemini 3.5 Transcribe + SRT
+│   │   ├── AudioStudioView.tsx      # Gemini 3.8 TTS WAV, Apple Web Speech, Gemini 3.5 Transcribe (Texttranskript ohne erfundene Zeitstempel)
 │   │   ├── BrainView.tsx            # ZERO BRAIN Assistent, Web Intelligence & Automation Engine
 │   │   ├── FilmDirectorView.tsx     # 14-Stufen Kurzfilm-Regie (<= 60s) & Einzel-Szenen-Regenerierung
 │   │   ├── HomeView.tsx             # Übersicht, Metriken, Ist-Zustand & Entwicklungsplan

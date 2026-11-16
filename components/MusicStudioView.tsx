@@ -120,7 +120,7 @@ export function MusicStudioView({
             <div>
               <h2 className="text-base font-semibold text-white">KI-Komposition & Synthesizer</h2>
               <p className="text-xs text-slate-400">
-                Gemini 4 steuert Harmonik & Tempo; WebAudio rendert lokal ins WAV-Format.
+                Gemini 3.8 Flash entwirft Harmonik & Tempo; WebAudio rendert lokal ins WAV-Format.
               </p>
             </div>
           </div>
