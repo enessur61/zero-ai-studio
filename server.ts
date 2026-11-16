@@ -1220,8 +1220,8 @@ app.post('/api/audio/transcribe', async (req, res) => {
       transcript: rawTranscript,
       rawText: rawTranscript,
       srt: srt || null,
-      subtitleCueCount: subtitleCues.length,
-      timestampsAvailable: subtitleCues.length > 0,
+      subtitleCueCount,
+      timestampsAvailable: subtitleCueCount > 0,
       modelUsed: selectedTranscriptionModel,
       costEur: 0,
     });
