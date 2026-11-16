@@ -825,6 +825,24 @@ try {
     originalSourceBlob,
   ]);
 
+  // A persisted blob truncated inside PostgreSQL must be rejected by the same restore path.
+  const truncatedSourceBlob = originalSourceBlob.subarray(0, originalSourceBlob.length - 1);
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    truncatedSourceBlob,
+  ]);
+  await assert.rejects(
+    () => corruptBlobRestore(versionChain[0].id),
+    /ZIP beschädigt oder unvollständig/,
+    'the production restore service must reject a truncated PostgreSQL ZIP blob'
+  );
+  assert.equal(corruptBlobSafetyBackupCalls, 0, 'truncated persisted bytes must not trigger a safety backup');
+  assert.deepEqual(await storeA.read(), stateBeforeCorruptRestore, 'truncated ZIP restore must not alter live PostgreSQL state');
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    originalSourceBlob,
+  ]);
+
   // Simulate an application restart: construct entirely new pools, state stores,
   // backup service and restore service, then restore from the persisted ZIP blob.
   const restartPoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
@@ -911,6 +929,7 @@ try {
       orphanedBlobIds: [],
       missingBlobIds: [],
     }, 'a fresh pool and service instance must restore persisted ZIP bytes without metadata/blob drift');
+    console.log('ZIP corruption, truncated PostgreSQL blob rejection, and fresh-pool restart restore tests passed.');
   } finally {
     await Promise.all([restartPoolA.end(), restartPoolB.end()]);
   }
