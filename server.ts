@@ -625,9 +625,14 @@ app.post('/api/models/:id/toggle', async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
-  if (model.requiresPaidKey) {
+  if (
+    model.requiresPaidKey ||
+    model.requiresExternalGpu ||
+    model.costEur !== 0 ||
+    model.executionMode === 'SELF-HOSTED'
+  ) {
     return res.status(403).json({
-      error: '0 € Budget-Schutz: Kostenpflichtige Modelle können nicht aktiviert werden.',
+      error: '0 € Budget-Schutz: Kostenpflichtige oder nicht bereitgestellte Hardware-Modelle können nicht aktiviert werden.',
     });
   }
   if (!model.hasRealAdapter) {
@@ -635,12 +640,16 @@ app.post('/api/models/:id/toggle', async (req, res) => {
       error: `Modell "${model.name}" besitzt noch keinen lauffähigen Adapter (${model.status}).`,
     });
   }
-  if (model.executionMode === 'LOCAL ON-DEVICE' && model.status === 'INSTALLATION ERFORDERLICH') {
-    return res.status(400).json({
-      error: `Modell "${model.name}" benötigt zuerst seine lokalen Modellgewichte und einen nativen iOS-Build.`,
+  if (!model.testPassed || !['FUNKTIONIERT', 'LOKAL INSTALLIERT'].includes(model.status)) {
+    return res.status(409).json({
+      error: `Modell "${model.name}" muss zuerst einen erfolgreichen echten Laufzeittest bestehen. Aktueller Status: ${model.status}.`,
     });
   }
-  model.enabled = !model.enabled;
+  if (model.enabled) {
+    model.enabled = false;
+  } else {
+    model.enabled = true;
+  }
   await saveDb(db);
   res.json({ model });
 });
