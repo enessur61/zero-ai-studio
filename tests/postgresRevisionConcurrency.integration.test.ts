@@ -105,6 +105,7 @@ try {
         payload: Buffer.from('invalid backup metadata'),
       }
     ),
+    (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === '23502',
     'invalid backup metadata must abort the shared transaction'
   );
   const afterFailedBackup = await storeA.read();
