@@ -982,7 +982,7 @@ try {
       orphanedBlobIds: [],
       missingBlobIds: [],
     }, 'a fresh pool and service instance must restore persisted ZIP bytes without metadata/blob drift');
-    console.log('ZIP corruption, truncated PostgreSQL blob rejection, and fresh-pool restart restore tests passed.');
+    console.log('ZIP corruption, decompression-bomb rejection, bounded PostgreSQL BYTEA reads, truncated blob rejection, and fresh-pool restart restore tests passed.');
   } finally {
     await Promise.all([restartPoolA.end(), restartPoolB.end()]);
   }
