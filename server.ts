@@ -7,7 +7,7 @@ import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { checkPostgresConnection } from './server/persistence.ts';
+import { checkPostgresConnection, PersistentStateConflictError } from './server/persistence.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -2388,6 +2388,14 @@ app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[ZERO API] Unhandled route error:', error);
   if (res.headersSent) return;
+  if (error instanceof PersistentStateConflictError) {
+    return res.status(409).json({
+      error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
+      code: 'PERSISTENCE_REVISION_CONFLICT',
+      expectedRevision: error.expectedRevision,
+      actualRevision: error.actualRevision,
+    });
+  }
   res.status(500).json({ error: 'Interner Serverfehler.' });
 });
 
