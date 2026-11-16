@@ -83,7 +83,11 @@ struct ZEROWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
 
-        let bridge = ZeroWKWebViewBridge(webView: webView, trustedHost: Coordinator.appHost)
+        let bridge = ZeroWKWebViewBridge(
+            webView: webView,
+            trustedHost: Coordinator.appHost,
+            trustedPort: Coordinator.appURL?.port ?? 443
+        )
         context.coordinator.bridge = bridge
         contentController.add(bridge, name: "zeroCoreML")
         context.coordinator.load(webView)
