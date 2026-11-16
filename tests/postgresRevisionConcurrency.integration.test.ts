@@ -3,6 +3,8 @@ import express from 'express';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createRestoreHandlers } from '../server/restoreHandlers.ts';
+import { asyncRoute } from '../server/asyncRoute.ts';
+import { createPostgresConcurrencyGate } from '../server/concurrencyGate.ts';
 import { createVerifiedZipRestoreService } from '../server/verifiedZipRestore.ts';
 import { assertRestorableDatabase, type ZeroDatabase, type SaveDbOptions } from '../server/store.ts';
 import { BackupCleanupError, createVersionedZipBackupService } from '../server/versionedZipBackup.ts';
@@ -87,6 +89,77 @@ try {
   const exhaustedQuota = await authB.reserveGeminiQuota(quotaParams);
   assert.equal(exhaustedQuota.allowed, false, 'ninth Gemini reservation must fail across independent pools');
   assert.equal(exhaustedQuota.requestsToday, 8);
+
+  // Production ZIP middleware must enforce one shared limit across two pools.
+  const gateA = createPostgresConcurrencyGate(poolA, 2, 5);
+  const gateB = createPostgresConcurrencyGate(poolB, 2, 5);
+  const gateAppA = express();
+  const gateAppB = express();
+  let heldRequests = 0;
+  let releaseHeld!: () => void;
+  const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
+  let releaseDisconnected!: () => void;
+  const disconnectedWork = new Promise<void>((resolve) => { releaseDisconnected = resolve; });
+  let disconnectedEntered = false;
+  const route = (gate: ReturnType<typeof createPostgresConcurrencyGate>) => {
+    const app = express();
+    app.get('/held/:id', gate.middleware, asyncRoute(async (req, res) => {
+      heldRequests++;
+      if (heldRequests <= 2) await held;
+      res.json({ id: req.params.id });
+    }));
+    app.get('/disconnect', gate.middleware, asyncRoute(async (_req, res) => {
+      disconnectedEntered = true;
+      await disconnectedWork;
+      res.json({ ok: true });
+    }));
+    return app;
+  };
+  const serverA = route(gateA).listen(0, '127.0.0.1');
+  const serverB = route(gateB).listen(0, '127.0.0.1');
+  await Promise.all([once(serverA, 'listening'), once(serverB, 'listening')]);
+  const addressA = serverA.address();
+  const addressB = serverB.address();
+  assert.ok(addressA && typeof addressA !== 'string');
+  assert.ok(addressB && typeof addressB !== 'string');
+  const baseA = `http://127.0.0.1:${addressA.port}`;
+  const baseB = `http://127.0.0.1:${addressB.port}`;
+  try {
+    const first = fetch(baseA + '/held/one');
+    while (heldRequests < 1) await new Promise((resolve) => setImmediate(resolve));
+    const second = fetch(baseB + '/held/two');
+    while (heldRequests < 2) await new Promise((resolve) => setImmediate(resolve));
+    const third = await fetch(baseA + '/held/three');
+    assert.equal(third.status, 429, 'third ZIP request must be rejected across independent pools');
+    assert.equal(third.headers.get('retry-after'), '5');
+
+    releaseHeld();
+    assert.equal((await (await first).json()).id, 'one');
+    assert.equal((await (await second).json()).id, 'two');
+    const afterRelease = await fetch(baseB + '/held/after-release');
+    assert.equal(afterRelease.status, 200, 'a completed ZIP handler must release a global slot');
+
+    const abort = new AbortController();
+    const disconnectedRequest = fetch(baseA + '/disconnect', { signal: abort.signal }).catch(() => undefined);
+    while (!disconnectedEntered) await new Promise((resolve) => setImmediate(resolve));
+    abort.abort();
+    await disconnectedRequest;
+    const occupy = fetch(baseB + '/held/occupied');
+    while (heldRequests < 3) await new Promise((resolve) => setImmediate(resolve));
+    const stillHeld = await fetch(baseA + '/held/blocked-after-disconnect');
+    assert.equal(stillHeld.status, 429, 'client disconnect must not release a slot while async work is still running');
+    releaseDisconnected();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const afterDisconnectWork = await fetch(baseA + '/held/after-disconnect-work');
+    assert.equal(afterDisconnectWork.status, 200, 'slot must release once disconnected handler work settles');
+    await (await occupy).json();
+  } finally {
+    releaseHeld();
+    releaseDisconnected();
+    serverA.close();
+    serverB.close();
+    await Promise.all([once(serverA, 'close'), once(serverB, 'close')]);
+  }
 
   // PostgreSQL must reject oversized BYTEA reads using octet_length in SQL,
   // before transferring the blob into the Node.js process.
