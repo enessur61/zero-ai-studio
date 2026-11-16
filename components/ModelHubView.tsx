@@ -252,6 +252,8 @@ export function ModelHubView({
           setWebGpuProgressText(progress.text);
         }, preset.modelId);
         setWebGpuLoaded(true);
+        // The server-side full test may revoke stale browser-model activation; always re-probe here.
+        webGpuProbeRef.current = false;
         await verifyAndActivateLoadedWebGpuModel();
         report.push(`Lokales WebGPU-Modell: ${preset.name} geladen. Der genaue Inferenz-/Aktivierungsstatus steht im WebGPU-Statusfeld.`);
       }
