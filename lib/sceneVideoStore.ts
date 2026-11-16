@@ -3,7 +3,7 @@ import { apiRequest } from './api.ts';
 const DB_NAME = 'zero-ai-studio-media';
 const STORE_NAME = 'scene-videos';
 const DB_VERSION = 1;
-const MAX_REMOTE_CLIP_BYTES = 11 * 1024 * 1024;
+const MAX_REMOTE_CLIP_BYTES = 8 * 1024 * 1024;
 
 function openMediaDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -97,7 +97,7 @@ export async function saveSceneVideoClip(
     throw new Error('Der Szenenclip ist ungültig und wurde nicht gespeichert.');
   }
   if (blob.size > MAX_REMOTE_CLIP_BYTES) {
-    throw new Error('Der Szenenclip ist größer als 11 MB und kann nicht in ZERO-Projekten synchronisiert werden. Bitte zuerst exportieren oder komprimieren.');
+    throw new Error('Der Szenenclip ist größer als 8 MB und kann nicht in ZERO-Projekten synchronisiert werden. Bitte zuerst exportieren oder komprimieren.');
   }
 
   const storageStatus = await requestSceneVideoStoragePersistence();
