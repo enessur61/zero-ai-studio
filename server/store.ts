@@ -589,6 +589,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
 export interface SaveDbOptions {
   expectedRevision?: number;
   backupFile?: { id: string; filename: string; contentType: string; payload: Buffer };
+  recordAutoBackupSuccess?: boolean;
 }
 
 export function getDbRevision(db: ZeroDatabase): number {
@@ -619,7 +620,9 @@ export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Pro
       }
       try {
         const nextRevision = options.backupFile
-          ? await writePersistentStateWithBackupFile(db, expectedRevision, options.backupFile)
+          ? await writePersistentStateWithBackupFile(
+              db, expectedRevision, options.backupFile, options.recordAutoBackupSuccess ?? false
+            )
           : await writePersistentState(db, expectedRevision);
         dbRevisions.set(db, nextRevision);
         dbCache = db;
@@ -787,6 +790,7 @@ export async function createVersionedZipBackup(params: {
   changelog: string;
   trigger: 'manual' | 'auto' | 'pre_restore';
   bumpVersion?: boolean;
+  recordAutoBackupSuccess?: boolean;
 }): Promise<ZipBackupVersion> {
   const current = await loadDb();
   const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
@@ -859,6 +863,7 @@ export async function createVersionedZipBackup(params: {
     await saveDb(db, {
       expectedRevision,
       backupFile: { id: record.id, filename, contentType: 'application/zip', payload: zipRes.buffer },
+      recordAutoBackupSuccess: params.recordAutoBackupSuccess ?? false,
     });
     zipBackupRevisions.set(record, getDbRevision(db));
   } else {
@@ -885,10 +890,11 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
   const db = await loadDb();
   if (!db.backupConfig.autoZipOnChange) return null;
 
-  const create = () => createVersionedZipBackup({
+  const create = (recordAutoBackupSuccess = false) => createVersionedZipBackup({
     changelog,
     trigger: 'auto',
     bumpVersion: true,
+    recordAutoBackupSuccess,
   });
 
   if (process.env.DATABASE_URL) {
@@ -896,7 +902,8 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
     const lease = await acquirePersistentAutoBackupLease();
     if (!lease) return null;
     try {
-      const backup = await create();
+      // ZIP bytes, state metadata, and throttle timestamp share one PostgreSQL transaction.
+      const backup = await create(true);
       await lease.complete();
       return backup;
     } catch (error) {
