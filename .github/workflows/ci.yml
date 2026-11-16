@@ -110,26 +110,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PORT=4179 NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
+          env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
+          SERVER_PID_A=$!
+          env "${COMMON_ENV[@]}" PORT=4180 npm start > /tmp/zero-server-b.log 2>&1 &
+          SERVER_PID_B=$!
+          trap 'kill "$SERVER_PID_A" "$SERVER_PID_B" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json; then
+            if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json &&
+               curl --fail --silent http://127.0.0.1:4180/api/health > /tmp/zero-health-b.json; then
               break
             fi
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              cat /tmp/zero-server.log
+            if ! kill -0 "$SERVER_PID_A" 2>/dev/null || ! kill -0 "$SERVER_PID_B" 2>/dev/null; then
+              cat /tmp/zero-server-a.log /tmp/zero-server-b.log
               exit 1
             fi
             sleep 1
           done
           test -s /tmp/zero-health.json
+          test -s /tmp/zero-health-b.json
           node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60 || h.readiness?.database !== 'ready' || h.readiness?.authentication !== 'ready') process.exit(1); console.log(JSON.stringify(h))"
           for asset in /manifest.webmanifest /sw.js /icons/apple-touch-icon.png; do
             curl --fail --silent --output /dev/null "http://127.0.0.1:4179$asset"
           done
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:4179';
+          const baseB = 'http://127.0.0.1:4180';
           const unauthenticated = await fetch(base + '/api/projects');
           if (unauthenticated.status !== 401) throw new Error('Private API is accessible without login');
           const authStatus = await fetch(base + '/api/auth/status');
@@ -154,6 +160,20 @@ jobs:
           const authenticatedStatus = await authFetch('/api/auth/status');
           const authenticatedInfo = await authenticatedStatus.json();
           if (!authenticatedInfo.authenticated) throw new Error('Session cookie rejected: ' + JSON.stringify(authenticatedInfo));
+          const crossInstanceLogin = await fetch(base + '/api/auth/login', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ password: 'zero-ci-password-123' })
+          });
+          const crossInstanceCookie = crossInstanceLogin.headers.get('set-cookie')?.split(';')[0];
+          if (!crossInstanceLogin.ok || !crossInstanceCookie) throw new Error('Second production login failed');
+          const crossInstanceAccess = await fetch(baseB + '/api/projects', { headers: { cookie: crossInstanceCookie } });
+          if (!crossInstanceAccess.ok) throw new Error('A session created on instance A was not accepted by instance B');
+          const crossInstanceLogout = await fetch(baseB + '/api/auth/logout', {
+            method: 'POST', headers: { cookie: crossInstanceCookie }
+          });
+          if (!crossInstanceLogout.ok) throw new Error('Logout on instance B failed');
+          const revokedOnA = await fetch(base + '/api/projects', { headers: { cookie: crossInstanceCookie } });
+          if (revokedOnA.status !== 401) throw new Error('Logout on instance B did not revoke the session on instance A');
           const securityHeaders = await fetch(base + '/api/health');
           for (const header of ['x-content-type-options', 'referrer-policy', 'x-frame-options', 'permissions-policy', 'content-security-policy-report-only', 'strict-transport-security']) {
             if (!securityHeaders.headers.get(header)) throw new Error('Missing security header: ' + header);
@@ -165,19 +185,20 @@ jobs:
             throw new Error('Unknown API routes must return JSON 404, not the SPA fallback');
           }
           for (let attempt = 0; attempt < 8; attempt++) {
-            const limited = await fetch(base + '/api/auth/login', {
+            const rateBase = attempt % 2 === 0 ? base : baseB;
+            const limited = await fetch(rateBase + '/api/auth/login', {
               method: 'POST',
               headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
               body: JSON.stringify({ password: 'incorrect-ci-password' })
             });
-            if (limited.status !== 401) throw new Error('Login rate limit triggered too early for client IP');
+            if (limited.status !== 401) throw new Error('Shared login rate limit triggered too early across production instances');
           }
-          const blockedIp = await fetch(base + '/api/auth/login', {
+          const blockedIp = await fetch(baseB + '/api/auth/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
-          if (blockedIp.status !== 429) throw new Error('Login rate limit did not block the ninth attempt');
+          if (blockedIp.status !== 429) throw new Error('Shared login rate limit did not block the ninth attempt on the other instance');
           const independentIp = await fetch(base + '/api/auth/login', {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.11' },
