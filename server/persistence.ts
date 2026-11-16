@@ -56,6 +56,12 @@ export function createPostgresStateStore(database: Pool) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `);
+        await database.query(`
+          CREATE TABLE IF NOT EXISTS zero_backup_auto_state (
+            id TEXT PRIMARY KEY CHECK (id = 'zip-auto'),
+            last_success_at TIMESTAMPTZ
+          )
+        `);
       })().catch((error) => {
         schemaReady = null;
         throw error;
@@ -161,10 +167,98 @@ export function createPostgresStateStore(database: Pool) {
     }
   }
 
+  async function acquireAutoBackupLease(minimumIntervalMs = 15 * 60 * 1000): Promise<{
+    complete: () => Promise<void>;
+    release: () => Promise<void>;
+  } | null> {
+    if (!Number.isSafeInteger(minimumIntervalMs) || minimumIntervalMs < 0) {
+      throw new Error('Ungültiges Auto-Backup-Intervall.');
+    }
+    await ensureSchema();
+    const client = await database.connect();
+    let lockAcquired = false;
+    try {
+      const lock = await client.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_lock(1514480207, 2) AS locked'
+      );
+      lockAcquired = Boolean(lock.rows[0]?.locked);
+      if (!lockAcquired) {
+        client.release();
+        return null;
+      }
+      const state = await client.query<{ last_success_at: Date | null }>(
+        "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
+      );
+      const lastSuccess = state.rows[0]?.last_success_at;
+      if (lastSuccess && Date.now() - new Date(lastSuccess).getTime() < minimumIntervalMs) {
+        await client.query('SELECT pg_advisory_unlock(1514480207, 2)');
+        lockAcquired = false;
+        client.release();
+        return null;
+      }
+      let finished = false;
+      const finish = async (success: boolean) => {
+        if (finished) return;
+        finished = true;
+        try {
+          if (success) {
+            await client.query(`
+              INSERT INTO zero_backup_auto_state (id, last_success_at)
+              VALUES ('zip-auto', NOW())
+              ON CONFLICT (id) DO UPDATE SET last_success_at = EXCLUDED.last_success_at
+            `);
+          }
+        } finally {
+          if (lockAcquired) {
+            await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
+            lockAcquired = false;
+          }
+          client.release();
+        }
+      };
+      return {
+        complete: () => finish(true),
+        release: () => finish(false),
+      };
+    } catch (error) {
+      if (lockAcquired) {
+        await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
+      }
+      client.release();
+      throw error;
+    }
+  }
+
+  async function inspectBackupConsistency(): Promise<{
+    orphanedBlobIds: string[];
+    missingBlobIds: string[];
+  }> {
+    await ensureSchema();
+    const [state, blobs] = await Promise.all([
+      database.query<{ backups: Array<{ id?: string }>; zip_backups: Array<{ id?: string }> }>(
+        `SELECT COALESCE(payload->'backups', '[]'::jsonb) AS backups,
+                COALESCE(payload->'backupConfig'->'zipBackups', '[]'::jsonb) AS zip_backups
+         FROM zero_app_state WHERE id = 'primary'`
+      ),
+      database.query<{ id: string }>('SELECT id FROM zero_backup_files'),
+    ]);
+    const metadataIds = new Set<string>();
+    for (const item of [...(state.rows[0]?.backups ?? []), ...(state.rows[0]?.zip_backups ?? [])]) {
+      if (typeof item.id === 'string' && item.id.length > 0) metadataIds.add(item.id);
+    }
+    const blobIds = new Set(blobs.rows.map((row) => row.id));
+    return {
+      orphanedBlobIds: [...blobIds].filter((id) => !metadataIds.has(id)).sort(),
+      missingBlobIds: [...metadataIds].filter((id) => !blobIds.has(id)).sort(),
+    };
+  }
+
   return {
     ensureSchema,
     read,
     write,
+    acquireAutoBackupLease,
+    inspectBackupConsistency,
     writeWithBackup: <T>(
       payload: T,
       expectedRevision: number,
