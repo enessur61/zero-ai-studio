@@ -91,15 +91,22 @@ class PersistentJobStore:
     def prune_completed(self, max_jobs: int = 50, retain_jobs: int = 40) -> list[dict[str, Any]]:
         if max_jobs < 1 or retain_jobs < 1 or retain_jobs >= max_jobs:
             raise ValueError("Invalid job retention limits.")
-        jobs = self.load_all()
-        if len(jobs) < max_jobs:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, payload FROM zero_video_jobs ORDER BY updated_at DESC"
+            ).fetchall()
+        if len(rows) < max_jobs:
             return []
-        completed = [
-            job for job in jobs.values()
-            if job.get("status") in {"succeeded", "failed"}
-        ]
+        completed: list[dict[str, Any]] = []
+        for job_id, payload in rows:
+            try:
+                job = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(job, dict) and job.get("status") in {"succeeded", "failed"}:
+                completed.append(job)
         completed.sort(key=lambda job: str(job.get("created_at", "")))
-        remove_count = max(0, len(jobs) - retain_jobs)
+        remove_count = max(0, len(rows) - retain_jobs)
         removed = completed[:remove_count]
         for job in removed:
             self.delete(str(job["id"]))
