@@ -68,7 +68,7 @@ export interface BudgetAuditEvent {
   adapterId: string;
   modelId: string;
   action: string;
-  decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD' | 'GESTOPPT_KONTINGENT';
+  decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD' | 'GESTOPPT_KONTINGENT' | 'RESET_BESTAETIGT_MANUELL';
   reason: string;
   costEur: number;
 }
