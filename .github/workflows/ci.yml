@@ -99,7 +99,7 @@ jobs:
             sleep 1
           done
           test -s /tmp/zero-health.json
-          node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60) process.exit(1); console.log(JSON.stringify(h))"
+          node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60 || h.readiness?.database !== 'ready' || h.readiness?.authentication !== 'ready') process.exit(1); console.log(JSON.stringify(h))"
           for asset in /manifest.webmanifest /sw.js /icons/apple-touch-icon.png; do
             curl --fail --silent --output /dev/null "http://127.0.0.1:4179$asset"
           done

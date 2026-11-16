@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import {
   Brain,
   Clapperboard,
@@ -42,6 +42,35 @@ const FilmDirectorView = lazy(() => import('./components/FilmDirectorView.tsx').
 const ProjectsCharactersView = lazy(() => import('./components/ProjectsCharactersView.tsx').then((module) => ({ default: module.ProjectsCharactersView })));
 const MemoryView = lazy(() => import('./components/MemoryView.tsx').then((module) => ({ default: module.MemoryView })));
 const SettingsView = lazy(() => import('./components/SettingsView.tsx').then((module) => ({ default: module.SettingsView })));
+
+
+class StudioLoadErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ZERO STUDIO] Studio konnte nicht geladen werden:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section role="alert" className="mx-auto flex min-h-[40vh] max-w-xl flex-col items-center justify-center gap-3 rounded-2xl border border-rose-400/20 bg-[#11151E] p-6 text-center">
+          <p className="text-sm font-semibold text-white">Dieser Studio-Bereich konnte nicht geladen werden.</p>
+          <p className="text-xs leading-relaxed text-slate-400">Möglicherweise ist noch eine ältere App-Version im Browser-Cache. Lade ZERO neu, um die aktuellen Dateien abzurufen.</p>
+          <button type="button" onClick={() => window.location.reload()} className="min-h-[44px] rounded-xl bg-rose-500 px-5 text-sm font-semibold text-white">ZERO neu laden</button>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface NavItem {
   id: NavigationTab;
@@ -441,6 +470,7 @@ export default function App() {
               </div>
             </section>
           )}
+          <StudioLoadErrorBoundary>
           <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center gap-3 text-sm text-slate-400"><Loader2 className="h-5 w-5 animate-spin text-rose-400" />Studio wird geladen…</div>}>
           {activeTab === 'home' && (
             <HomeView
@@ -550,6 +580,7 @@ export default function App() {
             />
           )}
           </Suspense>
+          </StudioLoadErrorBoundary>
         </main>
       </div>
 

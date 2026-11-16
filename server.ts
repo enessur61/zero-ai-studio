@@ -172,14 +172,42 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // === SYSTEM & AUDIT ===
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({
-    ok: true,
-    app: 'ZERO AI STUDIO',
-    core: 'ZERO CORE',
-    maxVideoDurationSec: 60,
-  });
+  const authConfigured =
+    !IS_PRODUCTION ||
+    (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
+
+  if (!authConfigured) {
+    return res.status(503).json({
+      ok: false,
+      app: 'ZERO AI STUDIO',
+      core: 'ZERO CORE',
+      maxVideoDurationSec: 60,
+      readiness: { database: 'not_checked', authentication: 'not_configured' },
+      message: 'Produktionsanmeldung ist nicht vollständig konfiguriert.',
+    });
+  }
+
+  try {
+    await loadDb();
+    return res.json({
+      ok: true,
+      app: 'ZERO AI STUDIO',
+      core: 'ZERO CORE',
+      maxVideoDurationSec: 60,
+      readiness: { database: 'ready', authentication: 'ready' },
+    });
+  } catch {
+    return res.status(503).json({
+      ok: false,
+      app: 'ZERO AI STUDIO',
+      core: 'ZERO CORE',
+      maxVideoDurationSec: 60,
+      readiness: { database: 'unavailable', authentication: 'ready' },
+      message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
+    });
+  }
 });
 
 
