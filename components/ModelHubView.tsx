@@ -92,7 +92,7 @@ export function ModelHubView({
       setWebGpuLoaded(true);
       setResidentModelIds(getLoadedWebGPULocalModelIds());
       setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
-      setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert und gespeichert.');
+      setWebGpuMessage('Lokale WebGPU-Inferenz auf diesem Gerät erfolgreich. ZERO hat die lokale Verfügbarkeit gespeichert; der Server bestätigt damit ausdrücklich keinen verifizierten Adapter.');
     } catch (err) {
       setWebGpuMessage(err instanceof Error ? err.message : 'Lokaler Inferenztest fehlgeschlagen.');
       webGpuProbeRef.current = false;
@@ -336,7 +336,7 @@ export function ModelHubView({
       const updatedModels = latestModels.map((model) => activated.find((item) => item.id === model.id) ?? model);
       if (onModelsReplaced) onModelsReplaced(updatedModels);
       else activated.forEach((model) => onModelUpdated(model));
-      report.push(`Lokale Kreativ-Engines: ${activated.length}/3 echte Render-Tests bestanden (Canvas-Bildbearbeitung, Timeline-Video, WebAudio-Musik).`);
+      report.push(`Lokale Kreativ-Engines: ${activated.length}/3 Geräte-Proben erfolgreich (Canvas-Bildbearbeitung, Timeline-Video, WebAudio-Musik). Die Verfügbarkeit ist gespeichert; der Server führt diese Proben nicht als verifizierte Adaptertests.`);
       if (localSuite.failures.length) report.push(`Nicht bestanden: ${localSuite.failures.join(' | ')}.`);
     } catch (err) {
       report.push(`Lokale Kreativ-Engines: ${err instanceof Error ? err.message : 'Browser-Test fehlgeschlagen'}.`);
