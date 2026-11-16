@@ -163,13 +163,17 @@ jobs:
             method: 'POST',
             body: JSON.stringify({
               title: 'CI 60-second cap test',
-              scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5 }))
+              scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }))
             })
           });
           if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed');
           const { project: durationProject } = await durationResponse.json();
           const totalDuration = durationProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
           if (totalDuration > 60) throw new Error('Film duration exceeded hard 60-second cap: ' + totalDuration);
+          if (durationProject.scenes.some((scene) => scene.imageUrl !== undefined || scene.audioDataUrl !== undefined) ||
+              durationProject.snapshots[0].state.scenes.some((scene) => scene.imageUrl !== undefined || scene.audioDataUrl !== undefined)) {
+            throw new Error('Project creation persisted unsafe scene media URLs');
+          }
           if (durationProject.targetDurationSec !== totalDuration ||
               durationProject.snapshots[0].sceneCount !== durationProject.scenes.length ||
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
