@@ -181,6 +181,80 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+
+// === GEMINI CONNECTION DIAGNOSTIC ===
+// Protected by the /api session middleware. Never returns or logs the API key.
+app.post('/api/system/gemini-connection-test', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const apiKeyConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const freeTierGuardEnabled = process.env.ZERO_GEMINI_FREE_TIER_ONLY === 'true';
+  const modelId = 'gemini-3.8-flash';
+
+  if (!apiKeyConfigured || !freeTierGuardEnabled) {
+    return res.status(503).json({
+      ok: false,
+      apiKeyConfigured,
+      freeTierGuardEnabled,
+      googleConnection: 'NOT_TESTED',
+      modelResponse: 'NOT_TESTED',
+      modelId,
+      paidFallback: false,
+      message: !apiKeyConfigured
+        ? 'GEMINI_API_KEY fehlt in der Serverumgebung.'
+        : 'Der 0-Euro-Schutz ist nicht aktiviert. Gemini-Aufruf wurde blockiert.',
+    });
+  }
+
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  try {
+    db = await loadDb();
+    assertZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
+      recordBudgetAudit(db!, entry)
+    );
+
+    const ai = getGeminiClient();
+    const response = await withTransientRetry(() =>
+      ai.models.generateContent({
+        model: modelId,
+        contents: 'Antworte ausschließlich mit: ZERO_CONNECTION_OK',
+        config: { maxOutputTokens: 16, temperature: 0 },
+      })
+    );
+    const reply = (response.text ?? '').trim();
+    if (!reply) throw new Error('Google hat eine leere Testantwort zurückgegeben.');
+
+    const quota = db.budgetGuard.freeQuotaUsage[modelId];
+    if (quota) quota.requestsToday += 1;
+    await saveDb(db);
+
+    return res.json({
+      ok: true,
+      apiKeyConfigured: true,
+      freeTierGuardEnabled: true,
+      googleConnection: 'CONNECTED',
+      modelResponse: 'RECEIVED',
+      modelId,
+      responseVerified: reply.includes('ZERO_CONNECTION_OK'),
+      paidFallback: false,
+      message: 'Google Gemini hat erfolgreich auf den Verbindungstest geantwortet.',
+    });
+  } catch (err) {
+    if (db) {
+      await saveDb(db).catch(() => undefined);
+    }
+    return res.status(502).json({
+      ok: false,
+      apiKeyConfigured: true,
+      freeTierGuardEnabled: true,
+      googleConnection: 'FAILED',
+      modelResponse: 'NOT_RECEIVED',
+      modelId,
+      paidFallback: false,
+      message: formatGermanApiError(err),
+    });
+  }
+});
+
 app.get('/api/system/audit', async (_req, res) => {
   const db = await loadDb();
   res.json({
