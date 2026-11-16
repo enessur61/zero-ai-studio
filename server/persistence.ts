@@ -73,7 +73,11 @@ export function createPostgresStateStore(database: Pool) {
     return row ? { payload: row.payload, revision: Number(row.revision) } : null;
   }
 
-  async function write<T>(payload: T, expectedRevision: number): Promise<number> {
+  async function write<T>(
+    payload: T,
+    expectedRevision: number,
+    backupFile?: { id: string; filename: string; contentType: string; payload: Buffer }
+  ): Promise<number> {
     await ensureSchema();
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new Error('Ungültige erwartete PostgreSQL-Revision.');
@@ -84,17 +88,17 @@ export function createPostgresStateStore(database: Pool) {
     try {
       await client.query('BEGIN');
       transactionStarted = true;
+      // Every primary-state mutation shares this database-wide transaction lock.
+      await client.query('SELECT pg_advisory_xact_lock(1514480207, 1)');
 
       const current = await client.query<{ revision: string }>(
         "SELECT revision FROM zero_app_state WHERE id = 'primary' FOR UPDATE"
       );
       const currentRevision = current.rows[0] ? Number(current.rows[0].revision) : null;
+      let nextRevision: number;
 
       if (currentRevision === null) {
-        if (expectedRevision !== 0) {
-          throw new PersistentStateConflictError(expectedRevision, null);
-        }
-        // Concurrent first writers race on the primary key; only one may initialize it.
+        if (expectedRevision !== 0) throw new PersistentStateConflictError(expectedRevision, null);
         const inserted = await client.query<{ revision: string }>(
           `INSERT INTO zero_app_state (id, payload, revision, updated_at)
            VALUES ('primary', $1::jsonb, 1, NOW())
@@ -111,35 +115,44 @@ export function createPostgresStateStore(database: Pool) {
             winner.rows[0] ? Number(winner.rows[0].revision) : null
           );
         }
-        await client.query('COMMIT');
-        transactionStarted = false;
-        return Number(inserted.rows[0].revision);
-      }
-
-      if (currentRevision !== expectedRevision) {
-        throw new PersistentStateConflictError(expectedRevision, currentRevision);
-      }
-
-      const updated = await client.query<{ revision: string }>(
-        `UPDATE zero_app_state
-         SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW()
-         WHERE id = 'primary' AND revision = $2::bigint
-         RETURNING revision`,
-        [JSON.stringify(payload), expectedRevision]
-      );
-      if (!updated.rows[0]) {
-        const latest = await client.query<{ revision: string }>(
-          "SELECT revision FROM zero_app_state WHERE id = 'primary'"
+        nextRevision = Number(inserted.rows[0].revision);
+      } else {
+        if (currentRevision !== expectedRevision) {
+          throw new PersistentStateConflictError(expectedRevision, currentRevision);
+        }
+        const updated = await client.query<{ revision: string }>(
+          `UPDATE zero_app_state
+           SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW()
+           WHERE id = 'primary' AND revision = $2::bigint
+           RETURNING revision`,
+          [JSON.stringify(payload), expectedRevision]
         );
-        throw new PersistentStateConflictError(
-          expectedRevision,
-          latest.rows[0] ? Number(latest.rows[0].revision) : null
+        if (!updated.rows[0]) {
+          const latest = await client.query<{ revision: string }>(
+            "SELECT revision FROM zero_app_state WHERE id = 'primary'"
+          );
+          throw new PersistentStateConflictError(
+            expectedRevision,
+            latest.rows[0] ? Number(latest.rows[0].revision) : null
+          );
+        }
+        nextRevision = Number(updated.rows[0].revision);
+      }
+
+      // The archive bytes and the JSONB metadata/revision commit together.
+      if (backupFile) {
+        await client.query(
+          `INSERT INTO zero_backup_files (id, filename, content_type, payload)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (id) DO UPDATE SET filename = EXCLUDED.filename,
+             content_type = EXCLUDED.content_type, payload = EXCLUDED.payload`,
+          [backupFile.id, backupFile.filename, backupFile.contentType, backupFile.payload]
         );
       }
 
       await client.query('COMMIT');
       transactionStarted = false;
-      return Number(updated.rows[0].revision);
+      return nextRevision;
     } catch (error) {
       if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
       throw error;
@@ -186,6 +199,14 @@ export async function readPersistentState<T>(): Promise<VersionedPersistentState
 
 export async function writePersistentState<T>(payload: T, expectedRevision: number): Promise<number> {
   return getStateStore().write(payload, expectedRevision);
+}
+
+export async function writePersistentStateWithBackupFile<T>(
+  payload: T,
+  expectedRevision: number,
+  backupFile: { id: string; filename: string; contentType: string; payload: Buffer }
+): Promise<number> {
+  return getStateStore().write(payload, expectedRevision, backupFile);
 }
 
 export async function writeBackupFile(
