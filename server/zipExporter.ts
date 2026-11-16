@@ -27,17 +27,32 @@ const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', 'exports', 'build
 export const EXCLUDED_SECRETS_DOC = [
   '.env (echte API-Schlüssel / Zugangsdaten)',
   '.env.local / .env.production',
+  'Private Schlüssel und Zertifikatscontainer (*.pem, *.key, *.p12, *.pfx, *.p8, *.ppk, *.jks, *.keystore)',
+  'SSH-/Cloud-/Kubernetes-Credentials (.ssh, .aws, .azure, .kube, .gnupg, .secrets)',
+  'Credential-Dateien (.npmrc, .netrc, .pypirc, credentials.json, Service-Account-JSON)',
   'node_modules/ (per npm install wiederherstellbar)',
   'dist/ (per npm run build erzeugbar)',
 ];
+
+function isSensitiveFile(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  const base = path.basename(normalized).toLowerCase();
+  if (segments.some((segment) => ['.ssh', '.aws', '.azure', '.kube', '.gnupg', '.secrets'].includes(segment.toLowerCase()))) return true;
+  if (base.startsWith('.env') && base !== '.env.example') return true;
+  if (['.npmrc', '.netrc', '.pypirc', 'credentials.json'].includes(base)) return true;
+  if (/^(id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\\..*)?$/.test(base)) return true;
+  if (/\\.(pem|key|p12|pfx|p8|ppk|jks|keystore|mobileprovision|secret|token)$/i.test(base)) return true;
+  if (/(^|[-_.])service[-_]?account([-.].*)?\\.json$/i.test(base)) return true;
+  return false;
+}
 
 function isExcludedFile(relPath: string): boolean {
   const base = path.basename(relPath);
   if (base === '.DS_Store') return true;
   if (base.endsWith('.log')) return true;
-  if (base.startsWith('.env') && base !== '.env.example') return true;
-  if (relPath.endsWith('.zip')) return true;
-  return false;
+  if (relPath.toLowerCase().endsWith('.zip')) return true;
+  return isSensitiveFile(relPath);
 }
 
 async function collectFiles(rootDir: string, currentDir = rootDir): Promise<string[]> {
@@ -79,7 +94,7 @@ export async function buildFullProjectZip(
   extraFiles: Record<string, Buffer> = {}
 ): Promise<ZipExportResult> {
   const diskFiles = await collectFiles(rootDir);
-  const files = [...new Set([...diskFiles, ...Object.keys(extraFiles)])].sort();
+  const files = [...new Set([...diskFiles, ...Object.keys(extraFiles).filter((file) => !isExcludedFile(file))])].sort();
   const localChunks: Buffer[] = [];
   const centralRecords: Buffer[] = [];
   let offset = 0;
@@ -262,11 +277,10 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   ];
   const missingCoreFiles = requiredCore.filter((req) => !extractedFiles.has(req));
 
-  // Verify no unencrypted .env secret slipped into backup
+  // Reject archives that contain credentials or private-key material.
   for (const f of files) {
-    const base = path.basename(f);
-    if (base.startsWith('.env') && base !== '.env.example') {
-      errors.push(`Sicherheitsverstoß: geheime Datei "${f}" im Backup gefunden.`);
+    if (isSensitiveFile(f)) {
+      errors.push(`Sicherheitsverstoß: vertrauliche Datei "${f}" im Backup gefunden.`);
     }
   }
 
