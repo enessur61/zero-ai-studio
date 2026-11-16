@@ -268,23 +268,40 @@ export function createPostgresStateStore(database: Pool) {
     missingBlobIds: string[];
   }> {
     await ensureSchema();
-    const [state, blobs] = await Promise.all([
-      database.query<{ backups: Array<{ id?: string }>; zip_backups: Array<{ id?: string }> }>(
+    // Read metadata and blob rows from one repeatable-read snapshot. Separate
+    // pool.query calls can straddle an atomic backup commit and report a false
+    // orphan/missing pair even though both rows committed together.
+    const client = await database.connect();
+    let transactionStarted = false;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      transactionStarted = true;
+      const state = await client.query<{
+        backups: Array<{ id?: string }>;
+        zip_backups: Array<{ id?: string }>;
+      }>(
         `SELECT COALESCE(payload->'backups', '[]'::jsonb) AS backups,
                 COALESCE(payload->'backupConfig'->'zipBackups', '[]'::jsonb) AS zip_backups
          FROM zero_app_state WHERE id = 'primary'`
-      ),
-      database.query<{ id: string }>('SELECT id FROM zero_backup_files'),
-    ]);
-    const metadataIds = new Set<string>();
-    for (const item of [...(state.rows[0]?.backups ?? []), ...(state.rows[0]?.zip_backups ?? [])]) {
-      if (typeof item.id === 'string' && item.id.length > 0) metadataIds.add(item.id);
+      );
+      const blobs = await client.query<{ id: string }>('SELECT id FROM zero_backup_files');
+      const metadataIds = new Set<string>();
+      for (const item of [...(state.rows[0]?.backups ?? []), ...(state.rows[0]?.zip_backups ?? [])]) {
+        if (typeof item.id === 'string' && item.id.length > 0) metadataIds.add(item.id);
+      }
+      const blobIds = new Set(blobs.rows.map((row) => row.id));
+      await client.query('COMMIT');
+      transactionStarted = false;
+      return {
+        orphanedBlobIds: [...blobIds].filter((id) => !metadataIds.has(id)).sort(),
+        missingBlobIds: [...metadataIds].filter((id) => !blobIds.has(id)).sort(),
+      };
+    } catch (error) {
+      if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
-    const blobIds = new Set(blobs.rows.map((row) => row.id));
-    return {
-      orphanedBlobIds: [...blobIds].filter((id) => !metadataIds.has(id)).sort(),
-      missingBlobIds: [...metadataIds].filter((id) => !blobIds.has(id)).sort(),
-    };
   }
 
   return {
