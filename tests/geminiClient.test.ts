@@ -19,8 +19,6 @@ const base = (): BudgetGuardState => ({
   },
   auditLog: [],
 });
-const audit = () => [];
-
 assert.throws(
   () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', {
     ...base(),
