@@ -126,15 +126,22 @@ export function chooseZeroMediaModel(
   const today = now.toISOString().slice(0, 10);
   const eligible = models.filter((model) => {
     if (model.category !== spec.category) return false;
-    if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.requiresPaidKey || model.requiresExternalGpu || model.costEur !== 0) return false;
+
+    if (spec.localModelIds.includes(model.id)) {
+      // Local work is executed by the browser/iOS host, not by this server.
+      // A client-reported runtime may be routed locally, but it must never be
+      // promoted to a server-verified adapter/test or used for cloud fallback.
+      return model.executionMode === 'LOCAL ON-DEVICE' &&
+        model.enabled &&
+        availableLocalRuntimeModelIds.includes(model.id);
+    }
+
+    if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.status !== 'FUNKTIONIERT' && model.status !== 'LOKAL INSTALLIERT') return false;
 
     if (spec.cloudModelIds.includes(model.id)) {
       return model.executionMode === 'FREE CLOUD' && hasAvailableQuota(budget, model.id, today);
-    }
-    if (spec.localModelIds.includes(model.id)) {
-      return model.executionMode === 'LOCAL ON-DEVICE' && availableLocalRuntimeModelIds.includes(model.id);
     }
     return false;
   });
@@ -145,7 +152,7 @@ export function chooseZeroMediaModel(
     modelId: selected.id,
     consideredModelIds: eligible.map((model) => model.id),
     reason: selected.executionMode === 'LOCAL ON-DEVICE'
-      ? 'Lokales Modell hat einen echten Gerätetest bestanden und wurde vom Client als verfügbar gemeldet.'
+      ? 'Lokale Ausführung wird an einen vom Client gemeldeten Geräte-Runtime weitergereicht; der Server zertifiziert weder Adapter noch Inferenztest.'
       : 'Cloud-Modell hat einen echten Adaptertest bestanden und verfügt über ein verfügbares Free-Tier-Kontingent.',
   };
 }
