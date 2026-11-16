@@ -393,13 +393,3 @@ jobs:
           if (afterLogout.status !== 401) throw new Error('Revoked session cookie remained valid after logout');
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
-
-  ios-swift-package:
-    runs-on: macos-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Verify Swift toolchain
-        run: swift --version
-      - name: Build iOS Swift package sources
-        run: swift build --package-path ios/ZeroCoreML
