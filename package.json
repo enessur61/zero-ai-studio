@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/filmLimits.test.ts && tsx tests/audioUtils.test.ts && tsx tests/mediaUtils.test.ts && tsx tests/pwa.test.ts && tsx tests/zeroRouter.test.ts && tsx tests/geminiClient.test.ts",
+    "test": "tsx tests/filmLimits.test.ts && tsx tests/audioUtils.test.ts && tsx tests/mediaUtils.test.ts && tsx tests/pwa.test.ts && tsx tests/zeroRouter.test.ts && tsx tests/geminiClient.test.ts && tsx tests/srt.test.ts",
     "ci:verify": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
