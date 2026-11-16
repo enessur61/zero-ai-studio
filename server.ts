@@ -58,6 +58,12 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
+function asyncRoute(handler: express.RequestHandler): express.RequestHandler {
+  return (req, res, next) => {
+    void Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
 // Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
 // makes req.ip reflect the client address for login rate limiting.
 app.set('trust proxy', 1);
@@ -200,7 +206,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // === SYSTEM & AUDIT ===
-app.get('/api/health', async (_req, res) => {
+app.get('/api/health', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const authConfigured =
     !IS_PRODUCTION ||
@@ -239,12 +245,12 @@ app.get('/api/health', async (_req, res) => {
       message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
     });
   }
-});
+}));
 
 
 // === GEMINI CONNECTION DIAGNOSTIC ===
 // Protected by the /api session middleware. Never returns or logs the API key.
-app.post('/api/system/gemini-connection-test', async (_req, res) => {
+app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const apiKeyConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
   const freeTierGuardEnabled = process.env.ZERO_GEMINI_FREE_TIER_ONLY === 'true';
@@ -323,9 +329,9 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       message: formatGermanApiError(err),
     });
   }
-});
+}));
 
-app.get('/api/system/audit', async (_req, res) => {
+app.get('/api/system/audit', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({
     istZustand: IST_ZUSTAND_REPORT,
@@ -334,9 +340,9 @@ app.get('/api/system/audit', async (_req, res) => {
     backups: db.backups,
     settings: db.settings,
   });
-});
+}));
 
-app.post('/api/system/backup', async (req, res) => {
+app.post('/api/system/backup', asyncRoute(async (req, res) => {
   try {
     const note = typeof req.body?.note === 'string' && req.body.note.trim() ? req.body.note.trim() : 'Manuelles System-Backup';
     const meta = await createSystemBackup(note);
@@ -344,9 +350,9 @@ app.post('/api/system/backup', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Backup fehlgeschlagen' });
   }
-});
+}));
 
-app.post('/api/system/restore', async (req, res) => {
+app.post('/api/system/restore', asyncRoute(async (req, res) => {
   try {
     const backupId = String(req.body?.backupId ?? '');
     const restored = await restoreSystemBackup(backupId);
@@ -354,9 +360,9 @@ app.post('/api/system/restore', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
   }
-});
+}));
 
-app.get('/api/system/export-manifest', async (_req, res) => {
+app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -374,9 +380,9 @@ app.get('/api/system/export-manifest', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Export-Manifest fehlgeschlagen' });
   }
-});
+}));
 
-app.get('/api/system/export-zip', async (_req, res) => {
+app.get('/api/system/export-zip', asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -396,10 +402,10 @@ app.get('/api/system/export-zip', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Export fehlgeschlagen' });
   }
-});
+}));
 
 // === VERSIONED ZIP BACKUP & RESTORE SYSTEM ===
-app.get('/api/system/zip-backups', async (_req, res) => {
+app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const totalStorageBytes = db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0);
   res.json({
@@ -407,9 +413,9 @@ app.get('/api/system/zip-backups', async (_req, res) => {
     totalStorageBytes,
     excludedSecrets: EXCLUDED_SECRETS_DOC,
   });
-});
+}));
 
-app.post('/api/system/zip-backups', async (req, res) => {
+app.post('/api/system/zip-backups', asyncRoute(async (req, res) => {
   try {
     const changelog =
       typeof req.body?.changelog === 'string' && req.body.changelog.trim()
@@ -429,16 +435,16 @@ app.post('/api/system/zip-backups', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Backup fehlgeschlagen' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/settings', async (req, res) => {
+app.post('/api/system/zip-backups/settings', asyncRoute(async (req, res) => {
   const db = await loadDb();
   db.backupConfig.autoZipOnChange = Boolean(req.body?.autoZipOnChange);
   await saveDb(db);
   res.json({ backupConfig: db.backupConfig });
-});
+}));
 
-app.get('/api/system/zip-backups/:id/download', async (req, res) => {
+app.get('/api/system/zip-backups/:id/download', asyncRoute(async (req, res) => {
   try {
     const { record, buffer } = await getZipBackupFilePath(req.params.id);
     res.setHeader('Content-Type', 'application/zip');
@@ -447,18 +453,18 @@ app.get('/api/system/zip-backups/:id/download', async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : 'ZIP-Datei nicht gefunden' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/:id/protect', async (req, res) => {
+app.post('/api/system/zip-backups/:id/protect', asyncRoute(async (req, res) => {
   try {
     const record = await toggleZipBackupProtection(req.params.id);
     res.json({ backup: record });
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : 'Backup nicht gefunden' });
   }
-});
+}));
 
-app.delete('/api/system/zip-backups/:id', async (req, res) => {
+app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
   try {
     await deleteUnprotectedZipBackup(req.params.id);
     const db = await loadDb();
@@ -470,9 +476,9 @@ app.delete('/api/system/zip-backups/:id', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Löschen blockiert' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/:id/restore', async (req, res) => {
+app.post('/api/system/zip-backups/:id/restore', asyncRoute(async (req, res) => {
   try {
     const restored = await restoreFromVerifiedZipBackup(req.params.id);
     res.json({
@@ -484,25 +490,25 @@ app.post('/api/system/zip-backups/:id/restore', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
   }
-});
+}));
 
 // === ZERO MODEL HUB ===
-app.get('/api/models', async (_req, res) => {
+app.get('/api/models', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ models: db.models, budgetGuard: db.budgetGuard });
-});
+}));
 
-app.get('/api/models/coreml/llama-3.2', async (_req, res) => {
+app.get('/api/models/coreml/llama-3.2', asyncRoute(async (_req, res) => {
   const verification = await verifyCoreMLAdapterPackage();
   res.json(verification);
-});
+}));
 
-app.get('/api/models/ios-runtime', async (_req, res) => {
+app.get('/api/models/ios-runtime', asyncRoute(async (_req, res) => {
   const suite = await verifyZeroIOSRuntimeSuite();
   res.json(suite);
-});
+}));
 
-app.post('/api/models/test-all', async (_req, res) => {
+app.post('/api/models/test-all', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const result = await runAllModelTests(db);
   await saveDb(db);
@@ -511,11 +517,11 @@ app.post('/api/models/test-all', async (_req, res) => {
     models: result.models,
     budgetGuard: db.budgetGuard,
   });
-});
+}));
 
 // The WebGPU engine runs in the user's browser, so the server cannot execute its probe.
 // Persist activation only after the browser reports a non-empty response from real local inference.
-app.post('/api/models/webgpu/activate', async (req, res) => {
+app.post('/api/models/webgpu/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const modelId = String(req.body?.modelId ?? 'webgpu-llama-3.2-1b');
   const model = db.models.find((item) => item.id === modelId);
@@ -537,10 +543,10 @@ app.post('/api/models/webgpu/activate', async (req, res) => {
   model.lastTestMessage = 'Der Browser hat eine Probe gemeldet, aber der Server kann diese nicht unabhängig verifizieren. Das Modell bleibt deshalb deaktiviert.';
   await saveDb(db);
   res.status(202).json({ model, verified: false });
-});
+}));
 
 // Local creative engines are activated only after a real browser-side render probe.
-app.post('/api/models/local/activate', async (req, res) => {
+app.post('/api/models/local/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const modelId = String(req.body?.modelId ?? '');
   const probeResponse = String(req.body?.probeResponse ?? '').trim();
@@ -568,10 +574,10 @@ app.post('/api/models/local/activate', async (req, res) => {
   model.lastTestMessage = 'Eine lokale Browser-Probe wurde gemeldet, kann serverseitig aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
   await saveDb(db);
   res.status(202).json({ model, verified: false });
-});
+}));
 
 // Apple Foundation Models can only be probed inside the signed native iOS host.
-app.post('/api/models/native/activate', async (req, res) => {
+app.post('/api/models/native/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((item) => item.id === 'apple-foundation-model');
   const probeResponse = String(req.body?.probeResponse ?? '').trim();
@@ -591,9 +597,9 @@ app.post('/api/models/native/activate', async (req, res) => {
   model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
   await saveDb(db);
   res.status(202).json({ model, verified: false });
-});
+}));
 
-app.post('/api/models/registry/register', async (req, res) => {
+app.post('/api/models/registry/register', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const started = Date.now();
   const now = new Date().toISOString();
@@ -684,9 +690,9 @@ app.post('/api/models/registry/register', async (req, res) => {
     registeredModels,
     models: db.models,
   });
-});
+}));
 
-app.post('/api/models/:id/toggle', async (req, res) => {
+app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
@@ -717,24 +723,24 @@ app.post('/api/models/:id/toggle', async (req, res) => {
   }
   await saveDb(db);
   res.json({ model });
-});
+}));
 
-app.post('/api/models/:id/test', async (req, res) => {
+app.post('/api/models/:id/test', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
   const tested = await runLiveModelTest(model, db);
   await saveDb(db);
   res.json({ model: tested, budgetGuard: db.budgetGuard });
-});
+}));
 
 // === ZERO CORE & ZERO BRAIN ===
-app.get('/api/brain/history', async (_req, res) => {
+app.get('/api/brain/history', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ messages: db.chatHistory });
-});
+}));
 
-app.post('/api/brain/chat', async (req, res) => {
+app.post('/api/brain/chat', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   let routedModelId = '';
   try {
@@ -933,9 +939,9 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     }
     return res.status(db ? 400 : 503).json({ error: errorMessage });
   }
-});
+}));
 
-app.post('/api/brain/clear', async (_req, res) => {
+app.post('/api/brain/clear', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   db.chatHistory = [
     {
@@ -948,10 +954,10 @@ app.post('/api/brain/clear', async (_req, res) => {
   ];
   await saveDb(db);
   res.json({ messages: db.chatHistory });
-});
+}));
 
 // === ZERO WEB INTELLIGENCE ===
-app.post('/api/web/research', async (req, res) => {
+app.post('/api/web/research', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const query = String(req.body?.query ?? '').trim();
@@ -1000,18 +1006,18 @@ app.post('/api/web/research', async (req, res) => {
     }
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO IMAGE STUDIO ===
-app.post('/api/image/generate', async (req, res) => {
+app.post('/api/image/generate', asyncRoute(async (req, res) => {
   const rawPrompt = String(req.body?.prompt ?? '').trim();
   if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
   return res.status(503).json({
     error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
   });
-});
+}));
 
-app.post('/api/image/analyze', async (req, res) => {
+app.post('/api/image/analyze', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
   try {
@@ -1076,10 +1082,10 @@ app.post('/api/image/analyze', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
 // === ZERO AUDIO STUDIO ===
-app.post('/api/audio/tts', async (req, res) => {
+app.post('/api/audio/tts', asyncRoute(async (req, res) => {
   const useExpressiveModel = Boolean(req.body?.expressive);
   const preferredModelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
   let modelId = preferredModelId;
@@ -1161,9 +1167,9 @@ app.post('/api/audio/tts', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
-app.post('/api/audio/transcribe', async (req, res) => {
+app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   let selectedTranscriptionModel = 'gemini-3.5-transcribe';
 
@@ -1271,10 +1277,10 @@ app.post('/api/audio/transcribe', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
 // === ZERO MUSIC STUDIO (AI Composition + Local WebAudio DSP) ===
-app.post('/api/music/compose', async (req, res) => {
+app.post('/api/music/compose', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
@@ -1327,12 +1333,12 @@ app.post('/api/music/compose', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO VIDEO ENGINE BRIDGE (OPTIONAL SELF-HOSTED WAN WORKER) ===
 // The GPU worker is deliberately external: the Render web service is not a video-generation GPU.
 // Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
-app.get('/api/video/engine/status', async (_req, res) => {
+app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
@@ -1411,7 +1417,7 @@ app.get('/api/video/engine/status', async (_req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
 // Authenticated server-side proxy for the self-hosted Wan worker.
 // The browser never receives the worker URL or its bearer token.
@@ -1431,7 +1437,7 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
   }
 }
 
-app.post('/api/video/engine/jobs', async (req, res) => {
+app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -1464,9 +1470,9 @@ app.post('/api/video/engine/jobs', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
-app.get('/api/video/engine/jobs/:id', async (req, res) => {
+app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
@@ -1485,9 +1491,9 @@ app.get('/api/video/engine/jobs/:id', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
-app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
+app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
@@ -1512,10 +1518,10 @@ app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
-app.post('/api/film/direct', async (req, res) => {
+app.post('/api/film/direct', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const idea = String(req.body?.idea ?? '').trim();
@@ -1727,9 +1733,9 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
-app.post('/api/film/regenerate-scene', async (req, res) => {
+app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const projectId = String(req.body?.projectId ?? '');
@@ -1786,15 +1792,15 @@ Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO PROJECTS ===
-app.get('/api/projects', async (_req, res) => {
+app.get('/api/projects', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ projects: db.projects });
-});
+}));
 
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const now = new Date().toISOString();
   const rawDuration = Number(req.body?.targetDurationSec ?? 58);
@@ -1847,9 +1853,9 @@ app.post('/api/projects', async (req, res) => {
   db.projects.unshift(newProject);
   await saveDb(db);
   res.json({ project: newProject });
-});
+}));
 
-app.put('/api/projects/:id', async (req, res) => {
+app.put('/api/projects/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const idx = db.projects.findIndex((p) => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
@@ -1923,9 +1929,9 @@ app.put('/api/projects/:id', async (req, res) => {
   await saveDb(db);
   await maybeAutoCreateZipBackup(`Projekt "${updated.title}" auf Version ${updated.version} aktualisiert`);
   res.json({ project: updated });
-});
+}));
 
-app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => {
+app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
@@ -1976,9 +1982,9 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => 
   await saveDb(db);
   await maybeAutoCreateZipBackup(`Projekt "${restoredProject.title}" auf gespeicherte Version ${snapshot.version} zurückgesetzt`);
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
-});
+}));
 
-app.post('/api/projects/:id/assets', async (req, res) => {
+app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((p) => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
@@ -2025,9 +2031,9 @@ app.post('/api/projects/:id/assets', async (req, res) => {
   project.updatedAt = new Date().toISOString();
   await saveDb(db);
   res.json({ asset, project });
-});
+}));
 
-app.delete('/api/projects/:id', async (req, res) => {
+app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   if (db.projects.length <= 1) {
     return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
@@ -2035,15 +2041,15 @@ app.delete('/api/projects/:id', async (req, res) => {
   db.projects = db.projects.filter((p) => p.id !== req.params.id);
   await saveDb(db);
   res.json({ ok: true, projects: db.projects });
-});
+}));
 
 // === ZERO CHARACTER ENGINE ===
-app.get('/api/characters', async (_req, res) => {
+app.get('/api/characters', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ characters: db.characters });
-});
+}));
 
-app.post('/api/characters', async (req, res) => {
+app.post('/api/characters', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const now = new Date().toISOString();
   const name = String(req.body?.name ?? '').trim();
@@ -2097,15 +2103,15 @@ app.post('/api/characters', async (req, res) => {
   });
   await saveDb(db);
   res.json({ character: char });
-});
+}));
 
 // === ZERO MEMORY ===
-app.get('/api/memory', async (_req, res) => {
+app.get('/api/memory', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ memories: db.memories });
-});
+}));
 
-app.post('/api/memory', async (req, res) => {
+app.post('/api/memory', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const title = String(req.body?.title ?? '').trim();
   const content = String(req.body?.content ?? '').trim();
@@ -2148,9 +2154,9 @@ app.post('/api/memory', async (req, res) => {
   db.memories.unshift(entry);
   await saveDb(db);
   res.json({ memory: entry });
-});
+}));
 
-app.post('/api/memory/search', async (req, res) => {
+app.post('/api/memory/search', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const query = String(req.body?.query ?? '').trim();
   if (!query) return res.json({ results: db.memories.map((m) => ({ memory: m, score: 1 })) });
@@ -2184,22 +2190,22 @@ app.post('/api/memory/search', async (req, res) => {
   scored.sort((a, b) => b.score - a.score);
   await saveDb(db);
   res.json({ results: scored, semanticActive: Boolean(queryVec) });
-});
+}));
 
-app.delete('/api/memory/:id', async (req, res) => {
+app.delete('/api/memory/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   db.memories = db.memories.filter((m) => m.id !== req.params.id);
   await saveDb(db);
   res.json({ ok: true });
-});
+}));
 
 // === ZERO AUTOMATION ENGINE ===
-app.get('/api/automation', async (_req, res) => {
+app.get('/api/automation', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ runs: db.automationRuns });
-});
+}));
 
-app.post('/api/automation/run', async (req, res) => {
+app.post('/api/automation/run', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const goal = String(req.body?.goal ?? '').trim();
@@ -2282,9 +2288,9 @@ app.post('/api/automation/run', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
-app.post('/api/automation/:id/confirm', async (req, res) => {
+app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const run = db.automationRuns.find((r) => r.id === req.params.id);
   if (!run) return res.status(404).json({ error: 'Lauf nicht gefunden.' });
@@ -2305,6 +2311,13 @@ app.post('/api/automation/:id/confirm', async (req, res) => {
   run.finishedAt = undefined;
   await saveDb(db);
   res.json({ run });
+}));
+
+// Convert otherwise-unhandled Express 4 async route rejections into JSON 500 responses.
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[ZERO API] Unhandled route error:', error);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Interner Serverfehler.' });
 });
 
 // Keep unknown API paths in the JSON API namespace instead of returning the SPA shell.
