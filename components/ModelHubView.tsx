@@ -24,7 +24,6 @@ import {
   loadWebGPULocalModel,
   WEBGPU_LOCAL_MODEL_ID,
   WEBGPU_LOCAL_MODELS,
-  unloadWebGPULocalModel,
 } from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 import { runLocalModelTypeSuite } from '../lib/localModelTypeSuite.ts';
@@ -72,19 +71,19 @@ export function ModelHubView({
   const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
-  async function verifyAndActivateLoadedWebGpuModel() {
+  async function verifyAndActivateLoadedWebGpuModel(modelId: typeof WEBGPU_LOCAL_MODELS[number]['modelId'] = selectedWebGpuModelId as typeof WEBGPU_LOCAL_MODELS[number]['modelId']) {
     if (!isWebGPULocalModelLoaded() || webGpuProbeRef.current) return;
     webGpuProbeRef.current = true;
     try {
       const probe = await generateWebGPULocalChat([
         { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
-      ]);
+      ], undefined, modelId);
       if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
       const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
         method: 'POST',
         body: JSON.stringify({
           // The server catalog uses ZERO IDs; WebLLM uses a separate runtime model ID.
-          modelId: WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId)?.id ?? '',
+          modelId: WEBGPU_LOCAL_MODELS.find((item) => item.modelId === modelId)?.id ?? '',
           probeResponse: probe.slice(0, 1000),
         }),
       });
@@ -228,7 +227,7 @@ export function ModelHubView({
           setSelectedWebGpuModelId(preset.modelId);
           setWebGpuLoaded(true);
           webGpuProbeRef.current = false;
-          await verifyAndActivateLoadedWebGpuModel();
+          await verifyAndActivateLoadedWebGpuModel(preset.modelId);
           results.push(`${preset.name}: geladen und Inferenz geprüft`);
         } catch (error) {
           results.push(`${preset.name}: ${error instanceof Error ? error.message : 'Laden fehlgeschlagen'}`);
