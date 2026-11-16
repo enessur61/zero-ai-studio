@@ -500,15 +500,17 @@ app.post('/api/models/webgpu/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Lokaler Inferenztest fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
-  model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  // A client-controlled probeResponse is not proof: any authenticated caller can forge it.
+  // Keep the model disabled until verification can be performed by a trusted runtime.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  model.enabled = false;
+  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Der Browser hat eine echte lokale WebGPU-Inferenzantwort bestätigt. Kein Cloud- oder Paid-Fallback.';
+  model.lastTestMessage = 'Der Browser hat eine Probe gemeldet, aber der Server kann diese nicht unabhängig verifizieren. Das Modell bleibt deshalb deaktiviert.';
   await saveDb(db);
-  res.json({ model });
+  res.status(202).json({ model, verified: false });
 });
 
 // Local creative engines are activated only after a real browser-side render probe.
@@ -529,15 +531,17 @@ app.post('/api/models/local/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Echter Browser-Testnachweis fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
-  model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  // Browser-supplied output is self-reported and can be forged by an authenticated client.
+  // Do not convert it into a trusted adapter or successful server-side test.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  model.enabled = false;
+  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = `Echter lokaler Browser-Render erfolgreich: ${probeResponse}. Kein Cloud- oder Paid-Fallback.`;
+  model.lastTestMessage = 'Eine lokale Browser-Probe wurde gemeldet, kann serverseitig aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
   await saveDb(db);
-  res.json({ model });
+  res.status(202).json({ model, verified: false });
 });
 
 // Apple Foundation Models can only be probed inside the signed native iOS host.
@@ -551,15 +555,16 @@ app.post('/api/models/native/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Native Inferenzantwort fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
-  model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  // A client-supplied response cannot prove that the signed native runtime executed it.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  model.enabled = false;
+  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Native Apple Foundation Models Inferenz auf diesem iPhone erfolgreich bestätigt. Kein Cloud- oder Paid-Fallback.';
+  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
   await saveDb(db);
-  res.json({ model });
+  res.status(202).json({ model, verified: false });
 });
 
 app.post('/api/models/registry/register', async (req, res) => {
