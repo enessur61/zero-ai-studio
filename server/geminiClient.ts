@@ -281,7 +281,11 @@ export function classifyProviderError(err: unknown): ProviderErrorKind {
     return 'quota-exhausted';
   }
 
-  if (lower.includes('api_key') || lower.includes('api key')) return 'auth';
+  if (
+    lower.includes('api_key') ||
+    lower.includes('api key') ||
+    lower.includes('zero_gemini_free_tier_only')
+  ) return 'auth';
   if (text.includes('404') || lower.includes('not found')) return 'not-found';
   return 'unknown';
 }
