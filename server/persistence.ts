@@ -79,29 +79,73 @@ export function createPostgresStateStore(database: Pool) {
       throw new Error('Ungültige erwartete PostgreSQL-Revision.');
     }
 
-    // Revision 0 means "insert only if the primary row does not exist".
-    // Existing rows are updated only when their revision matches the caller.
-    const result = await database.query<{ revision: string }>(
-      `INSERT INTO zero_app_state (id, payload, revision, updated_at)
-       SELECT 'primary', $1::jsonb, 1, NOW()
-       WHERE $2::bigint = 0
-       ON CONFLICT (id) DO UPDATE
-         SET payload = EXCLUDED.payload,
-             revision = zero_app_state.revision + 1,
-             updated_at = NOW()
-       WHERE zero_app_state.revision = $2::bigint
-       RETURNING revision`,
-      [JSON.stringify(payload), expectedRevision]
-    );
-    if (result.rows[0]) return Number(result.rows[0].revision);
+    const client = await database.connect();
+    let transactionStarted = false;
+    try {
+      await client.query('BEGIN');
+      transactionStarted = true;
 
-    const current = await database.query<{ revision: string }>(
-      "SELECT revision FROM zero_app_state WHERE id = 'primary'"
-    );
-    throw new PersistentStateConflictError(
-      expectedRevision,
-      current.rows[0] ? Number(current.rows[0].revision) : null
-    );
+      const current = await client.query<{ revision: string }>(
+        "SELECT revision FROM zero_app_state WHERE id = 'primary' FOR UPDATE"
+      );
+      const currentRevision = current.rows[0] ? Number(current.rows[0].revision) : null;
+
+      if (currentRevision === null) {
+        if (expectedRevision !== 0) {
+          throw new PersistentStateConflictError(expectedRevision, null);
+        }
+        // Concurrent first writers race on the primary key; only one may initialize it.
+        const inserted = await client.query<{ revision: string }>(
+          `INSERT INTO zero_app_state (id, payload, revision, updated_at)
+           VALUES ('primary', $1::jsonb, 1, NOW())
+           ON CONFLICT (id) DO NOTHING
+           RETURNING revision`,
+          [JSON.stringify(payload)]
+        );
+        if (!inserted.rows[0]) {
+          const winner = await client.query<{ revision: string }>(
+            "SELECT revision FROM zero_app_state WHERE id = 'primary'"
+          );
+          throw new PersistentStateConflictError(
+            expectedRevision,
+            winner.rows[0] ? Number(winner.rows[0].revision) : null
+          );
+        }
+        await client.query('COMMIT');
+        transactionStarted = false;
+        return Number(inserted.rows[0].revision);
+      }
+
+      if (currentRevision !== expectedRevision) {
+        throw new PersistentStateConflictError(expectedRevision, currentRevision);
+      }
+
+      const updated = await client.query<{ revision: string }>(
+        `UPDATE zero_app_state
+         SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW()
+         WHERE id = 'primary' AND revision = $2::bigint
+         RETURNING revision`,
+        [JSON.stringify(payload), expectedRevision]
+      );
+      if (!updated.rows[0]) {
+        const latest = await client.query<{ revision: string }>(
+          "SELECT revision FROM zero_app_state WHERE id = 'primary'"
+        );
+        throw new PersistentStateConflictError(
+          expectedRevision,
+          latest.rows[0] ? Number(latest.rows[0].revision) : null
+        );
+      }
+
+      await client.query('COMMIT');
+      transactionStarted = false;
+      return Number(updated.rows[0].revision);
+    } catch (error) {
+      if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   return { ensureSchema, read, write };
