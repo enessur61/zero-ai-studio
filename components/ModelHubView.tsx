@@ -253,7 +253,7 @@ export function ModelHubView({
         }, preset.modelId);
         setWebGpuLoaded(true);
         await verifyAndActivateLoadedWebGpuModel();
-        report.push(`Lokales WebGPU-Modell: ${preset.name} geladen; Inferenzprüfung: ${webGpuProbeRef.current ? 'ausstehend/fehlgeschlagen' : 'Antwort wurde verarbeitet'}.`);
+        report.push(`Lokales WebGPU-Modell: ${preset.name} geladen. Der genaue Inferenz-/Aktivierungsstatus steht im WebGPU-Statusfeld.`);
       }
     } catch (err) {
       setWebGpuLoaded(false);
