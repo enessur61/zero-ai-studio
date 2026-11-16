@@ -216,6 +216,7 @@ export function createPostgresStateStore(database: Pool) {
             await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
             lockAcquired = false;
           }
+        } finally {
           client.release();
         }
       };
