@@ -77,6 +77,39 @@ const staleQuotaBudget: BudgetGuardState = {
 };
 assert.equal(chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now)?.modelId, 'gemini-3.8-flash');
 
+const missingQuotaDateBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash': {
+      requestsToday: 0,
+      dailySoftLimit: 10,
+      exhausted: false,
+    },
+  },
+};
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], missingQuotaDateBudget, undefined, now),
+  null,
+);
+
+const malformedQuotaDateBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash': {
+      requestsToday: 0,
+      dailySoftLimit: 10,
+      exhausted: false,
+      lastResetDate: 'yesterday',
+    },
+  },
+};
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], malformedQuotaDateBudget, undefined, now),
+  null,
+);
+
 const untested = makeModel('gemini-3.8-flash');
 untested.testPassed = false;
 assert.equal(chooseZeroChatModel([untested], budget, undefined, now), null);
