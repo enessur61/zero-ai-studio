@@ -6,13 +6,19 @@ import { createRestoreHandlers } from '../server/restoreHandlers.ts';
 import { createVerifiedZipRestoreService } from '../server/verifiedZipRestore.ts';
 import { assertRestorableDatabase, type ZeroDatabase, type SaveDbOptions } from '../server/store.ts';
 import { BackupCleanupError, createVersionedZipBackupService } from '../server/versionedZipBackup.ts';
-import { buildFullProjectZip, EXCLUDED_SECRETS_DOC, verifyZipBuffer } from '../server/zipExporter.ts';
+import {
+  buildFullProjectZip,
+  EXCLUDED_SECRETS_DOC,
+  MAX_ZIP_ARCHIVE_BYTES,
+  verifyZipBuffer,
+} from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
   withPersistentAutoBackupLease,
+  readBackupFile,
 } from '../server/persistence.ts';
 
 const connectionString = process.env.DATABASE_URL;
@@ -37,6 +43,27 @@ try {
   // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
   await storeA.ensureSchema();
   await storeB.ensureSchema();
+
+  // PostgreSQL must reject oversized BYTEA reads using octet_length in SQL,
+  // before transferring the blob into the Node.js process.
+  const oversizedBlobId = 'zip-read-limit-fixture';
+  const oversizedBlob = Buffer.alloc(256, 0x5a);
+  await poolA.query(
+    `INSERT INTO zero_backup_files (id, filename, content_type, payload)
+     VALUES ($1, 'oversized-fixture.zip', 'application/zip', $2)`,
+    [oversizedBlobId, oversizedBlob]
+  );
+  await assert.rejects(
+    () => readBackupFile(oversizedBlobId, 128, poolB),
+    /überschreitet das Größenlimit/,
+    'PostgreSQL must not return a BYTEA blob larger than the configured ZIP read cap'
+  );
+  assert.deepEqual(
+    await readBackupFile(oversizedBlobId, MAX_ZIP_ARCHIVE_BYTES, poolB),
+    oversizedBlob,
+    'a blob within the configured archive cap must remain readable'
+  );
+  await poolA.query('DELETE FROM zero_backup_files WHERE id = $1', [oversizedBlobId]);
 
   // Reconciliation must use one checked-out connection and one stable snapshot.
   const reconciliationSql: string[] = [];
