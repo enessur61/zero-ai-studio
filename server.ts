@@ -44,6 +44,7 @@ import {
   toggleZipBackupProtection,
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
+import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -324,6 +325,34 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
       modelId,
       paidFallback: false,
       message: formatGermanApiError(err),
+    });
+  }
+}));
+
+app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res) => {
+  const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : '';
+  const confirmedProviderReset = req.body?.confirmedProviderReset === true;
+  const db = await loadDb();
+
+  try {
+    const quota = applyManualFreeQuotaReset({
+      modelId,
+      confirmedProviderReset,
+      budgetGuard: db.budgetGuard,
+    });
+    recordBudgetAudit(db, {
+      adapterId: 'manual-quota-reset',
+      modelId,
+      action: 'PROVIDER_QUOTA_RESET_CONFIRMED',
+      decision: 'RESET_BESTAETIGT_MANUELL',
+      reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
+      costEur: 0,
+    });
+    await saveDb(db);
+    return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : 'Manuelle Kontingentfreigabe fehlgeschlagen.',
     });
   }
 }));
