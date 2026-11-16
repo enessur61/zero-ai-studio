@@ -33,7 +33,7 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 ├── src/
 │   ├── assets/images/               # Generierte Studio- & Charakter-Assets
 │   ├── components/
-│   │   ├── AudioStudioView.tsx      # Gemini-TTS WAV, Apple Web Speech, Transkription als Text (keine SRT-Zeitstempel)
+│   │   ├── AudioStudioView.tsx      # Gemini-TTS WAV, Apple Web Speech, Wort-Zeitstempel und SRT-Export
 │   │   ├── BrainView.tsx            # ZERO BRAIN Assistent, Web Intelligence & Automation Engine
 │   │   ├── FilmDirectorView.tsx     # 14-Stufen Kurzfilm-Regie (<= 60s) & Einzel-Szenen-Regenerierung
 │   │   ├── HomeView.tsx             # Übersicht, Metriken, Ist-Zustand & Entwicklungsplan
@@ -179,7 +179,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/image/generate` | Bildgenerierung über (derzeit deaktiviert; kein verifizierter dauerhaft kostenloser Provider) |
 | `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
-| `POST` | `/api/audio/transcribe` | Audio-Transkription als reiner Text (`gemini-3.5-transcribe`; keine SRT-Zeitstempel) |
+| `POST` | `/api/audio/transcribe` | Audio-Transkription mit echten Wort-Zeitstempeln und SRT-Export (`gemini-3.5-transcribe`) |
 | `POST` | `/api/music/compose` | KI-Musikparameter für den lokalen WebAudio DSP-Synthesizer |
 | `POST` | `/api/film/direct` | Vollautomatische Kurzfilm-Regie (hart begrenzt auf max. 60 Sekunden) |
 | `POST` | `/api/film/regenerate-scene` | Einzelne Szene inkl. neuem Bild regenerieren |
