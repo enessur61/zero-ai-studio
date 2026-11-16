@@ -62,7 +62,8 @@ export function ModelHubView({
   const [webGpuLoading, setWebGpuLoading] = useState(false);
   const [webGpuProgress, setWebGpuProgress] = useState(0);
   const [webGpuProgressText, setWebGpuProgressText] = useState('');
-  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());\n  const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(getLoadedWebGPULocalModelId() ?? WEBGPU_LOCAL_MODEL_ID);
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
+  const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(getLoadedWebGPULocalModelId() ?? WEBGPU_LOCAL_MODEL_ID);
   const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
@@ -176,7 +177,8 @@ export function ModelHubView({
       setWebGpuSupported(support.supported);
       setWebGpuMessage(support.message);
       if (!support.supported) throw new Error(support.message);
-      const selectedPreset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId) ?? WEBGPU_LOCAL_MODELS[0];\n      await loadWebGPULocalModel((progress) => {
+      const selectedPreset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId) ?? WEBGPU_LOCAL_MODELS[0];
+      await loadWebGPULocalModel((progress) => {
         setWebGpuProgress(progress.progress);
         setWebGpuProgressText(progress.text);
       }, selectedPreset.modelId);
