@@ -216,8 +216,9 @@ jobs:
           }
           const groundingFeature = models.find((entry) => entry.id === 'gemini-web-grounding');
           const groundingMetadata = String(groundingFeature?.provider ?? '') + String(groundingFeature?.limitations ?? '');
-          if (!groundingFeature || !groundingFeature.enabled || !groundingMetadata.includes('gemini-2.5-flash-lite')) {
-            throw new Error('Web grounding metadata is incorrect: ' + JSON.stringify(groundingFeature));
+          if (!groundingFeature || groundingFeature.enabled || groundingFeature.testPassed ||
+              !groundingMetadata.includes('gemini-2.5-flash-lite')) {
+            throw new Error('Web grounding must remain disabled until a live free-tier test passes: ' + JSON.stringify(groundingFeature));
           }
           const serverSource = await (await import('node:fs/promises')).readFile('server.ts', 'utf8');
           if (!serverSource.includes("model: 'gemini-2.5-flash-lite'") || serverSource.includes("model: 'gemini-3.8-flash',\n        contents: `Recherchiere sachlich")) {
