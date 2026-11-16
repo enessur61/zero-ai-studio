@@ -176,3 +176,28 @@ The production ZIP restore orchestration is factored into `server/verifiedZipRes
 CI #733 also passed secret scanning, Gemini free-only billing guard, lint, all npm tests, PostgreSQL integration, production build, production server smoke test, all post-job hooks, and container cleanup. The complete log contained only known non-blocking warnings (Node.js 20 action deprecation, Go cache without `go.sum`, and `punycode` deprecation) plus intentional PostgreSQL `NOT NULL` violations used by rollback-negative tests. No actionable failure was found.
 
 PR #84 remains Draft and open. No merge or deployment was performed.
+
+## Verified production ZIP backup publication and advisory-lock failure paths — CI #741
+
+**Validated head:** `2985473b86d2fd7febdec85363c67b106e25c1a8`  
+**Workflow run:** [CI #741](https://github.com/enessur61/zero-ai-studio/actions/runs/43974270033) — run `43974270033`, job `133674077867` (`verify`)  
+**Result:** `completed / success`; all 19 job steps, including post-job hooks, container cleanup, and job completion, passed. The complete job log was retrieved and reviewed (1,012 lines / 93,247 characters).
+
+The shared production ZIP backup implementation is in `server/versionedZipBackup.ts` as `createVersionedZipBackupService`. Production wiring in `server/store.ts` supplies the actual database read/write functions, `writePersistentStateWithBackupFile`, production ZIP builder/verifier, and backup-file deletion. PostgreSQL automatic backup creation is run through `withPersistentAutoBackupLease` and `acquirePersistentAutoBackupLease`.
+
+The PostgreSQL integration test invokes this exact shared production ZIP backup service against an isolated test schema and two independent pools. It uses the production ZIP builder and verifier and the same atomic state/revision + ZIP blob + optional automatic-success-marker transaction. Verified cases:
+
+- **Successful publication:** the service builds and verifies a ZIP, persists the archive bytes and corresponding metadata, and the stored archive is read back and verified.
+- **Injected publication failure:** a PostgreSQL trigger rejects the backup-blob INSERT after the real ZIP has been built and verified. The service surfaces the failure; primary state, metadata, and revision remain unchanged by transaction rollback.
+- **Success marker:** `last_success_at` remains at its prior value when publication fails; the marker is not advanced by a failed attempt.
+- **Lease release after publication failure:** a second independent pool immediately acquires and releases the advisory lease, then the first pool also reacquires it. This verifies that the failure path does not strand the session-level lock.
+- **Unlock transport failure:** when the explicit `pg_advisory_unlock` query fails, the checked-out physical client is destroyed rather than returned to the reusable pool.
+- **Lease-state query plus compensating-unlock failure:** if the state query fails after lock acquisition and the compensating unlock cannot be confirmed, the physical connection is likewise destroyed.
+
+The lease implementation checks the boolean result of `pg_advisory_unlock`, not merely whether the SQL query returned without throwing. Its release operation is idempotent through a cached completion promise. The shared wrapper releases the lease on archive/publication errors and propagates an `AggregateError` if both backup work and release fail.
+
+**Coverage boundary:** these are integration tests against isolated PostgreSQL pools/schema, not production customer data or a live deployed service. The production orchestration, ZIP builder/verifier, and atomic persistence path are shared; test dependencies point those operations at the isolated schema. Filesystem-only development mode remains a separate path and does not provide PostgreSQL multi-instance coordination.
+
+The full CI run also passed secret scanning, Gemini free-only billing guard, lint, npm tests, PostgreSQL revision/concurrency integration, production build, production server smoke test, all post-job hooks, and container cleanup. The log's PostgreSQL `NOT NULL` violations and `injected ZIP publication failure` are expected negative-test fixtures. Non-blocking warnings included Node.js 20 action deprecation, absent `go.sum` for the Go cache, `punycode`/dependency deprecations, and local PostgreSQL test-container trust authentication. No actionable CI failure was found.
+
+PR #84 remains open and Draft. No merge or deployment was performed.
