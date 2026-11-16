@@ -75,7 +75,11 @@ const staleQuotaBudget: BudgetGuardState = {
     'gemini-3.8-flash': { requestsToday: 10, dailySoftLimit: 10, exhausted: true, lastResetDate: '2026-11-15' },
   },
 };
-assert.equal(chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now)?.modelId, 'gemini-3.8-flash');
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now),
+  null,
+  'the router must not advertise stale quota metadata as available after a local date rollover',
+);
 
 const missingQuotaDateBudget: BudgetGuardState = {
   ...budget,
