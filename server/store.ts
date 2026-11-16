@@ -635,15 +635,45 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
 export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabase> {
   const db = await loadDb();
   const found = db.backups.find((b) => b.id === backupId);
-  if (!found) {
-    throw new Error('Backup nicht gefunden.');
-  }
+  if (!found) throw new Error('Backup nicht gefunden.');
+
   const raw = process.env.DATABASE_URL
     ? (await readBackupFile(found.id)).toString('utf8')
     : await fs.readFile(path.join(BACKUP_DIR, found.filename), 'utf8');
-  const restored = JSON.parse(raw) as ZeroDatabase;
-  restored.backups = db.backups;
-  restored.backupConfig = db.backupConfig;
+
+  let restored: ZeroDatabase;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ZeroDatabase>;
+    const requiredArrays: Array<keyof ZeroDatabase> = [
+      'models', 'projects', 'memories', 'characters', 'chatHistory',
+      'automationRuns', 'backups',
+    ];
+    if (
+      !parsed || typeof parsed !== 'object' ||
+      requiredArrays.some((key) => !Array.isArray(parsed[key])) ||
+      !parsed.backupConfig || typeof parsed.backupConfig !== 'object' ||
+      !parsed.settings || typeof parsed.settings !== 'object'
+    ) {
+      throw new Error('Die Datenbankstruktur ist unvollständig.');
+    }
+    if (parsed.projects!.some((project) =>
+      !project || typeof project.id !== 'string' ||
+      !Array.isArray(project.scenes) || !Array.isArray(project.assets)
+    )) {
+      throw new Error('Mindestens ein Projekt im Backup ist beschädigt.');
+    }
+    restored = parsed as ZeroDatabase;
+  } catch (error) {
+    throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  // Create and persist a recoverable copy of the current state before replacing anything.
+  await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
+  const current = await loadDb();
+  restored.backups = current.backups;
+  restored.backupConfig = current.backupConfig;
+  restored.settings = { ...restored.settings, maxVideoDurationSec: 60 };
+  restored.models = restored.models.map(enrichModelMetadata);
   await saveDb(restored);
   return restored;
 }
