@@ -155,5 +155,24 @@ export function createPostgresAuthStore(database: Pool) {
     return { allowed: false, requestsToday: current.rows[0]?.requests_today ?? currentRequests };
   }
 
-  return { ensureSchema, createSession, hasSession, deleteSession, consumeLoginAttempt, clearLoginAttempts, reserveGeminiQuota };
+  async function markGeminiQuotaExhausted(modelId: string, resetDate: string): Promise<void> {
+    await ensureSchema();
+    await database.query(
+      `UPDATE zero_gemini_quota_reservations
+       SET requests_today = daily_limit, updated_at = NOW()
+       WHERE model_id = $1 AND reset_date = $2::date`,
+      [modelId, resetDate]
+    );
+  }
+
+  async function clearGeminiQuota(modelId: string): Promise<void> {
+    await ensureSchema();
+    await database.query('DELETE FROM zero_gemini_quota_reservations WHERE model_id = $1', [modelId]);
+  }
+
+  return {
+    ensureSchema, createSession, hasSession, deleteSession,
+    consumeLoginAttempt, clearLoginAttempts, reserveGeminiQuota,
+    markGeminiQuotaExhausted, clearGeminiQuota,
+  };
 }
