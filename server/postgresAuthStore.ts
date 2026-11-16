@@ -31,6 +31,15 @@ export function createPostgresAuthStore(database: Pool) {
             reset_at TIMESTAMPTZ NOT NULL
           )
         `);
+        await database.query(`
+          CREATE TABLE IF NOT EXISTS zero_gemini_quota_reservations (
+            model_id TEXT PRIMARY KEY,
+            reset_date DATE NOT NULL,
+            requests_today INTEGER NOT NULL CHECK (requests_today >= 0),
+            daily_limit INTEGER NOT NULL CHECK (daily_limit > 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
       })().catch((error) => {
         schemaReady = null;
         throw error;
@@ -101,5 +110,50 @@ export function createPostgresAuthStore(database: Pool) {
     await database.query('DELETE FROM zero_login_attempts WHERE key_hash = $1', [keyHash]);
   }
 
-  return { ensureSchema, createSession, hasSession, deleteSession, consumeLoginAttempt, clearLoginAttempts };
+  async function reserveGeminiQuota(params: {
+    modelId: string;
+    resetDate: string;
+    currentRequests: number;
+    dailyLimit: number;
+  }): Promise<{ allowed: boolean; requestsToday: number }> {
+    const { modelId, resetDate, currentRequests, dailyLimit } = params;
+    if (!modelId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(resetDate) ||
+        !Number.isSafeInteger(currentRequests) || currentRequests < 0 ||
+        !Number.isSafeInteger(dailyLimit) || dailyLimit < 1) {
+      throw new Error('Invalid Gemini quota reservation metadata.');
+    }
+    await ensureSchema();
+    const result = await database.query<{ requests_today: number }>(
+      `INSERT INTO zero_gemini_quota_reservations (model_id, reset_date, requests_today, daily_limit)
+       VALUES ($1, $2::date, $3 + 1, $4)
+       ON CONFLICT (model_id) DO UPDATE SET
+         reset_date = EXCLUDED.reset_date,
+         requests_today = CASE
+           WHEN zero_gemini_quota_reservations.reset_date = EXCLUDED.reset_date
+             THEN GREATEST(zero_gemini_quota_reservations.requests_today, EXCLUDED.requests_today - 1) + 1
+           ELSE EXCLUDED.requests_today
+         END,
+         daily_limit = CASE
+           WHEN zero_gemini_quota_reservations.reset_date = EXCLUDED.reset_date
+             THEN LEAST(zero_gemini_quota_reservations.daily_limit, EXCLUDED.daily_limit)
+           ELSE EXCLUDED.daily_limit
+         END
+       WHERE CASE
+         WHEN zero_gemini_quota_reservations.reset_date = EXCLUDED.reset_date
+           THEN GREATEST(zero_gemini_quota_reservations.requests_today, EXCLUDED.requests_today - 1)
+                < LEAST(zero_gemini_quota_reservations.daily_limit, EXCLUDED.daily_limit)
+         ELSE EXCLUDED.requests_today - 1 < EXCLUDED.daily_limit
+       END
+       RETURNING requests_today`,
+      [modelId, resetDate, currentRequests, dailyLimit]
+    );
+    if (result.rows[0]) return { allowed: true, requestsToday: result.rows[0].requests_today };
+    const current = await database.query<{ requests_today: number }>(
+      'SELECT requests_today FROM zero_gemini_quota_reservations WHERE model_id = $1',
+      [modelId]
+    );
+    return { allowed: false, requestsToday: current.rows[0]?.requests_today ?? currentRequests };
+  }
+
+  return { ensureSchema, createSession, hasSession, deleteSession, consumeLoginAttempt, clearLoginAttempts, reserveGeminiQuota };
 }
