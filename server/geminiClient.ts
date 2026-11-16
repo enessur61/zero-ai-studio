@@ -114,8 +114,8 @@ export function assertZeroBudgetModelAllowed(
     throw new Error(`Free-Tier-Kontingentdaten für "${modelId}" sind ungültig. Sicher gestoppt (kein kostenpflichtiger Fallback).`);
   }
 
-  if (quota.lastResetDate) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
+  if (quota.lastResetDate !== undefined) {
+    if (typeof quota.lastResetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
       throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
     }
     const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
