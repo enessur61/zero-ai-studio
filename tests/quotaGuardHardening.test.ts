@@ -14,6 +14,7 @@ import type { BudgetAuditEvent, BudgetGuardState } from '../src/types/zero.ts';
 
 const today = new Date().toISOString().slice(0, 10);
 const MODEL = 'gemini-3.8-flash';
+const EMBEDDING_MODEL = 'gemini-embedding-2';
 
 function baseBudget(): BudgetGuardState {
   return {
@@ -24,6 +25,7 @@ function baseBudget(): BudgetGuardState {
     autoUpgradeDisabled: true,
     freeQuotaUsage: {
       [MODEL]: { requestsToday: 0, dailySoftLimit: 10, exhausted: false, lastResetDate: today },
+      [EMBEDDING_MODEL]: { requestsToday: 0, dailySoftLimit: 500, exhausted: false, lastResetDate: today },
     },
     auditLog: [],
   };
@@ -61,6 +63,7 @@ function baseBudget(): BudgetGuardState {
   assert.equal(classifyProviderError(perMinuteQuota), 'rate-limited');
   assert.equal(isQuotaExhaustionError(perMinuteQuota), false);
 
+  assert.equal(classifyProviderError(new Error('Gemini gesperrt: Setze ZERO_GEMINI_FREE_TIER_ONLY=true erst nachdem im Google-Cloud-Projekt die Abrechnung deaktiviert wurde.')), 'auth');
   assert.equal(classifyProviderError(new ZeroQuotaExhaustedError('x')), 'quota-exhausted');
 
   const quotaMessage = formatGermanApiError(realQuota);
@@ -134,14 +137,14 @@ function baseBudget(): BudgetGuardState {
   );
 
   const outcome = recordEmbeddingFailure({
-    modelId: MODEL,
+    modelId: EMBEDDING_MODEL,
     action: 'MEMORY_EMBED',
     err: realQuota,
     budgetGuard: budget,
     recordAudit: (e) => events.push(e),
   });
   assert.equal(outcome.persistedExhausted, true);
-  assert.equal(budget.freeQuotaUsage[MODEL].exhausted, true, 'real quota error must be persisted');
+  assert.equal(budget.freeQuotaUsage[EMBEDDING_MODEL].exhausted, true, 'real quota error must be persisted');
   assert.equal(events.length, 1);
   assert.equal(events[0].decision, 'GESTOPPT_KONTINGENT');
   assert.equal(events[0].action, 'MEMORY_EMBED');
@@ -150,14 +153,14 @@ function baseBudget(): BudgetGuardState {
   const events2: Array<Omit<BudgetAuditEvent, 'id' | 'timestamp'>> = [];
   const rateLimit = new Error('429 Too Many Requests: rate limit exceeded, retry after 20s');
   const outcome2 = recordEmbeddingFailure({
-    modelId: MODEL,
+    modelId: EMBEDDING_MODEL,
     action: 'MEMORY_SEARCH',
     err: rateLimit,
     budgetGuard: budget2,
     recordAudit: (e) => events2.push(e),
   });
   assert.equal(outcome2.persistedExhausted, false, 'a rate limit must not persist an exhausted lock');
-  assert.equal(budget2.freeQuotaUsage[MODEL].exhausted, false);
+  assert.equal(budget2.freeQuotaUsage[EMBEDDING_MODEL].exhausted, false);
   assert.equal(events2.length, 1, 'even a non-quota failure must be audited, never silently dropped');
   assert.equal(events2[0].decision, 'BLOCKIERT_BUDGET_GUARD');
 
@@ -165,7 +168,7 @@ function baseBudget(): BudgetGuardState {
   const events3: Array<Omit<BudgetAuditEvent, 'id' | 'timestamp'>> = [];
   const transient = new Error('503 UNAVAILABLE: model is overloaded');
   const outcome3 = recordEmbeddingFailure({
-    modelId: MODEL,
+    modelId: EMBEDDING_MODEL,
     action: 'MEMORY_SEARCH',
     err: transient,
     budgetGuard: budget3,
@@ -173,7 +176,7 @@ function baseBudget(): BudgetGuardState {
   });
   assert.equal(outcome3.persistedExhausted, false);
   assert.equal(outcome3.kind, 'transient');
-  assert.equal(budget3.freeQuotaUsage[MODEL].exhausted, false, 'a 503 must never lock the quota');
+  assert.equal(budget3.freeQuotaUsage[EMBEDDING_MODEL].exhausted, false, 'a 503 must never lock the quota');
 }
 
 console.log('Quota guard hardening tests passed.');
