@@ -119,6 +119,6 @@ assert.ok(malformedResult.notice);
 assert.equal(malformedProviderCalled, false);
 assert.equal(malformedEvents.length, 1);
 assert.equal(malformedEvents[0].decision, 'BLOCKIERT_BUDGET_GUARD');
-assert.match(malformedEvents[0].reason, /Kontingentprüfung fehlgeschlagen/);
+assert.match(malformedEvents[0].reason, /Kontingentdaten sind fehlerhaft/);
 
 console.log('Memory embedding integration tests passed.');
