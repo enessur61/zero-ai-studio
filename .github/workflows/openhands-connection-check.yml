@@ -1,0 +1,42 @@
+name: OpenHands connection check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openhands-connection-check
+  cancel-in-progress: true
+
+jobs:
+  verify-api-key:
+    name: Verify OpenHands API authentication (no agent run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check that the API key authenticates
+        shell: bash
+        env:
+          OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENHANDS_CLOUD_API_KEY}" ]]; then
+            echo "::error::GitHub secret OPENHANDS_CLOUD_API_KEY is missing."
+            exit 1
+          fi
+
+          status="$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 20 \
+            --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" \
+            --header 'Accept: application/json' \
+            'https://app.all-hands.dev/api/v1/users/me')"
+
+          if [[ "${status}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "OpenHands API authentication succeeded (HTTP ${status})."
+          else
+            echo "::error::OpenHands API authentication failed (HTTP ${status})."
+            exit 1
+          fi
