@@ -1720,6 +1720,19 @@ app.put('/api/projects/:id', async (req, res) => {
   const nextVersion = prev.version + 1;
   const now = new Date().toISOString();
 
+  const previousState = {
+    title: prev.title,
+    logline: prev.logline,
+    genre: prev.genre,
+    targetDurationSec: prev.targetDurationSec,
+    concept: prev.concept,
+    story: prev.story,
+    screenplay: prev.screenplay,
+    characterIds: prev.characterIds,
+    scenes: prev.scenes,
+    assets: prev.assets,
+    status: prev.status,
+  };
   const updated: StudioProject = {
     ...prev,
     ...req.body,
@@ -1730,12 +1743,13 @@ app.put('/api/projects/:id', async (req, res) => {
     updatedAt: now,
     snapshots: [
       {
-        id: `snap-${Date.now()}`,
-        version: nextVersion,
-        note: String(req.body?.snapshotNote || `Version ${nextVersion} gespeichert`),
+        id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        version: prev.version,
+        note: String(req.body?.snapshotNote || `Sicherung vor Version ${nextVersion}`),
         createdAt: now,
-        sceneCount: nextScenes.length,
-        totalDurationSec: Math.min(60, nextTotal || prev.targetDurationSec),
+        sceneCount: prev.scenes.length,
+        totalDurationSec: Math.min(60, prev.targetDurationSec),
+        state: previousState,
       },
       ...prev.snapshots,
     ].slice(0, 15),
@@ -1745,6 +1759,59 @@ app.put('/api/projects/:id', async (req, res) => {
   await saveDb(db);
   await maybeAutoCreateZipBackup(`Projekt "${updated.title}" auf Version ${updated.version} aktualisiert`);
   res.json({ project: updated });
+});
+
+app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const snapshot = project.snapshots.find((item) => item.id === req.params.snapshotId);
+  if (!snapshot) return res.status(404).json({ error: 'Projektversion nicht gefunden.' });
+  if (!snapshot.state) {
+    return res.status(409).json({ error: 'Diese ältere Version enthält nur Metadaten und kann nicht wiederhergestellt werden. Neu gespeicherte Versionen enthalten den vollständigen Projektstand.' });
+  }
+
+  const now = new Date().toISOString();
+  const currentState = {
+    title: project.title,
+    logline: project.logline,
+    genre: project.genre,
+    targetDurationSec: project.targetDurationSec,
+    concept: project.concept,
+    story: project.story,
+    screenplay: project.screenplay,
+    characterIds: project.characterIds,
+    scenes: project.scenes,
+    assets: project.assets,
+    status: project.status,
+  };
+  const restoredScenes = clampScenesToMax60Seconds(snapshot.state.scenes);
+  const restoredDuration = Math.min(60, restoredScenes.reduce((sum, scene) => sum + scene.durationSec, 0) || snapshot.state.targetDurationSec);
+  const nextVersion = project.version + 1;
+  const safetySnapshot = {
+    id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    version: project.version,
+    note: `Sicherung vor Wiederherstellung von Version ${snapshot.version}`,
+    createdAt: now,
+    sceneCount: project.scenes.length,
+    totalDurationSec: Math.min(60, project.targetDurationSec),
+    state: currentState,
+  };
+  const restoredProject: StudioProject = {
+    ...project,
+    ...snapshot.state,
+    id: project.id,
+    scenes: restoredScenes,
+    assets: Array.isArray(snapshot.state.assets) ? snapshot.state.assets.slice(0, 200) : [],
+    targetDurationSec: restoredDuration,
+    version: nextVersion,
+    updatedAt: now,
+    snapshots: [safetySnapshot, ...project.snapshots].slice(0, 15),
+  };
+  db.projects[db.projects.indexOf(project)] = restoredProject;
+  await saveDb(db);
+  await maybeAutoCreateZipBackup(`Projekt "${restoredProject.title}" auf gespeicherte Version ${snapshot.version} zurückgesetzt`);
+  return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
 });
 
 app.post('/api/projects/:id/assets', async (req, res) => {
