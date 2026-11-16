@@ -50,6 +50,7 @@ export function createPostgresAuthStore(database: Pool) {
 
   async function createSession(tokenHash: string, expiresAt: Date): Promise<void> {
     await ensureSchema();
+    await database.query('DELETE FROM zero_auth_sessions WHERE expires_at <= NOW()');
     await database.query(
       `INSERT INTO zero_auth_sessions (token_hash, expires_at)
        VALUES ($1, $2)
@@ -84,6 +85,7 @@ export function createPostgresAuthStore(database: Pool) {
       throw new Error('Invalid login rate-limit configuration.');
     }
     await ensureSchema();
+    await database.query('DELETE FROM zero_login_attempts WHERE reset_at <= $1::timestamptz', [now]);
     const resetAt = new Date(now.getTime() + windowMs);
     const result = await database.query<{ attempts: number; reset_at: Date }>(
       `INSERT INTO zero_login_attempts (key_hash, attempts, reset_at)
