@@ -14,5 +14,5 @@ assert.equal(isSafeProjectAssetUrl('data:image/svg+xml;base64,PHN2Zz4=', 'image'
 assert.equal(isSafeProjectAssetUrl('data:image/png;base64,AAAA', 'audio'), false);
 assert.equal(isSafeProjectAssetUrl('https://', 'image'), false);
 assert.equal(isSafeProjectAssetUrl('blob:https://example.com/id', 'video'), false);
-assert.equal(isSafeProjectAssetUrl('https://cdn.example.com/large.bin', 'image'.repeat(100000)), false);
+assert.equal(isSafeProjectAssetUrl('x'.repeat(16 * 1024 * 1024 + 1), 'image'), false);
 console.log('Project asset URL validation tests passed.');
