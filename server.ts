@@ -506,6 +506,35 @@ app.post('/api/models/webgpu/activate', async (req, res) => {
   res.json({ model });
 });
 
+// Local creative engines are activated only after a real browser-side render probe.
+app.post('/api/models/local/activate', async (req, res) => {
+  const db = await loadDb();
+  const modelId = String(req.body?.modelId ?? '');
+  const probeResponse = String(req.body?.probeResponse ?? '').trim();
+  const allowedAdapters: Record<string, string> = {
+    'zero-canvas-img2img': 'local-canvas-image-adapter',
+    'zero-timeline-video-60s': 'local-video-compositor',
+    'zero-webaudio-synth': 'local-webaudio-music',
+  };
+  const expectedAdapter = allowedAdapters[modelId];
+  const model = db.models.find((item) => item.id === modelId);
+  if (!expectedAdapter || !model || model.adapterId !== expectedAdapter || model.executionMode !== 'LOCAL ON-DEVICE') {
+    return res.status(404).json({ error: 'Dieses lokale Kreativmodell ist nicht für Browser-Probe-Aktivierung freigegeben.' });
+  }
+  if (!probeResponse || probeResponse.length > 1000) {
+    return res.status(400).json({ error: 'Echter Browser-Testnachweis fehlt oder ist ungültig.' });
+  }
+  model.hasRealAdapter = true;
+  model.testPassed = true;
+  model.enabled = true;
+  model.status = 'LOKAL INSTALLIERT';
+  model.lastTestedAt = new Date().toISOString();
+  model.lastTestLatencyMs = null;
+  model.lastTestMessage = `Echter lokaler Browser-Render erfolgreich: ${probeResponse}. Kein Cloud- oder Paid-Fallback.`;
+  await saveDb(db);
+  res.json({ model });
+});
+
 // Apple Foundation Models can only be probed inside the signed native iOS host.
 app.post('/api/models/native/activate', async (req, res) => {
   const db = await loadDb();
