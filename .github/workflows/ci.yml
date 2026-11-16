@@ -98,6 +98,8 @@ jobs:
           NODE
       - run: npm run lint
       - run: npm test
+      - name: Test persistent GPU worker job storage
+        run: python3 gpu-worker/test_job_store.py
       - name: Run PostgreSQL revision and concurrency integration tests
         env:
           DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
