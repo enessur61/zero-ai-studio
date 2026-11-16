@@ -208,7 +208,7 @@ export interface AutomationStep {
   title: string;
   module: string;
   modelId: string;
-  status: 'wartend' | 'läuft' | 'erfolgreich' | 'bestätigung_erforderlich' | 'fehler';
+  status: 'wartend' | 'läuft' | 'erfolgreich' | 'bestätigung_erforderlich' | 'freigegeben' | 'fehler';
   requiresConfirmation: boolean;
   outputSummary?: string;
   durationMs?: number;
