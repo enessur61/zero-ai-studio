@@ -148,9 +148,9 @@ async function loadModelInternal(
 
   // WebLLM supports multiple model IDs in one engine. Its artifact cache also
   // avoids downloading weights again when a model has already been cached.
-  await engine.reload([...loadedModelIds, requestedModelId], {
-    initProgressCallback: progress,
-  });
+  onProgress?.({ progress: 0, text: 'Weiteres Modell in dieselbe WebLLM-Engine laden…' });
+  await engine.reload([...loadedModelIds, requestedModelId]);
+  onProgress?.({ progress: 1, text: 'Modell im gemeinsamen GPU-Runtime geladen.' });
   loadedModelIds.add(requestedModelId);
   loadedModelId = requestedModelId;
 }
