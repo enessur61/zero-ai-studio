@@ -6,7 +6,8 @@ on:
 
 concurrency:
   group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Let the iOS/macOS validation finish; newer commits must not cancel it mid-queue.
+  cancel-in-progress: false
 
 jobs:
   verify:
