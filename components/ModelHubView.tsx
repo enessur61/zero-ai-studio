@@ -215,9 +215,10 @@ export function ModelHubView({
   }
 
   async function handleTestAll() {
-    if (testingAll) return;
+    if (testingAll || webGpuLoading) return;
     setTestingAll(true);
     setFeedback(null);
+    const report: string[] = [];
     try {
       const data = await registryRef.current.verifyAndRegisterAll();
       if (onModelsReplaced) {
@@ -226,19 +227,44 @@ export function ModelHubView({
         data.models.forEach((m) => onModelUpdated(m));
       }
       const okCount = data.models.filter(
-        (m) =>
-          m.status === 'FUNKTIONIERT' ||
-          m.status === 'LOKAL INSTALLIERT'
+        (m) => m.status === 'FUNKTIONIERT' || m.status === 'LOKAL INSTALLIERT'
       ).length;
       const activeCount = data.models.filter((m) => m.enabled).length;
-      setFeedback(
-        `Komplettprüfung abgeschlossen: ${okCount}/${data.testedCount} Modelle erfolgreich getestet; ${activeCount} kostenlose, lauffähige Modelle automatisch aktiviert (0,00 €).`
-      );
+      report.push(`Cloud-/Serverprüfung: ${okCount}/${data.testedCount} erfolgreich; ${activeCount} kostenlose Modelle aktiviert.`);
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : 'Komplettprüfung fehlgeschlagen');
+      report.push(`Cloud-/Serverprüfung: ${err instanceof Error ? err.message : 'fehlgeschlagen'}.`);
+    }
+
+    // Browser GPU work must happen on the user's device. Download only the selected,
+    // registry-confirmed model; never try to load every model into iPhone memory.
+    setWebGpuLoading(true);
+    setWebGpuProgress(0);
+    try {
+      const support = await checkWebGPULocalModelSupport();
+      setWebGpuSupported(support.supported);
+      setWebGpuMessage(support.message);
+      if (!support.supported) {
+        report.push('Lokales WebGPU-Modell: auf diesem Browser/Gerät nicht verfügbar; kein Download gestartet.');
+      } else {
+        const preset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId) ?? WEBGPU_LOCAL_MODELS[0];
+        await loadWebGPULocalModel((progress) => {
+          setWebGpuProgress(progress.progress);
+          setWebGpuProgressText(progress.text);
+        }, preset.modelId);
+        setWebGpuLoaded(true);
+        // The server-side full test may revoke stale browser-model activation; always re-probe here.
+        webGpuProbeRef.current = false;
+        await verifyAndActivateLoadedWebGpuModel();
+        report.push(`Lokales WebGPU-Modell: ${preset.name} geladen. Der genaue Inferenz-/Aktivierungsstatus steht im WebGPU-Statusfeld.`);
+      }
+    } catch (err) {
+      setWebGpuLoaded(false);
+      report.push(`Lokales WebGPU-Modell: ${err instanceof Error ? err.message : 'Laden fehlgeschlagen'}.`);
     } finally {
+      setWebGpuLoading(false);
       setTestingAll(false);
     }
+    setFeedback(`Ein-Schritt-Prüfung abgeschlossen. ${report.join(' ')} Kostenpflichtige Modelle und externe GPU-Fallbacks bleiben gesperrt.`);
   }
 
   async function handleToggle(model: ModelDefinition) {
@@ -276,7 +302,7 @@ export function ModelHubView({
         <button
           type="button"
           onClick={() => void handleTestAll()}
-          disabled={testingAll}
+          disabled={testingAll || webGpuLoading}
           className="min-h-[42px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-xs font-medium text-white inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
         >
           {testingAll ? (
@@ -284,7 +310,7 @@ export function ModelHubView({
           ) : (
             <Play className="w-3.5 h-3.5" />
           )}
-          Alle Modelle prüfen
+          Alle kostenlosen Modelle einrichten & testen
         </button>
       </div>
 

@@ -5,17 +5,9 @@ export const WEBGPU_LOCAL_MODEL_DOWNLOAD_MB = 705;
 export const WEBGPU_LOCAL_MODEL_VRAM_MB = 879;
 
 export const WEBGPU_LOCAL_MODELS = [
+  // IDs are copied from the installed WebLLM prebuilt registry, not guessed.
   { id: 'webgpu-llama-3.2-1b', modelId: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', name: 'Llama 3.2 1B', downloadMB: 705, vramMB: 879, requiresShaderF16: false },
-  { id: 'qwen2.5-0.5b-webgpu', modelId: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', name: 'Qwen 2.5 0.5B', downloadMB: 550, vramMB: 945, requiresShaderF16: false },
-  { id: 'qwen3-0.6b-webgpu', modelId: 'Qwen3-0.6B-q4f16_1-MLC', name: 'Qwen 3 0.6B', downloadMB: 600, vramMB: 1403, requiresShaderF16: false },
-  { id: 'smollm2-360m-webgpu', modelId: 'SmolLM2-360M-Instruct-q4f16_1-MLC', name: 'SmolLM2 360M', downloadMB: 250, vramMB: 376, requiresShaderF16: true },
-  { id: 'qwen25-coder-05b-webgpu', modelId: 'Qwen2.5-Coder-0.5B-Instruct-q4f16_1-MLC', name: 'Qwen 2.5 Coder 0.5B', downloadMB: 550, vramMB: 945, requiresShaderF16: false },
-  { id: 'gemma3-1b-webgpu', modelId: 'gemma3-1b-it-q4f16_1-MLC', name: 'Gemma 3 1B', downloadMB: 500, vramMB: 711, requiresShaderF16: false },
-  { id: 'qwen25-15b-webgpu', modelId: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', name: 'Qwen 2.5 1.5B', downloadMB: 950, vramMB: 1630, requiresShaderF16: false },
-  { id: 'qwen3-17b-webgpu', modelId: 'Qwen3-1.7B-q4f16_1-MLC', name: 'Qwen 3 1.7B', downloadMB: 1100, vramMB: 2037, requiresShaderF16: false },
-  { id: 'qwen35-08b-webgpu', modelId: 'Qwen3.5-0.8B-q4f16_1-MLC', name: 'Qwen 3.5 0.8B', downloadMB: 900, vramMB: 1630, requiresShaderF16: false },
-  { id: 'smollm2-17b-webgpu', modelId: 'SmolLM2-1.7B-Instruct-q4f16_1-MLC', name: 'SmolLM2 1.7B', downloadMB: 1100, vramMB: 1774, requiresShaderF16: true },
-  { id: 'tinyllama-11b-webgpu', modelId: 'TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC', name: 'TinyLlama 1.1B', downloadMB: 450, vramMB: 697, requiresShaderF16: true },
+  { id: 'smollm2-360m-webgpu', modelId: 'SmolLM2-360M-Instruct-q4f32_1-MLC', name: 'SmolLM2 360M · Fallback', vramMB: 580, requiresShaderF16: false },
 ] as const;
 
 export type WebGPULocalModelId = typeof WEBGPU_LOCAL_MODELS[number]['modelId'];
