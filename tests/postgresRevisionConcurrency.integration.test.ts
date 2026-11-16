@@ -827,8 +827,8 @@ try {
 
   // Simulate an application restart: construct entirely new pools, state stores,
   // backup service and restore service, then restore from the persisted ZIP blob.
-  const restartPoolA = new Pool({ connectionString, options: \`-c search_path=\${schema}\`, max: 1 });
-  const restartPoolB = new Pool({ connectionString, options: \`-c search_path=\${schema}\`, max: 1 });
+  const restartPoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
+  const restartPoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
   try {
     const restartStore = createPostgresStateStore(restartPoolA);
     await restartStore.ensureSchema();
@@ -871,18 +871,18 @@ try {
         const state = await restartStore.read();
         assert.ok(state);
         const record = (state.payload as ZeroDatabase).backupConfig.zipBackups.find((item) => item.id === zipId);
-        if (!record) throw new Error(\`Restart restore metadata missing for \${zipId}\`);
+        if (!record) throw new Error(`Restart restore metadata missing for ${zipId}`);
         const blob = await restartPoolB.query<{ payload: Buffer }>(
           'SELECT payload FROM zero_backup_files WHERE id = $1',
           [zipId]
         );
-        if (!blob.rows[0]) throw new Error(\`Restart restore ZIP bytes missing for \${zipId}\`);
+        if (!blob.rows[0]) throw new Error(`Restart restore ZIP bytes missing for ${zipId}`);
         return { record, buffer: blob.rows[0].payload };
       },
       verifyZipBuffer,
       assertRestorableDatabase,
       createSafetyBackup: (source) => restartBackupService({
-        changelog: \`Safety after restart before restoring \${source.version}\`,
+        changelog: `Safety after restart before restoring ${source.version}`,
         trigger: 'pre_restore',
         bumpVersion: true,
       }),
