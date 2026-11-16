@@ -112,7 +112,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     const Rec = win.SpeechRecognition || win.webkitSpeechRecognition;
     if (!Rec) {
       setTranscribeError(
-        'Web Speech Diktat wird von diesem Browser nicht unterstützt. Nutze „Mikrofon aufnehmen“ mit Gemini 3.5 Transcribe.'
+        'Browser-Spracherkennung wird von diesem Browser nicht unterstützt. Nutze „Mikrofon aufnehmen“ mit dem verfügbaren ZERO-Transkriptionsmodell.'
       );
       return;
     }
@@ -128,7 +128,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
       setTranscript(combined.trim());
     };
     rec.onerror = (ev) => {
-      setTranscribeError(`Lokales Diktat: ${ev.error}`);
+      setTranscribeError(`Browser-Diktat: ${ev.error}`);
       setDictating(false);
     };
     rec.onend = () => {
@@ -379,7 +379,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
             Spracherkennung & Automatische Untertitel
           </h2>
           <p className="text-xs text-slate-400">
-            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — Gemini 3.5 Transcribe erzeugt Text & SRT-Untertitel (Free Tier · API-Key).
+            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — ZERO CORE nutzt ein aktiviertes, getestetes Transkriptionsmodell (Free Tier · API-Key, sofern Cloud-Modell). Browser-Diktat kann je nach Gerät eine Netzwerkverbindung benötigen.
           </p>
 
           <div className="flex flex-wrap gap-2.5">
@@ -405,7 +405,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               }`}
             >
               <Mic className="w-3.5 h-3.5" />
-              {dictating ? 'Diktat stoppen' : 'Lokal diktieren (0 €)'}
+              {dictating ? 'Diktat stoppen' : 'Browser-Diktat (0 €)'}
             </button>
 
             <label className="min-h-[44px] px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-white inline-flex items-center gap-2 cursor-pointer whitespace-nowrap">
