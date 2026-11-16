@@ -467,7 +467,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
           </div>
           {transcriptSrt && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-3">
-              <p className="text-xs text-emerald-300">Echte Wort-Zeitstempel erkannt · {transcriptSrt.split(/\\n\\n/).length} Untertitelblöcke</p>
+              <p className="text-xs text-emerald-300">Echte Wort-Zeitstempel erkannt · {transcriptSrt.split(/\n\n/).length} Untertitelblöcke</p>
               <button
                 type="button"
                 onClick={() => {
