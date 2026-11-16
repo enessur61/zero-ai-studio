@@ -75,6 +75,8 @@ jobs:
           }
           console.log('No prohibited local database or credential files are tracked.');
           NODE
+      - name: Scan repository content and git history for leaked secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
       - run: npm install --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
