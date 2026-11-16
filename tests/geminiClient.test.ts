@@ -36,10 +36,13 @@ assert.throws(
 
 const malformed = base();
 malformed.freeQuotaUsage['gemini-3.8-flash'].lastResetDate = '2026-02-30';
+const malformedAudits: Array<{ decision: string; reason: string }> = [];
 assert.throws(
-  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', malformed, () => {}),
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', malformed, (event) => malformedAudits.push(event)),
   /Reset-Datum/,
 );
+assert.equal(malformedAudits.at(-1)?.decision, 'BLOCKIERT_BUDGET_GUARD');
+assert.match(malformedAudits.at(-1)?.reason ?? '', /Reset-Datum.*ungültig/);
 
 const future = base();
 const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
@@ -61,10 +64,13 @@ assert.equal(missingResetAudits.at(-1)?.decision, 'BLOCKIERT_BUDGET_GUARD');
 
 const invalidCounters = base();
 invalidCounters.freeQuotaUsage['gemini-3.8-flash'].requestsToday = -1;
+const invalidCounterAudits: Array<{ decision: string; reason: string }> = [];
 assert.throws(
-  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', invalidCounters, () => {}),
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', invalidCounters, (event) => invalidCounterAudits.push(event)),
   /Kontingentdaten/,
 );
+assert.equal(invalidCounterAudits.at(-1)?.decision, 'BLOCKIERT_BUDGET_GUARD');
+assert.match(invalidCounterAudits.at(-1)?.reason ?? '', /Kontingentdaten.*fehlerhaft/);
 
 const expired = base();
 expired.freeQuotaUsage['gemini-3.8-flash'].requestsToday = 10;
