@@ -210,6 +210,26 @@ jobs:
           if (localProbeData.model.status !== 'BROWSER TEST ERFORDERLICH' || localProbeData.model.testPassed) {
             throw new Error('Server falsely marked a browser-only adapter as verified');
           }
+          const forgedProbeCases = [
+            ['/api/models/local/activate', { modelId: 'zero-canvas-img2img', probeResponse: 'FORGED_SUCCESS' }],
+            ['/api/models/webgpu/activate', { modelId: 'webgpu-llama-3.2-1b', probeResponse: 'FORGED_SUCCESS' }],
+            ['/api/models/native/activate', { probeResponse: 'FORGED_SUCCESS' }]
+          ];
+          for (const [path, payload] of forgedProbeCases) {
+            const response = await authFetch(path, {
+              method: 'POST',
+              body: JSON.stringify(payload)
+            });
+            if (response.status !== 202) {
+              throw new Error('Untrusted browser probe was not safely downgraded: ' + path + ' (' + response.status + ') ' + await response.text());
+            }
+            const result = await response.json();
+            if (result.verified !== false || result.model?.enabled !== false ||
+                result.model?.testPassed !== false || result.model?.hasRealAdapter !== false ||
+                result.model?.status !== 'BROWSER TEST ERFORDERLICH') {
+              throw new Error('Forged browser probe activated or verified a model: ' + path);
+            }
+          }
           for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
             const model = models.find((entry) => entry.id === id);
             if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
