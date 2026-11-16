@@ -1752,16 +1752,44 @@ app.post('/api/projects/:id/assets', async (req, res) => {
   const project = db.projects.find((p) => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
+  const allowedTypes: ProjectAsset['type'][] = ['image', 'audio', 'music', 'video', 'script'];
+  const type = req.body?.type ?? 'image';
+  if (!allowedTypes.includes(type)) {
+    return res.status(400).json({ error: 'Ungültiger Asset-Typ.' });
+  }
+  const url = typeof req.body?.url === 'string' ? req.body.url : '';
+  if (!url.trim()) return res.status(400).json({ error: 'Asset-URL fehlt.' });
+  // Base64 data URLs are stored in the persistent project record. Bound them
+  // explicitly to avoid oversized JSONB rows and accidental memory pressure.
+  if (url.length > 16 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Asset ist zu groß (maximal 16 MB Daten). Bitte kleinere Datei verwenden.' });
+  }
+  const isDataUrl = /^data:[a-z0-9.+-]+\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(url);
+  const isHttpUrl = /^https?:\/\//i.test(url);
+  const isLocalAssetPath = url.startsWith('/src/assets/');
+  if (!isDataUrl && !isHttpUrl && !isLocalAssetPath) {
+    return res.status(400).json({ error: 'Ungültige Asset-Quelle. Erlaubt sind Bild-/Mediendaten, HTTPS/HTTP oder lokale Studio-Assets.' });
+  }
+  const rawDuration = req.body?.durationSec;
+  const durationSec = rawDuration === undefined || rawDuration === null || rawDuration === ''
+    ? undefined
+    : Number(rawDuration);
+  if (durationSec !== undefined && (!Number.isFinite(durationSec) || durationSec <= 0)) {
+    return res.status(400).json({ error: 'Ungültige Mediendauer.' });
+  }
+  if (project.assets.length >= 200) {
+    return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
+  }
+
   const asset: ProjectAsset = {
-    id: `asset-${Date.now()}`,
-    type: (req.body?.type ?? 'image') as ProjectAsset['type'],
-    title: String(req.body?.title || 'Studio Asset').trim(),
-    url: String(req.body?.url || ''),
-    modelId: String(req.body?.modelId || 'zero-studio'),
-    durationSec: req.body?.durationSec ? Math.min(60, Number(req.body.durationSec)) : undefined,
+    id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    title: String(req.body?.title || 'Studio Asset').trim().slice(0, 120),
+    url,
+    modelId: String(req.body?.modelId || 'zero-studio').trim().slice(0, 100),
+    durationSec: durationSec === undefined ? undefined : Math.min(60, durationSec),
     createdAt: new Date().toISOString(),
   };
-  if (!asset.url) return res.status(400).json({ error: 'Asset-URL fehlt.' });
   project.assets.unshift(asset);
   project.updatedAt = new Date().toISOString();
   await saveDb(db);
