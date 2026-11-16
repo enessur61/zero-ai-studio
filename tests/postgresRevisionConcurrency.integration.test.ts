@@ -149,10 +149,57 @@ try {
   await poolB.query("DELETE FROM zero_backup_files WHERE id = 'orphaned-blob'");
 
   // A session-level lease prevents duplicate automatic backups across independent pools.
+  // The success marker must commit atomically with the backup bytes and state metadata.
   const autoLeaseA = await storeA.acquireAutoBackupLease();
   assert.ok(autoLeaseA, 'first pool must acquire the automatic backup lease');
   const autoLeaseB = await storeB.acquireAutoBackupLease();
   assert.equal(autoLeaseB, null, 'second pool must not acquire the active automatic backup lease');
+
+  const beforeAutoBackup = await storeA.read();
+  assert.ok(beforeAutoBackup);
+  await assert.rejects(
+    () => storeA.writeWithBackup(
+      { value: 'auto-backup-must-rollback' },
+      beforeAutoBackup.revision,
+      {
+        id: 'auto-backup-atomic-failure',
+        filename: 'auto-failure.zip',
+        contentType: null as unknown as string,
+        payload: Buffer.from('invalid auto backup'),
+      },
+      true
+    ),
+    (error: unknown) => error instanceof Error && (error as Error & { code?: string }).code === '23502',
+    'failed automatic backup publication must roll back its throttle marker'
+  );
+  const failedAutoMarker = await poolB.query(
+    "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
+  );
+  assert.equal(failedAutoMarker.rowCount, 0, 'failed publication must not record an auto-backup success');
+
+  const autoPayload = {
+    value: 'auto-backup-committed',
+    backups: [{ id: 'backup-atomic-success' }, { id: 'auto-backup-atomic-success' }],
+    backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }, { id: 'auto-backup-atomic-success' }] },
+  };
+  const autoRevision = await storeA.writeWithBackup(
+    autoPayload,
+    beforeAutoBackup.revision,
+    {
+      id: 'auto-backup-atomic-success',
+      filename: 'auto-success.zip',
+      contentType: 'application/zip',
+      payload: Buffer.from('valid auto backup'),
+    },
+    true
+  );
+  assert.equal(autoRevision, beforeAutoBackup.revision + 1);
+  const committedAutoMarker = await poolB.query<{ last_success_at: Date }>(
+    "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
+  );
+  assert.equal(committedAutoMarker.rowCount, 1, 'successful publication must commit the throttle marker');
+  assert.ok(committedAutoMarker.rows[0].last_success_at instanceof Date);
+
   await autoLeaseA.complete();
   const throttledLease = await storeB.acquireAutoBackupLease();
   assert.equal(throttledLease, null, 'successful automatic backup must enforce the 15-minute throttle');
