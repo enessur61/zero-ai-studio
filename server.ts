@@ -2221,8 +2221,9 @@ app.post('/api/automation/:id/confirm', async (req, res) => {
     s.status === 'bestätigung_erforderlich'
       ? {
           ...s,
-          status: 'erfolgreich',
-          outputSummary: 'Durch Benutzer ausdrücklich bestätigt (0,00 € externer Status).',
+          status: 'freigegeben',
+          requiresConfirmation: false,
+          outputSummary: 'Durch Benutzer freigegeben. Die eigentliche Aktion wurde noch nicht ausgeführt.',
         }
       : s
   );

@@ -752,9 +752,16 @@ export function BrainView({
                             Freigabe erteilen
                           </button>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-emerald-400 shrink-0 font-mono">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            OK
+                          <span className={`inline-flex items-center gap-1 shrink-0 font-mono ${
+                            st.status === 'erfolgreich' ? 'text-emerald-400' :
+                            st.status === 'fehler' ? 'text-rose-400' :
+                            st.status === 'freigegeben' ? 'text-sky-400' :
+                            st.status === 'läuft' ? 'text-amber-300' : 'text-slate-400'
+                          }`}>
+                            {st.status === 'erfolgreich' ? 'ERFOLGREICH' :
+                              st.status === 'fehler' ? 'FEHLER' :
+                              st.status === 'freigegeben' ? 'FREIGEGEBEN · WARTET AUF AUSFÜHRUNG' :
+                              st.status === 'läuft' ? 'LÄUFT' : 'WARTEND'}
                           </span>
                         )}
                       </div>
