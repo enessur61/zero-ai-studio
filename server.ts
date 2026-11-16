@@ -330,9 +330,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
     db = await loadDb();
-    await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
-      recordBudgetAudit(db!, entry)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -928,9 +926,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
-        recordBudgetAudit(database, e)
-      );
+      await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database);
       const ai = getGeminiClient();
       const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -944,12 +940,8 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
-        await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
+        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
+        await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
@@ -1086,12 +1078,8 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     const query = String(req.body?.query ?? '').trim();
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
-    await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
+    await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1167,9 +1155,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
     }
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1231,9 +1217,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
     }
 
-    await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1327,9 +1311,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
       });
     }
 
-    await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1409,9 +1391,7 @@ app.post('/api/music/compose', asyncRoute(async (req, res) => {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
     const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1655,9 +1635,7 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db);
 
     const char = characterId ? db.characters.find((c) => c.id === characterId) : db.characters[0];
     const charContext = char
@@ -1869,9 +1847,7 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -2362,9 +2338,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     const includeExternalPublishGate = Boolean(req.body?.includeExternalPublishGate);
     if (!goal) return res.status(400).json({ error: 'Automatisierungsziel fehlt.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
     const planRes = await withTransientRetry(() =>
