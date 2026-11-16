@@ -384,7 +384,15 @@ app.post('/api/system/restore', asyncRoute(async (req, res) => {
     const restored = await restoreSystemBackup(backupId);
     res.json({ ok: true, restoredProjects: restored.projects.length, restoredMemories: restored.memories.length });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
+    const status = err instanceof PersistentStateConflictError ? 409 : 400;
+    res.status(status).json({
+      error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen',
+      ...(err instanceof PersistentStateConflictError ? {
+        code: 'PERSISTENCE_REVISION_CONFLICT',
+        expectedRevision: err.expectedRevision,
+        actualRevision: err.actualRevision,
+      } : {}),
+    });
   }
 }));
 
@@ -514,7 +522,15 @@ app.post('/api/system/zip-backups/:id/restore', asyncRoute(async (req, res) => {
       backupConfig: restored.db.backupConfig,
     });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
+    const status = err instanceof PersistentStateConflictError ? 409 : 400;
+    res.status(status).json({
+      error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen',
+      ...(err instanceof PersistentStateConflictError ? {
+        code: 'PERSISTENCE_REVISION_CONFLICT',
+        expectedRevision: err.expectedRevision,
+        actualRevision: err.actualRevision,
+      } : {}),
+    });
   }
 }));
 
