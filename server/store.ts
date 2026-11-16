@@ -766,7 +766,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
 
   // Persist a safety backup first. The final revision check below fences off any
   // normal write that lands between the safety backup and the restore replacement.
-  await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
+  const safetyBackup = await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
   const current = await loadDb();
   const expectedRevision = process.env.DATABASE_URL ? getSystemBackupRevision(safetyBackup) : undefined;
   restored.backups = current.backups;
