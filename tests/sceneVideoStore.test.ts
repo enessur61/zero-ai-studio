@@ -6,7 +6,7 @@ const granted = await requestSceneVideoStoragePersistence({
   persist: async () => true,
   estimate: async () => ({ usage: 1024, quota: 8192 }),
 } as unknown as StorageManager);
-assert.deepEqual(granted, { persistent: true, usageBytes: 1024, quotaBytes: 8192 });
+assert.deepEqual(granted, { persistent: true, usageBytes: 1024, quotaBytes: 8192, localSaved: false, serverPersisted: null });
 
 let persistCalls = 0;
 const denied = await requestSceneVideoStoragePersistence({
@@ -27,7 +27,7 @@ assert.equal(alreadyPersistent.persistent, true);
 assert.equal(alreadyPersistent.usageBytes, null);
 
 const unavailable = await requestSceneVideoStoragePersistence(undefined);
-assert.deepEqual(unavailable, { persistent: null, usageBytes: null, quotaBytes: null });
+assert.deepEqual(unavailable, { persistent: null, usageBytes: null, quotaBytes: null, localSaved: false, serverPersisted: null });
 
 const browserError = await requestSceneVideoStoragePersistence({
   persisted: async () => { throw new Error('storage denied'); },
