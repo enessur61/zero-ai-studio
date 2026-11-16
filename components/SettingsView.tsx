@@ -59,8 +59,45 @@ export function SettingsView({
     files: string[];
   } | null>(null);
   const [loadingManifest, setLoadingManifest] = useState(false);
+  const [testingGemini, setTestingGemini] = useState(false);
+  const [geminiDiagnostic, setGeminiDiagnostic] = useState<{
+    ok: boolean;
+    apiKeyConfigured: boolean;
+    freeTierGuardEnabled: boolean;
+    googleConnection: string;
+    modelResponse: string;
+    modelId: string;
+    responseVerified?: boolean;
+    paidFallback: boolean;
+    message: string;
+  } | null>(null);
 
   const totalZipStorageBytes = backupConfig.zipBackups.reduce((sum, b) => sum + b.sizeBytes, 0);
+
+  async function handleGeminiConnectionTest() {
+    if (testingGemini) return;
+    setTestingGemini(true);
+    setGeminiDiagnostic(null);
+    setErrorMsg(null);
+    try {
+      const result = await apiRequest<{
+        ok: boolean;
+        apiKeyConfigured: boolean;
+        freeTierGuardEnabled: boolean;
+        googleConnection: string;
+        modelResponse: string;
+        modelId: string;
+        responseVerified?: boolean;
+        paidFallback: boolean;
+        message: string;
+      }>('/api/system/gemini-connection-test', { method: 'POST' });
+      setGeminiDiagnostic(result);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Gemini-Verbindungstest fehlgeschlagen');
+    } finally {
+      setTestingGemini(false);
+    }
+  }
 
   async function handleInspectManifest() {
     setLoadingManifest(true);
@@ -241,6 +278,49 @@ export function SettingsView({
           {errorMsg}
         </div>
       )}
+
+      {/* SETTINGS -> GEMINI CONNECTION DIAGNOSTIC */}
+      <section className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <p className="text-xs font-mono text-sky-400">SYSTEM · LIVE CONNECTION CHECK</p>
+            <h2 className="text-lg font-semibold text-white mt-1">Google Gemini-Verbindung</h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Echter Server-Test mit gemini-3.8-flash. Der API-Schlüssel bleibt geheim; kostenpflichtige Fallbacks sind ausgeschlossen.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleGeminiConnectionTest}
+            disabled={testingGemini}
+            className="min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-xs font-medium inline-flex items-center justify-center gap-2 shrink-0"
+          >
+            {testingGemini ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+            {testingGemini ? 'Verbindung wird geprüft…' : 'Gemini-Verbindung testen'}
+          </button>
+        </div>
+        {geminiDiagnostic && (
+          <div className="rounded-xl bg-[#090B10] border border-white/[0.08] p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              {geminiDiagnostic.ok
+                ? <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                : <ShieldAlert className="w-5 h-5 text-rose-400" />}
+              <span className={geminiDiagnostic.ok ? 'text-emerald-300 font-semibold text-sm' : 'text-rose-300 font-semibold text-sm'}>
+                {geminiDiagnostic.ok ? 'Gemini-Verbindung erfolgreich' : 'Gemini-Verbindung nicht bestätigt'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="flex justify-between gap-3"><span className="text-slate-400">API-Schlüssel vorhanden</span><span className="text-white">{geminiDiagnostic.apiKeyConfigured ? 'Ja' : 'Nein'}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">0-€-Schutz aktiv</span><span className="text-white">{geminiDiagnostic.freeTierGuardEnabled ? 'Ja' : 'Nein'}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Google-Verbindung</span><span className="text-white">{geminiDiagnostic.googleConnection}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Modellantwort</span><span className="text-white">{geminiDiagnostic.modelResponse}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Modell</span><span className="text-white font-mono">{geminiDiagnostic.modelId}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-400">Kostenpflichtiger Fallback</span><span className="text-emerald-300">{geminiDiagnostic.paidFallback ? 'Nicht ausgeschlossen' : 'Ausgeschlossen'}</span></div>
+            </div>
+            <p className="text-xs text-slate-300">{geminiDiagnostic.message}</p>
+          </div>
+        )}
+      </section>
 
       {/* SETTINGS -> PROJECT BACKUP & EXPORT */}
       <section className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-5">
