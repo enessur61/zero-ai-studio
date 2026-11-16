@@ -356,7 +356,7 @@ try {
   // Earlier reconciliation cases intentionally leave their fixture blobs orphaned;
   // clear those known test-only rows before asserting this restore's own consistency.
   await poolB.query(
-    "DELETE FROM zero_backup_files WHERE id IN ('backup-atomic-success', 'auto-backup-atomic-success')"
+    "DELETE FROM zero_backup_files WHERE id IN ('backup-atomic-success', 'auto-backup-atomic-success', 'verified-restore-safety')"
   );
   const liveBeforeRestore = makeRestoreDb('live-before-restore');
   const currentBeforeRestore = await storeA.read();
