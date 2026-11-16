@@ -762,6 +762,159 @@ try {
     missingBlobIds: [],
   }, 'sequential restores must leave every retained metadata record paired with ZIP bytes');
 
+  // Corrupt the bytes of an actually published PostgreSQL backup blob.
+  // The production restore service must reject it before creating a safety backup or writing state.
+  const sourceBlobResult = await poolB.query<{ payload: Buffer }>(
+    'SELECT payload FROM zero_backup_files WHERE id = $1',
+    [versionChain[0].id]
+  );
+  assert.equal(sourceBlobResult.rowCount, 1);
+  const originalSourceBlob = Buffer.from(sourceBlobResult.rows[0].payload);
+  const corruptedSourceBlob = Buffer.from(originalSourceBlob);
+  const firstCentralEntry = corruptedSourceBlob.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  assert.notEqual(firstCentralEntry, -1);
+  const sourceLocalOffset = corruptedSourceBlob.readUInt32LE(firstCentralEntry + 42);
+  const sourceNameLength = corruptedSourceBlob.readUInt16LE(sourceLocalOffset + 26);
+  const sourceExtraLength = corruptedSourceBlob.readUInt16LE(sourceLocalOffset + 28);
+  const sourceDataOffset = sourceLocalOffset + 30 + sourceNameLength + sourceExtraLength;
+  corruptedSourceBlob[sourceDataOffset] ^= 0xff;
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    corruptedSourceBlob,
+  ]);
+  const stateBeforeCorruptRestore = await storeA.read();
+  assert.ok(stateBeforeCorruptRestore);
+  let corruptBlobSafetyBackupCalls = 0;
+  const corruptBlobRestore = createVerifiedZipRestoreService({
+    getZipBackupFilePath: async (zipId) => {
+      const state = await storeA.read();
+      assert.ok(state);
+      const record = (state.payload as ZeroDatabase).backupConfig.zipBackups.find((item) => item.id === zipId);
+      if (!record) throw new Error('Corrupt-blob fixture metadata missing');
+      const blob = await poolB.query<{ payload: Buffer }>(
+        'SELECT payload FROM zero_backup_files WHERE id = $1',
+        [zipId]
+      );
+      if (!blob.rows[0]) throw new Error('Corrupt-blob fixture bytes missing');
+      return { record, buffer: blob.rows[0].payload };
+    },
+    verifyZipBuffer,
+    assertRestorableDatabase,
+    createSafetyBackup: async () => {
+      corruptBlobSafetyBackupCalls += 1;
+      throw new Error('Safety backup must not run for a corrupted persisted ZIP');
+    },
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      return state.payload as ZeroDatabase;
+    },
+    getZipBackupRevision: () => { throw new Error('Must not request safety revision for corrupt ZIP'); },
+    saveDb: async () => { throw new Error('Must not persist a corrupt restore'); },
+    enrichModelMetadata: (model) => model,
+  });
+  await assert.rejects(
+    () => corruptBlobRestore(versionChain[0].id),
+    /ZIP beschädigt oder unvollständig/,
+    'the production restore service must reject corrupted bytes read from PostgreSQL'
+  );
+  assert.equal(corruptBlobSafetyBackupCalls, 0, 'corrupted persisted bytes must be rejected before safety backup');
+  assert.deepEqual(await storeA.read(), stateBeforeCorruptRestore, 'corrupt ZIP restore must not alter live PostgreSQL state');
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    originalSourceBlob,
+  ]);
+
+  // Simulate an application restart: construct entirely new pools, state stores,
+  // backup service and restore service, then restore from the persisted ZIP blob.
+  const restartPoolA = new Pool({ connectionString, options: \`-c search_path=\${schema}\`, max: 1 });
+  const restartPoolB = new Pool({ connectionString, options: \`-c search_path=\${schema}\`, max: 1 });
+  try {
+    const restartStore = createPostgresStateStore(restartPoolA);
+    await restartStore.ensureSchema();
+    const restartBackupRevisions = new WeakMap<ZeroDatabase, number>();
+    const restartBackupRecordRevisions = new WeakMap<ZipBackupVersion, number>();
+    const restartBackupService = createVersionedZipBackupService({
+      loadDb: async () => {
+        const state = await restartStore.read();
+        assert.ok(state);
+        restartBackupRevisions.set(state.payload as ZeroDatabase, state.revision);
+        return state.payload as ZeroDatabase;
+      },
+      getDbRevision: (db) => {
+        const revision = restartBackupRevisions.get(db);
+        if (revision === undefined) throw new Error('Restart backup revision missing');
+        return revision;
+      },
+      saveDb: async (db, options: SaveDbOptions = {}) => {
+        assert.notEqual(options.expectedRevision, undefined);
+        assert.ok(options.backupFile);
+        const revision = await restartStore.writeWithBackup(
+          db,
+          options.expectedRevision!,
+          options.backupFile,
+          options.recordAutoBackupSuccess ?? false
+        );
+        restartBackupRevisions.set(db, revision);
+      },
+      deleteBackupFile: async (id) => { await restartPoolA.query('DELETE FROM zero_backup_files WHERE id = $1', [id]); },
+      buildFullProjectZip,
+      verifyZipBuffer,
+      excludedSecrets: EXCLUDED_SECRETS_DOC,
+      isPersistent: () => true,
+      rootDir: () => process.cwd(),
+      zipBackupDir: '/tmp/zero-test-zips-restart',
+      rememberBackupRevision: (record, revision) => restartBackupRecordRevisions.set(record, revision),
+    });
+    const restartRestoreService = createVerifiedZipRestoreService({
+      getZipBackupFilePath: async (zipId) => {
+        const state = await restartStore.read();
+        assert.ok(state);
+        const record = (state.payload as ZeroDatabase).backupConfig.zipBackups.find((item) => item.id === zipId);
+        if (!record) throw new Error(\`Restart restore metadata missing for \${zipId}\`);
+        const blob = await restartPoolB.query<{ payload: Buffer }>(
+          'SELECT payload FROM zero_backup_files WHERE id = $1',
+          [zipId]
+        );
+        if (!blob.rows[0]) throw new Error(\`Restart restore ZIP bytes missing for \${zipId}\`);
+        return { record, buffer: blob.rows[0].payload };
+      },
+      verifyZipBuffer,
+      assertRestorableDatabase,
+      createSafetyBackup: (source) => restartBackupService({
+        changelog: \`Safety after restart before restoring \${source.version}\`,
+        trigger: 'pre_restore',
+        bumpVersion: true,
+      }),
+      loadDb: async () => {
+        const state = await restartStore.read();
+        assert.ok(state);
+        return state.payload as ZeroDatabase;
+      },
+      getZipBackupRevision: (record) => {
+        const revision = restartBackupRecordRevisions.get(record);
+        if (revision === undefined) throw new Error('Restart safety backup revision missing');
+        return revision;
+      },
+      saveDb: async (db, options) => {
+        assert.notEqual(options.expectedRevision, undefined);
+        await restartStore.write(db, options.expectedRevision!);
+      },
+      enrichModelMetadata: (model) => model,
+    });
+    const restoredAfterRestart = await restartRestoreService(versionChain[0].id);
+    assert.equal(restoredAfterRestart.restoredVersion, '1.2.1');
+    assert.equal(restoredAfterRestart.safetyBackup.trigger, 'pre_restore');
+    assert.equal(restoredAfterRestart.safetyBackup.protected, true);
+    assert.equal(restoredAfterRestart.db.projects[0].title, 'production-auto-backup-source');
+    assert.deepEqual(await restartStore.inspectBackupConsistency(), {
+      orphanedBlobIds: [],
+      missingBlobIds: [],
+    }, 'a fresh pool and service instance must restore persisted ZIP bytes without metadata/blob drift');
+  } finally {
+    await Promise.all([restartPoolA.end(), restartPoolB.end()]);
+  }
+
   // Retention commits the new metadata/blob before deleting expired blobs.
   // An injected delete failure must be reported as cleanup-pending, not as if
   // publication had failed; every other deletion must still be awaited.
