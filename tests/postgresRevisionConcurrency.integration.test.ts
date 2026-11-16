@@ -25,7 +25,9 @@ try {
   const storeA = createPostgresStateStore(poolA);
   const storeB = createPostgresStateStore(poolB);
 
-  await Promise.all([storeA.ensureSchema(), storeB.ensureSchema()]);
+  // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
+  await storeA.ensureSchema();
+  await storeB.ensureSchema();
   const initialRevision = await storeA.write({ value: 0 }, 0);
   assert.equal(initialRevision, 1, 'initial insert must create revision 1');
 
