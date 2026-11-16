@@ -267,10 +267,12 @@ export async function runLiveModelTest(
         ? `WAV-Synthese erfolgreich (${Math.round((audioB64!.length * 0.75) / 1024)} KB Audio).`
         : 'Keine Audiodaten empfangen.';
     } else if (model.id === 'gemini-3.5-transcribe') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -292,10 +294,12 @@ export async function runLiveModelTest(
         ? 'Audio-Transkriptions-Endpunkt erfolgreich geprüft (v1beta, audioTranscription).'
         : 'Keine Antwort vom Transkriptions-Endpunkt.';
     } else if (model.id === 'gemini-embedding-2') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
