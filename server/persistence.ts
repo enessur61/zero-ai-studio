@@ -202,23 +202,42 @@ export function createPostgresStateStore(database: Pool) {
       );
       const lastSuccess = state.rows[0]?.last_success_at;
       if (lastSuccess && Date.now() - new Date(lastSuccess).getTime() < minimumIntervalMs) {
-        await client.query('SELECT pg_advisory_unlock(1514480207, 2)');
+        const unlocked = await client.query<{ unlocked: boolean }>(
+          'SELECT pg_advisory_unlock(1514480207, 2) AS unlocked'
+        );
+        if (unlocked.rows[0]?.unlocked !== true) {
+          throw new Error('PostgreSQL Auto-Backup-Lease konnte nicht freigegeben werden.');
+        }
         lockAcquired = false;
         client.release();
         return null;
       }
-      let finished = false;
-      const finish = async () => {
-        if (finished) return;
-        finished = true;
-        try {
-          if (lockAcquired) {
-            await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
-            lockAcquired = false;
-          }
-        } finally {
-          client.release();
+      let finishPromise: Promise<void> | null = null;
+      const finish = (): Promise<void> => {
+        if (!finishPromise) {
+          finishPromise = (async () => {
+            let destroyClient = false;
+            try {
+              if (lockAcquired) {
+                const unlocked = await client.query<{ unlocked: boolean }>(
+                  'SELECT pg_advisory_unlock(1514480207, 2) AS unlocked'
+                );
+                if (unlocked.rows[0]?.unlocked !== true) {
+                  throw new Error('PostgreSQL Auto-Backup-Lease war beim Freigeben nicht mehr im Besitz der Session.');
+                }
+                lockAcquired = false;
+              }
+            } catch (error) {
+              // A session-level lock survives a pool checkout boundary. Destroy the
+              // physical connection if explicit unlock cannot be confirmed.
+              destroyClient = true;
+              throw error;
+            } finally {
+              client.release(destroyClient);
+            }
+          })();
         }
+        return finishPromise;
       };
       return {
         // The success timestamp is written by the backup publication transaction,
@@ -227,10 +246,19 @@ export function createPostgresStateStore(database: Pool) {
         release: () => finish(),
       };
     } catch (error) {
+      let destroyClient = !lockAcquired;
       if (lockAcquired) {
-        await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
+        try {
+          const unlocked = await client.query<{ unlocked: boolean }>(
+            'SELECT pg_advisory_unlock(1514480207, 2) AS unlocked'
+          );
+          if (unlocked.rows[0]?.unlocked === true) lockAcquired = false;
+          else destroyClient = true;
+        } catch {
+          destroyClient = true;
+        }
       }
-      client.release();
+      client.release(destroyClient);
       throw error;
     }
   }
@@ -318,6 +346,39 @@ export async function writePersistentStateWithBackupFile<T>(
   recordAutoBackupSuccess = false
 ): Promise<number> {
   return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess);
+}
+
+
+export type PersistentAutoBackupLease = {
+  complete: () => Promise<void>;
+  release: () => Promise<void>;
+};
+
+/**
+ * Shared production wrapper for automatic ZIP backup creation. A failed archive
+ * build or publication always attempts to release the session-level lease.
+ */
+export async function withPersistentAutoBackupLease<T>(
+  acquireLease: () => Promise<PersistentAutoBackupLease | null>,
+  createBackup: () => Promise<T>
+): Promise<T | null> {
+  const lease = await acquireLease();
+  if (!lease) return null;
+  try {
+    const backup = await createBackup();
+    await lease.complete();
+    return backup;
+  } catch (error) {
+    try {
+      await lease.release();
+    } catch (releaseError) {
+      throw new AggregateError(
+        [error, releaseError],
+        'Auto-Backup fehlgeschlagen und die Advisory-Lock-Freigabe musste die Verbindung verwerfen.'
+      );
+    }
+    throw error;
+  }
 }
 
 export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: number): Promise<{
