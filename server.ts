@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
-import { createConcurrencyGate } from './server/concurrencyGate.ts';
+import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/concurrencyGate.ts';
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
@@ -68,9 +68,11 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
-// ZIP reads retain compressed and expanded buffers; share a small process-local
-// budget across downloads and restores to bound aggregate request memory.
-export const zipOperationGate = createConcurrencyGate(2, 5);
+// ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
+// Node processes. The local gate is only for development without PostgreSQL.
+export const zipOperationGate = process.env.DATABASE_URL
+  ? createPostgresConcurrencyGate(getPostgresPool(), 2, 5)
+  : createConcurrencyGate(2, 5);
 
 // Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
 // makes req.ip reflect the client address for login rate limiting.
