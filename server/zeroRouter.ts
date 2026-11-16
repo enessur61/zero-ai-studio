@@ -90,7 +90,7 @@ function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: str
   const quota = budget.freeQuotaUsage[modelId];
   // Fail closed when quota metadata is missing or malformed. Treat only a valid
   // earlier date as a fresh daily window; never infer unlimited quota.
-  if (!quota || typeof quota.lastResetDate !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(quota.lastResetDate)) {
+  if (!quota || typeof quota.lastResetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
     return false;
   }
   if (quota.lastResetDate !== today) return true;
