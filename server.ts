@@ -100,21 +100,6 @@ function createSessionCookie(): string {
   const secure = IS_PRODUCTION ? '; Secure' : '';
   return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
 }
-app.use('/api', (req, res, next) => {
-  if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
-    return next();
-  }
-  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
-    return res.status(503).json({
-      error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
-    });
-  }
-  if (!hasValidSession(req)) {
-    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  }
-  return next();
-});
-
 // Baseline browser security headers. CSP starts in report-only mode so external
 // model assets and media can be audited without unexpectedly breaking the PWA.
 app.use((_req, res, next) => {
@@ -132,6 +117,21 @@ app.use((_req, res, next) => {
   );
   if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
+});
+
+app.use('/api', (req, res, next) => {
+  if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
+    return next();
+  }
+  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
+    return res.status(503).json({
+      error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
+    });
+  }
+  if (!hasValidSession(req)) {
+    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+  }
+  return next();
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
