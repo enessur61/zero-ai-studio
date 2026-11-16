@@ -17,9 +17,9 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
-import { createVersionedZipBackupService } from './versionedZipBackup.ts';
+import { BackupCleanupError, createVersionedZipBackupService } from './versionedZipBackup.ts';
 import { createVerifiedZipRestoreService } from './verifiedZipRestore.ts';
-import { acquirePersistentAutoBackupLease, deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
+import { acquirePersistentAutoBackupLease, deleteBackupFile, inspectPersistentBackupConsistency, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -796,6 +796,33 @@ export const createVersionedZipBackup = createVersionedZipBackupService({
   rememberBackupRevision: (record, revision) => zipBackupRevisions.set(record, revision),
 });
 
+export async function inspectZipBackupConsistency(): Promise<{
+  orphanedBlobIds: string[];
+  missingBlobIds: string[];
+}> {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.');
+  }
+  return inspectPersistentBackupConsistency();
+}
+
+async function createAutoBackupWithoutMisreportingCommittedCleanupFailure(
+  create: () => Promise<ZipBackupVersion | null>
+): Promise<ZipBackupVersion | null> {
+  try {
+    return await create();
+  } catch (error) {
+    if (error instanceof BackupCleanupError) {
+      console.error('[ZERO Backup] ZIP-Backup veröffentlicht; Bereinigung ausstehend.', {
+        backupId: error.backup.id,
+        orphanedBlobIds: error.orphanedBlobIds,
+      });
+      return error.backup;
+    }
+    throw error;
+  }
+}
+
 export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBackupVersion | null> {
   const db = await loadDb();
   if (!db.backupConfig.autoZipOnChange) return null;
@@ -809,9 +836,11 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
 
   if (process.env.DATABASE_URL) {
     // The shared wrapper releases (or destroys) the lease connection on every failure path.
-    return withPersistentAutoBackupLease(
-      () => acquirePersistentAutoBackupLease(),
-      () => create(true)
+    return createAutoBackupWithoutMisreportingCommittedCleanupFailure(() =>
+      withPersistentAutoBackupLease(
+        () => acquirePersistentAutoBackupLease(),
+        () => create(true)
+      )
     );
   }
 
@@ -820,7 +849,7 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
   if (latestAutoBackup && Date.now() - Date.parse(latestAutoBackup.createdAt) < 15 * 60 * 1000) {
     return null;
   }
-  return create();
+  return createAutoBackupWithoutMisreportingCommittedCleanupFailure(() => create());
 }
 
 export async function getZipBackupFilePath(zipId: string): Promise<{
@@ -857,8 +886,12 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   // reports an orphaned blob; deleting bytes first could leave a live entry broken.
   db.backupConfig.zipBackups.splice(idx, 1);
   await saveDb(db);
-  if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
-  else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
+  try {
+    if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
+    else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
+  } catch (error) {
+    throw new BackupCleanupError(target, [target.id], [error]);
+  }
 }
 
 export const restoreFromVerifiedZipBackup = createVerifiedZipRestoreService({
