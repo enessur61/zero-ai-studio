@@ -4,6 +4,15 @@ export const WEBGPU_LOCAL_MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 export const WEBGPU_LOCAL_MODEL_DOWNLOAD_MB = 705;
 export const WEBGPU_LOCAL_MODEL_VRAM_MB = 879;
 
+export const WEBGPU_LOCAL_MODELS = [
+  { id: 'webgpu-llama-3.2-1b', modelId: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', name: 'Llama 3.2 1B', downloadMB: 705, vramMB: 879 },
+  { id: 'qwen2.5-0.5b-webgpu', modelId: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', name: 'Qwen 2.5 0.5B', downloadMB: 550, vramMB: 945 },
+  { id: 'qwen3-0.6b-webgpu', modelId: 'Qwen3-0.6B-q4f16_1-MLC', name: 'Qwen 3 0.6B', downloadMB: 600, vramMB: 1403 },
+  { id: 'smollm2-360m-webgpu', modelId: 'SmolLM2-360M-Instruct-q4f16_1-MLC', name: 'SmolLM2 360M', downloadMB: 380, vramMB: 872 },
+] as const;
+
+export type WebGPULocalModelId = typeof WEBGPU_LOCAL_MODELS[number]['modelId'];
+
 export interface WebGPULocalModelProgress {
   progress: number;
   text: string;
@@ -27,6 +36,7 @@ type NavigatorWithGPU = Navigator & {
 let engine: MLCEngineInterface | null = null;
 let enginePromise: Promise<MLCEngineInterface> | null = null;
 let modelWorker: Worker | null = null;
+let loadedModelId: string | null = null;
 
 export async function checkWebGPULocalModelSupport(): Promise<{
   supported: boolean;
@@ -67,9 +77,13 @@ export async function checkWebGPULocalModelSupport(): Promise<{
 }
 
 export async function loadWebGPULocalModel(
-  onProgress?: (progress: WebGPULocalModelProgress) => void
+  onProgress?: (progress: WebGPULocalModelProgress) => void,
+  requestedModelId: WebGPULocalModelId = WEBGPU_LOCAL_MODEL_ID
 ): Promise<void> {
-  if (engine) return;
+  const preset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === requestedModelId);
+  if (!preset) throw new Error(`Nicht unterstütztes lokales Modell: ${requestedModelId}`);
+  if (engine && loadedModelId === requestedModelId) return;
+  if (engine || enginePromise) await unloadWebGPULocalModel();
 
   const support = await checkWebGPULocalModelSupport();
   if (!support.supported) throw new Error(support.message);
@@ -80,7 +94,7 @@ export async function loadWebGPULocalModel(
       modelWorker = new Worker(new URL('./webllmWorker.ts', import.meta.url), {
         type: 'module',
       });
-      return CreateWebWorkerMLCEngine(modelWorker, WEBGPU_LOCAL_MODEL_ID, {
+      return CreateWebWorkerMLCEngine(modelWorker, requestedModelId, {
         initProgressCallback: (report: { progress: number; text: string }) => {
           onProgress?.({
             progress: Math.max(0, Math.min(1, report.progress)),
@@ -93,6 +107,7 @@ export async function loadWebGPULocalModel(
 
   try {
     engine = await enginePromise;
+    loadedModelId = requestedModelId;
   } catch (error) {
     modelWorker?.terminate();
     modelWorker = null;
@@ -107,6 +122,10 @@ export async function loadWebGPULocalModel(
 
 export function isWebGPULocalModelLoaded(): boolean {
   return engine !== null;
+}
+
+export function getLoadedWebGPULocalModelId(): WebGPULocalModelId | null {
+  return loadedModelId as WebGPULocalModelId | null;
 }
 
 export async function generateWebGPULocalChat(
@@ -143,6 +162,7 @@ export async function unloadWebGPULocalModel(): Promise<void> {
   const activeEngine = engine;
   engine = null;
   enginePromise = null;
+  loadedModelId = null;
 
   try {
     await activeEngine?.unload();

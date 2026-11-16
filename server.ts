@@ -373,10 +373,11 @@ app.post('/api/models/test-all', async (_req, res) => {
 // Persist activation only after the browser reports a non-empty response from real local inference.
 app.post('/api/models/webgpu/activate', async (req, res) => {
   const db = await loadDb();
-  const model = db.models.find((item) => item.id === 'webgpu-llama-3.2-1b');
+  const modelId = String(req.body?.modelId ?? 'webgpu-llama-3.2-1b');
+  const model = db.models.find((item) => item.id === modelId);
   const probeResponse = String(req.body?.probeResponse ?? '').trim();
   if (!model || model.adapterId !== 'webllm' || model.executionMode !== 'LOCAL ON-DEVICE') {
-    return res.status(404).json({ error: 'Das lokale WebGPU-Modell ist nicht registriert.' });
+    return res.status(404).json({ error: 'Das angeforderte lokale WebGPU-Modell ist nicht registriert.' });
   }
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Lokaler Inferenztest fehlt oder ist ungültig.' });
