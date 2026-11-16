@@ -15,6 +15,7 @@ import WebKit
 @MainActor
 public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     private weak var webView: WKWebView?
+    private let trustedHost: String
     private var llamaAdapters: [Llama32Variant: LlamaCoreMLAdapter] = [:]
     private var mlxAdapters: [MLXTextVariant: MLXSwiftTextAdapter] = [:]
     private lazy var gemmaAdapter = MediaPipeGemmaAdapter()
@@ -22,8 +23,9 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     private lazy var piperAdapter = PiperONNXAdapter()
     private lazy var kokoroAdapter = KokoroMLXAudioAdapter()
 
-    public init(webView: WKWebView) {
+    public init(webView: WKWebView, trustedHost: String) {
         self.webView = webView
+        self.trustedHost = trustedHost
         super.init()
     }
 
@@ -35,7 +37,8 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         // Never allow an embedded or foreign origin to invoke on-device model capabilities.
         guard message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
-              message.frameInfo.securityOrigin.host == "zero-ai-studio.onrender.com",
+              !trustedHost.isEmpty,
+              message.frameInfo.securityOrigin.host == trustedHost,
               let body = message.body as? [String: Any],
               let requestId = body["requestId"] as? String,
               !requestId.isEmpty,
