@@ -58,6 +58,10 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
+// Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
+// makes req.ip reflect the client address for login rate limiting.
+app.set('trust proxy', 1);
+
 const IS_PRODUCTION = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
 const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
 const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
@@ -105,6 +109,25 @@ app.use('/api', (req, res, next) => {
   return next();
 });
 
+// Baseline browser security headers. CSP starts in report-only mode so external
+// model assets and media can be audited without unexpectedly breaking the PWA.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader(
+    'Content-Security-Policy-Report-Only',
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+      "script-src 'self' 'unsafe-inline' blob: https:; style-src 'self' 'unsafe-inline' https:; " +
+      "img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; " +
+      "font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob: https:"
+  );
+  if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
 
@@ -126,6 +149,9 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const now = Date.now();
+  for (const [address, entry] of loginAttempts) {
+    if (entry.resetAt <= now) loginAttempts.delete(address);
+  }
   const ip = req.ip || 'unknown';
   const attempt = loginAttempts.get(ip);
   const current = !attempt || attempt.resetAt <= now
@@ -2279,6 +2305,11 @@ app.post('/api/automation/:id/confirm', async (req, res) => {
   run.finishedAt = undefined;
   await saveDb(db);
   res.json({ run });
+});
+
+// Keep unknown API paths in the JSON API namespace instead of returning the SPA shell.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API-Route nicht gefunden.' });
 });
 
 async function startServer() {
