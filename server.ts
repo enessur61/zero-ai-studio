@@ -221,8 +221,10 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       })
     );
     const reply = (response.text ?? '').trim();
-    if (!reply.includes('ZERO_CONNECTION_OK')) {
-      throw new Error('Google hat geantwortet, aber die erwartete Testantwort nicht bestätigt.');
+    // A successful, non-empty model response confirms connectivity. Do not fail
+    // the connection check just because the model adds punctuation or extra text.
+    if (!reply) {
+      throw new Error('Google hat die Anfrage angenommen, aber keine Textantwort zurückgegeben.');
     }
 
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
@@ -236,7 +238,7 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       googleConnection: 'CONNECTED',
       modelResponse: 'RECEIVED',
       modelId,
-      responseVerified: reply.includes('ZERO_CONNECTION_OK'),
+      responseVerified: Boolean(reply),
       paidFallback: false,
       message: 'Google Gemini hat erfolgreich auf den Verbindungstest geantwortet.',
     });
