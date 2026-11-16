@@ -417,8 +417,8 @@ app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res)
       reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
       costEur: 0,
     });
-    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
     await saveDb(db);
+    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
     return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
   } catch (err) {
     return res.status(400).json({
