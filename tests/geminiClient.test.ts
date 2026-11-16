@@ -60,10 +60,14 @@ const expired = base();
 expired.freeQuotaUsage['gemini-3.8-flash'].requestsToday = 10;
 expired.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
 expired.freeQuotaUsage['gemini-3.8-flash'].lastResetDate = '2020-01-01';
-assert.doesNotThrow(() => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', expired, () => {}));
-assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 0);
-assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].exhausted, false);
-assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].lastResetDate, today);
+assert.throws(
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', expired, () => {}),
+  /Reset.*nicht verifiziert/,
+  'a local calendar rollover is not proof of a provider-side quota reset',
+);
+assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 10);
+assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].exhausted, true);
+assert.equal(expired.freeQuotaUsage['gemini-3.8-flash'].lastResetDate, '2020-01-01');
 
 const exhausted = base();
 exhausted.freeQuotaUsage['gemini-3.8-flash'].requestsToday = 10;
