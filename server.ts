@@ -2000,6 +2000,11 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const project = db.projects.find((p) => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
+  // Remove unsafe media persisted by older versions before returning the project.
+  project.scenes = sanitizeProjectScenes(project.scenes);
+  project.assets = sanitizeProjectAssets(project.assets);
+  project.snapshots = sanitizeProjectSnapshots(project.snapshots);
+
   const allowedTypes: ProjectAsset['type'][] = ['image', 'audio', 'music', 'video', 'script'];
   const type = req.body?.type ?? 'image';
   if (!allowedTypes.includes(type)) {
