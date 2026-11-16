@@ -2106,6 +2106,56 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
 }));
 
+app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const scene = project.scenes.find((item) => item.id === req.params.sceneId);
+  if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+
+  const dataUrl = typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '';
+  if (!isSafeProjectAssetUrl(dataUrl, 'video')) {
+    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 12 MB.' });
+  }
+  const assetKey = `zero-scene-video:${scene.id}`;
+  const existing = project.assets.find((asset) => asset.type === 'video' && asset.modelId === assetKey);
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.url = dataUrl;
+    existing.title = `Szenenclip: ${scene.title}`.slice(0, 120);
+    existing.durationSec = Math.min(60, scene.durationSec);
+    existing.createdAt = now;
+  } else {
+    if (project.assets.length >= 200) {
+      return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
+    }
+    project.assets.unshift({
+      id: `asset-${Date.now()}-${randomBytes(4).toString('hex')}`,
+      type: 'video',
+      title: `Szenenclip: ${scene.title}`.slice(0, 120),
+      url: dataUrl,
+      modelId: assetKey,
+      durationSec: Math.min(60, scene.durationSec),
+      createdAt: now,
+    });
+  }
+  project.updatedAt = now;
+  await saveDb(db);
+  return res.json({ ok: true, serverPersisted: true, project });
+}));
+
+app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const assetKey = `zero-scene-video:${req.params.sceneId}`;
+  const asset = project.assets.find((item) => item.type === 'video' && item.modelId === assetKey);
+  if (!asset || !isSafeProjectAssetUrl(asset.url, 'video')) {
+    return res.status(404).json({ error: 'Für diese Szene ist kein dauerhaft gespeicherter Videoclip vorhanden.' });
+  }
+  return res.json({ dataUrl: asset.url, serverPersisted: true });
+}));
+
 app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((p) => p.id === req.params.id);
