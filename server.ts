@@ -2114,11 +2114,18 @@ app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) =
   if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
   const dataUrl = typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '';
-  if (!isSafeProjectAssetUrl(dataUrl, 'video')) {
-    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 12 MB.' });
+  if (!isSafeProjectAssetUrl(dataUrl, 'video') || dataUrl.length > 12 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 8 MB.' });
   }
   const assetKey = `zero-scene-video:${scene.id}`;
   const existing = project.assets.find((asset) => asset.type === 'video' && asset.modelId === assetKey);
+  const storedSceneVideoChars = project.assets
+    .filter((asset) => asset.type === 'video' && asset.modelId.startsWith('zero-scene-video:'))
+    .reduce((total, asset) => total + asset.url.length, 0);
+  const nextSceneVideoChars = storedSceneVideoChars - (existing?.url.length ?? 0) + dataUrl.length;
+  if (nextSceneVideoChars > 24 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Die Szenenclips dieses Projekts überschreiten zusammen das 24-MB-Synchronisationslimit. Bitte ältere Clips entfernen.' });
+  }
   const now = new Date().toISOString();
   if (existing) {
     existing.url = dataUrl;
