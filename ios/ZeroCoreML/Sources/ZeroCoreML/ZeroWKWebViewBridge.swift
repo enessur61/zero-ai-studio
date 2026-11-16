@@ -11,11 +11,12 @@ import WebKit
 /// - kokoro-82m (CoreML/MLX Audio)
 ///
 /// Registrierung im App-ViewController:
-/// webView.configuration.userContentController.add(ZeroWKWebViewBridge(webView: webView), name: "zeroCoreML")
+/// webView.configuration.userContentController.add(ZeroWKWebViewBridge(webView: webView, trustedHost: appHost, trustedPort: appPort), name: "zeroCoreML")
 @MainActor
 public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     private weak var webView: WKWebView?
     private let trustedHost: String
+    private let trustedPort: Int
     private var llamaAdapters: [Llama32Variant: LlamaCoreMLAdapter] = [:]
     private var mlxAdapters: [MLXTextVariant: MLXSwiftTextAdapter] = [:]
     private lazy var gemmaAdapter = MediaPipeGemmaAdapter()
@@ -23,9 +24,10 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     private lazy var piperAdapter = PiperONNXAdapter()
     private lazy var kokoroAdapter = KokoroMLXAudioAdapter()
 
-    public init(webView: WKWebView, trustedHost: String) {
+    public init(webView: WKWebView, trustedHost: String, trustedPort: Int) {
         self.webView = webView
         self.trustedHost = trustedHost
+        self.trustedPort = trustedPort
         super.init()
     }
 
@@ -39,6 +41,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
               message.frameInfo.securityOrigin.protocol == "https",
               !trustedHost.isEmpty,
               message.frameInfo.securityOrigin.host == trustedHost,
+              message.frameInfo.securityOrigin.port == trustedPort,
               let body = message.body as? [String: Any],
               let requestId = body["requestId"] as? String,
               !requestId.isEmpty,
