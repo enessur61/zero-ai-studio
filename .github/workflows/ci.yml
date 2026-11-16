@@ -75,6 +75,9 @@ jobs:
           }
           console.log('No prohibited local database or credential files are tracked.');
           NODE
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
+        with:
+          go-version: '1.24.2'
       - name: Scan repository content and git history for leaked secrets
         run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
       - run: npm install --no-audit --no-fund
