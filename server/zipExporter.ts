@@ -41,9 +41,9 @@ function isSensitiveFile(relPath: string): boolean {
   if (segments.some((segment) => ['.ssh', '.aws', '.azure', '.kube', '.gnupg', '.secrets'].includes(segment.toLowerCase()))) return true;
   if (base.startsWith('.env') && base !== '.env.example') return true;
   if (['.npmrc', '.netrc', '.pypirc', 'credentials.json'].includes(base)) return true;
-  if (/^(id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\\..*)?$/.test(base)) return true;
-  if (/\\.(pem|key|p12|pfx|p8|ppk|jks|keystore|mobileprovision|secret|token)$/i.test(base)) return true;
-  if (/(^|[-_.])service[-_]?account([-.].*)?\\.json$/i.test(base)) return true;
+  if (/^(id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\..*)?$/.test(base)) return true;
+  if (/\.(pem|key|p12|pfx|p8|ppk|jks|keystore|mobileprovision|secret|token)$/i.test(base)) return true;
+  if (/(^|[-_.])service[-_]?account([-.].*)?\.json$/i.test(base)) return true;
   return false;
 }
 
