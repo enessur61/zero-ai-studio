@@ -2,9 +2,11 @@ name: ZERO AI STUDIO CI
 
 on:
   workflow_dispatch:
-  push:
-    branches: ['**']
   pull_request:
+
+concurrency:
+  group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
