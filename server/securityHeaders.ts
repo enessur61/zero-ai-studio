@@ -24,7 +24,7 @@ export function configureTrustProxy(
   if (rawValue === undefined || rawValue.trim() === '') return;
 
   const normalized = rawValue.trim();
-  if (!/^\\d+$/.test(normalized)) {
+  if (!/^\d+$/.test(normalized)) {
     throw new Error('ZERO_TRUST_PROXY_HOPS muss eine nichtnegative ganze Zahl sein.');
   }
 
