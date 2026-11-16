@@ -312,6 +312,20 @@ export async function writePersistentStateWithBackupFile<T>(
   return getStateStore().write(payload, expectedRevision, backupFile);
 }
 
+export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: number): Promise<{
+  complete: () => Promise<void>;
+  release: () => Promise<void>;
+} | null> {
+  return getStateStore().acquireAutoBackupLease(minimumIntervalMs);
+}
+
+export async function inspectPersistentBackupConsistency(): Promise<{
+  orphanedBlobIds: string[];
+  missingBlobIds: string[];
+}> {
+  return getStateStore().inspectBackupConsistency();
+}
+
 export async function writeBackupFile(
   id: string,
   filename: string,
