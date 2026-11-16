@@ -17,8 +17,9 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
+import { createVersionedZipBackupService } from './versionedZipBackup.ts';
 import { createVerifiedZipRestoreService } from './verifiedZipRestore.ts';
-import { acquirePersistentAutoBackupLease, deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
+import { acquirePersistentAutoBackupLease, deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -781,111 +782,19 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   return restored;
 }
 
-function bumpPatchVersion(version: string): string {
-  const parts = version.split('.').map((n) => Number(n));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return '1.1.1';
-  return `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
-}
-
-export async function createVersionedZipBackup(params: {
-  changelog: string;
-  trigger: 'manual' | 'auto' | 'pre_restore';
-  bumpVersion?: boolean;
-  recordAutoBackupSuccess?: boolean;
-}): Promise<ZipBackupVersion> {
-  const current = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
-  const db = JSON.parse(JSON.stringify(current)) as ZeroDatabase;
-  const backupSnapshot = db;
-  const nextVersion =
-    params.bumpVersion === false
-      ? backupSnapshot.backupConfig.currentVersion
-      : bumpPatchVersion(backupSnapshot.backupConfig.currentVersion);
-
-  const now = new Date().toISOString();
-  const datePart = now.slice(0, 19).replace(/[:T]/g, '-');
-  const filename = `ZERO_AI_STUDIO_v${nextVersion}_${datePart}.zip`;
-  const targetPath = path.join(ZIP_BACKUP_DIR, filename);
-
-  // Build from a detached snapshot; do not publish a version until the archive is verified.
-  backupSnapshot.backupConfig.currentVersion = nextVersion;
-  backupSnapshot.backupConfig.changelogHistory.unshift({
-    version: nextVersion,
-    date: now,
-    summary: params.changelog,
-  });
-  if (backupSnapshot.backupConfig.changelogHistory.length > 40) {
-    backupSnapshot.backupConfig.changelogHistory = backupSnapshot.backupConfig.changelogHistory.slice(0, 40);
-  }
-
-  const zipRes = await buildFullProjectZip(process.cwd(), {
-    'data/zero-studio-db.json': Buffer.from(JSON.stringify(backupSnapshot, null, 2), 'utf8'),
-  });
-  const verification = verifyZipBuffer(zipRes.buffer);
-  if (!verification.result.valid) {
-    throw new Error(
-      `ZIP-Integritätsprüfung fehlgeschlagen: ${[
-        ...verification.result.errors,
-        ...verification.result.missingCoreFiles.map((f) => `Fehlende Datei: ${f}`),
-      ].join('; ')}`
-    );
-  }
-
-  // Mark latest verified working backup as protected; keep prior protected backups intact
-  const record: ZipBackupVersion = {
-    id: `zip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    version: nextVersion,
-    filename,
-    createdAt: now,
-    changelog: params.changelog,
-    trigger: params.trigger,
-    fileCount: zipRes.fileCount,
-    sizeBytes: zipRes.buffer.length,
-    verified: true,
-    protected: params.trigger !== 'auto',
-    excludedSecrets: EXCLUDED_SECRETS_DOC,
-  };
-
-  db.backupConfig.currentVersion = nextVersion;
-  db.backupConfig.changelogHistory = backupSnapshot.backupConfig.changelogHistory;
-  db.backupConfig.lastVerifiedAt = now;
-  db.backupConfig.zipBackups.unshift(record);
-  // Keep every explicitly protected backup, but cap automatic/unprotected history
-  // at 10 entries so repeated project edits cannot grow storage without bound.
-  const beforePrune = db.backupConfig.zipBackups;
-  const protectedItems = beforePrune.filter((b) => b.protected);
-  const unprotectedItems = beforePrune.filter((b) => !b.protected).slice(0, 10);
-  db.backupConfig.zipBackups = [...protectedItems, ...unprotectedItems].sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt)
-  );
-  const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
-  const removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
-  if (process.env.DATABASE_URL) {
-    await saveDb(db, {
-      expectedRevision,
-      backupFile: { id: record.id, filename, contentType: 'application/zip', payload: zipRes.buffer },
-      recordAutoBackupSuccess: params.recordAutoBackupSuccess ?? false,
-    });
-    zipBackupRevisions.set(record, getDbRevision(db));
-  } else {
-    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
-    await fs.writeFile(targetPath, zipRes.buffer);
-    try {
-      await saveDb(db);
-    } catch (error) {
-      await fs.rm(targetPath, { force: true });
-      throw error;
-    }
-  }
-  if (process.env.DATABASE_URL) {
-    await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
-  } else {
-    await Promise.all(removedZipBackups.map((backup) =>
-      fs.rm(path.join(ZIP_BACKUP_DIR, backup.filename), { force: true })
-    ));
-  }
-  return record;
-}
+export const createVersionedZipBackup = createVersionedZipBackupService({
+  loadDb,
+  getDbRevision,
+  saveDb,
+  deleteBackupFile,
+  buildFullProjectZip,
+  verifyZipBuffer,
+  excludedSecrets: EXCLUDED_SECRETS_DOC,
+  isPersistent: () => Boolean(process.env.DATABASE_URL),
+  rootDir: () => process.cwd(),
+  zipBackupDir: ZIP_BACKUP_DIR,
+  rememberBackupRevision: (record, revision) => zipBackupRevisions.set(record, revision),
+});
 
 export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBackupVersion | null> {
   const db = await loadDb();
@@ -899,18 +808,11 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
   });
 
   if (process.env.DATABASE_URL) {
-    // A session-level PostgreSQL lock spans ZIP generation and publication across all instances.
-    const lease = await acquirePersistentAutoBackupLease();
-    if (!lease) return null;
-    try {
-      // ZIP bytes, state metadata, and throttle timestamp share one PostgreSQL transaction.
-      const backup = await create(true);
-      await lease.complete();
-      return backup;
-    } catch (error) {
-      await lease.release();
-      throw error;
-    }
+    // The shared wrapper releases (or destroys) the lease connection on every failure path.
+    return withPersistentAutoBackupLease(
+      () => acquirePersistentAutoBackupLease(),
+      () => create(true)
+    );
   }
 
   // Local file mode has only one process; retain the local 15-minute throttle.
