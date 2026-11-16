@@ -72,6 +72,22 @@ try {
   await authA.clearLoginAttempts(loginKeyHash);
   assert.equal((await authB.consumeLoginAttempt(loginKeyHash, loginNow, 15 * 60 * 1000, 8)).allowed, true);
 
+  // A shared atomic quota reservation must admit only the configured number
+  // of provider calls, even when requests are distributed across two pools.
+  const quotaParams = {
+    modelId: 'gemini-3.8-flash-cross-pool-test',
+    resetDate: new Date().toISOString().slice(0, 10),
+    currentRequests: 0,
+    dailyLimit: 8,
+  };
+  const quotaReservations = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+    (index % 2 ? authA : authB).reserveGeminiQuota(quotaParams)
+  ));
+  assert.equal(quotaReservations.filter((entry) => entry.allowed).length, 8);
+  const exhaustedQuota = await authB.reserveGeminiQuota(quotaParams);
+  assert.equal(exhaustedQuota.allowed, false, 'ninth Gemini reservation must fail across independent pools');
+  assert.equal(exhaustedQuota.requestsToday, 8);
+
   // PostgreSQL must reject oversized BYTEA reads using octet_length in SQL,
   // before transferring the blob into the Node.js process.
   const oversizedBlobId = 'zip-read-limit-fixture';
