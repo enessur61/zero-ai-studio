@@ -376,7 +376,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         {/* STT & Subtitles */}
         <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-5 space-y-4">
           <h2 className="text-base font-semibold text-white">
-            Spracherkennung & Automatische Untertitel
+            Spracherkennung & Transkript
           </h2>
           <p className="text-xs text-slate-400">
             Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — ZERO CORE nutzt ein aktiviertes, getestetes Transkriptionsmodell (Free Tier · API-Key, sofern Cloud-Modell). Browser-Diktat kann je nach Gerät eine Netzwerkverbindung benötigen.
@@ -418,7 +418,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
           {transcribing && (
             <div className="p-4 rounded-xl bg-[#090B10] border border-white/[0.08] text-xs text-slate-300 inline-flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Transkribiere mit Gemini 3.5 Transcribe...
+              Audio wird transkribiert...
             </div>
           )}
 

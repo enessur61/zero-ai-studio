@@ -1129,11 +1129,11 @@ app.post('/api/audio/transcribe', async (req, res) => {
       throw new Error('Transkription lieferte kein erkanntes Sprachsignal.');
     }
 
-    const formattedTranscript = `${rawTranscript}\n\n--- SRT Untertitel ---\n1\n00:00:00,000 --> 00:00:05,000\n${rawTranscript}`;
-
+    // Return only the recognized words. Without word-level timestamps or the
+    // source audio duration, inventing a fixed five-second SRT cue would be misleading.
     await saveDb(database);
     res.json({
-      transcript: formattedTranscript,
+      transcript: rawTranscript,
       rawText: rawTranscript,
       modelUsed: selectedTranscriptionModel,
       costEur: 0,
