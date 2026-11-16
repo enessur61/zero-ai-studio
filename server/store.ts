@@ -632,6 +632,47 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
   return meta;
 }
 
+function assertRestorableDatabase(value: unknown): asserts value is ZeroDatabase {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Die Datenbankstruktur ist ungültig.');
+  }
+
+  const parsed = value as Partial<ZeroDatabase>;
+  const requiredArrays: Array<keyof ZeroDatabase> = [
+    'models', 'projects', 'memories', 'characters', 'chatHistory',
+    'automationRuns', 'backups',
+  ];
+  if (requiredArrays.some((key) => !Array.isArray(parsed[key]))) {
+    throw new Error('Erforderliche Datenbanklisten fehlen oder sind beschädigt.');
+  }
+  if (
+    !parsed.budgetGuard || typeof parsed.budgetGuard !== 'object' ||
+    !Array.isArray(parsed.budgetGuard.auditLog) ||
+    !parsed.budgetGuard.freeQuotaUsage || typeof parsed.budgetGuard.freeQuotaUsage !== 'object' ||
+    !parsed.backupConfig || typeof parsed.backupConfig !== 'object' ||
+    !Array.isArray(parsed.backupConfig.zipBackups) ||
+    !Array.isArray(parsed.backupConfig.changelogHistory) ||
+    !parsed.settings || typeof parsed.settings !== 'object' ||
+    typeof parsed.settings.preferredVideoDurationSec !== 'number' ||
+    typeof parsed.settings.offlineFirstPreferLocal !== 'boolean'
+  ) {
+    throw new Error('Backup-Einstellungen oder Budgetdaten sind unvollständig.');
+  }
+  if (parsed.models!.some((model) => !model || typeof model.id !== 'string')) {
+    throw new Error('Mindestens ein KI-Modell im Backup ist beschädigt.');
+  }
+  if (parsed.characters!.some((character) => !character || typeof character.id !== 'string')) {
+    throw new Error('Mindestens ein Charakter im Backup ist beschädigt.');
+  }
+  if (parsed.projects!.some((project) =>
+    !project || typeof project.id !== 'string' ||
+    !Array.isArray(project.scenes) || !Array.isArray(project.assets) ||
+    !Array.isArray(project.characterIds)
+  )) {
+    throw new Error('Mindestens ein Projekt im Backup ist beschädigt.');
+  }
+}
+
 export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabase> {
   const db = await loadDb();
   const found = db.backups.find((b) => b.id === backupId);
@@ -643,26 +684,9 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
 
   let restored: ZeroDatabase;
   try {
-    const parsed = JSON.parse(raw) as Partial<ZeroDatabase>;
-    const requiredArrays: Array<keyof ZeroDatabase> = [
-      'models', 'projects', 'memories', 'characters', 'chatHistory',
-      'automationRuns', 'backups',
-    ];
-    if (
-      !parsed || typeof parsed !== 'object' ||
-      requiredArrays.some((key) => !Array.isArray(parsed[key])) ||
-      !parsed.backupConfig || typeof parsed.backupConfig !== 'object' ||
-      !parsed.settings || typeof parsed.settings !== 'object'
-    ) {
-      throw new Error('Die Datenbankstruktur ist unvollständig.');
-    }
-    if (parsed.projects!.some((project) =>
-      !project || typeof project.id !== 'string' ||
-      !Array.isArray(project.scenes) || !Array.isArray(project.assets)
-    )) {
-      throw new Error('Mindestens ein Projekt im Backup ist beschädigt.');
-    }
-    restored = parsed as ZeroDatabase;
+    const parsed: unknown = JSON.parse(raw);
+    assertRestorableDatabase(parsed);
+    restored = parsed;
   } catch (error) {
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -838,10 +862,9 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
 
   let parsedRestoredDb: ZeroDatabase;
   try {
-    parsedRestoredDb = JSON.parse(dbEntry.toString('utf8')) as ZeroDatabase;
-    if (!Array.isArray(parsedRestoredDb.models) || !Array.isArray(parsedRestoredDb.projects)) {
-      throw new Error('Ungültige Datenbankstruktur im Archiv.');
-    }
+    const parsed: unknown = JSON.parse(dbEntry.toString('utf8'));
+    assertRestorableDatabase(parsed);
+    parsedRestoredDb = parsed;
   } catch (err) {
     throw new Error(
       `Wiederherstellung abgebrochen — JSON im Backup ungültig: ${err instanceof Error ? err.message : String(err)}`
@@ -871,6 +894,7 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
     ].slice(0, 40),
   };
   parsedRestoredDb.backups = preservedJsonBackups;
+  parsedRestoredDb.settings = { ...parsedRestoredDb.settings, maxVideoDurationSec: 60 };
   parsedRestoredDb.models = parsedRestoredDb.models.map(enrichModelMetadata);
 
   await saveDb(parsedRestoredDb);
