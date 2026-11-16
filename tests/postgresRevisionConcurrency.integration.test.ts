@@ -93,8 +93,6 @@ try {
   // Production ZIP middleware must enforce one shared limit across two pools.
   const gateA = createPostgresConcurrencyGate(poolA, 2, 5);
   const gateB = createPostgresConcurrencyGate(poolB, 2, 5);
-  const gateAppA = express();
-  const gateAppB = express();
   let heldRequests = 0;
   let releaseHeld!: () => void;
   const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
