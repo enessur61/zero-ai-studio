@@ -217,16 +217,15 @@ export function assertZeroBudgetModelAllowed(
     );
   }
 
-  // Reserve one local request slot synchronously before the provider call.
-  // Failed attempts still consume the local safety budget: this conservative
-  // counter prevents concurrent or repeated calls from bypassing the soft limit.
-  quota.requestsToday += 1;
+  // recordBudgetAudit owns the single request-counter increment. Keep the
+  // guard itself side-effect-free apart from its audit callback to avoid
+  // counting each successful authorization twice in the persisted database.
   recordAudit({
     adapterId: 'gemini-free-tier',
     modelId,
     action,
     decision: 'ERLAUBT_0_EUR',
-    reason: `Free-Tier Aufruf freigegeben und lokales Kontingent reserviert (${quota.requestsToday}/${quota.dailySoftLimit}, 0,00 €).`,
+    reason: `Free-Tier Aufruf freigegeben (0,00 €).`,
     costEur: 0,
   });
 }
