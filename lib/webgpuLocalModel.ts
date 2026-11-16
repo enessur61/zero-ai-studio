@@ -7,7 +7,7 @@ export const WEBGPU_LOCAL_MODEL_VRAM_MB = 879;
 export const WEBGPU_LOCAL_MODELS = [
   // IDs are copied from the installed WebLLM prebuilt registry, not guessed.
   { id: 'webgpu-llama-3.2-1b', modelId: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', name: 'Llama 3.2 1B', downloadMB: 705, vramMB: 879, requiresShaderF16: false },
-  { id: 'smollm2-360m-webgpu', modelId: 'SmolLM2-360M-Instruct-q4f32_1-MLC', name: 'SmolLM2 360M · Fallback', downloadMB: 360, vramMB: 580, requiresShaderF16: false },
+  { id: 'smollm2-360m-webgpu', modelId: 'SmolLM2-360M-Instruct-q4f32_1-MLC', name: 'SmolLM2 360M · Fallback', vramMB: 580, requiresShaderF16: false },
 ] as const;
 
 export type WebGPULocalModelId = typeof WEBGPU_LOCAL_MODELS[number]['modelId'];
