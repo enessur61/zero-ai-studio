@@ -25,6 +25,7 @@ import {
   unloadWebGPULocalModel,
 } from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
+import { runLocalModelTypeSuite } from '../lib/localModelTypeSuite.ts';
 
 interface ModelHubViewProps {
   models: ModelDefinition[];
@@ -219,8 +220,10 @@ export function ModelHubView({
     setTestingAll(true);
     setFeedback(null);
     const report: string[] = [];
+    let latestModels = models;
     try {
       const data = await registryRef.current.verifyAndRegisterAll();
+      latestModels = data.models;
       if (onModelsReplaced) {
         onModelsReplaced(data.models);
       } else {
@@ -233,6 +236,27 @@ export function ModelHubView({
       report.push(`Cloud-/Serverprüfung: ${okCount}/${data.testedCount} erfolgreich; ${activeCount} kostenlose Modelle aktiviert.`);
     } catch (err) {
       report.push(`Cloud-/Serverprüfung: ${err instanceof Error ? err.message : 'fehlgeschlagen'}.`);
+    }
+
+    // Probe the local creative engines on this device. These are editing/rendering
+    // tools, not generative image/video AI models.
+    try {
+      const localSuite = await runLocalModelTypeSuite((label) => setFeedback(label));
+      const activated: ModelDefinition[] = [];
+      for (const probe of localSuite.probes) {
+        const result = await apiRequest<{ model: ModelDefinition }>('/api/models/local/activate', {
+          method: 'POST',
+          body: JSON.stringify({ modelId: probe.modelId, probeResponse: probe.probeResponse }),
+        });
+        activated.push(result.model);
+      }
+      const updatedModels = latestModels.map((model) => activated.find((item) => item.id === model.id) ?? model);
+      if (onModelsReplaced) onModelsReplaced(updatedModels);
+      else activated.forEach((model) => onModelUpdated(model));
+      report.push(`Lokale Kreativ-Engines: ${activated.length}/3 echte Render-Tests bestanden (Canvas-Bildbearbeitung, Timeline-Video, WebAudio-Musik).`);
+      if (localSuite.failures.length) report.push(`Nicht bestanden: ${localSuite.failures.join(' | ')}.`);
+    } catch (err) {
+      report.push(`Lokale Kreativ-Engines: ${err instanceof Error ? err.message : 'Browser-Test fehlgeschlagen'}.`);
     }
 
     // Browser GPU work must happen on the user's device. Download only the selected,
