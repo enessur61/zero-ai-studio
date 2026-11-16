@@ -428,13 +428,20 @@ export async function writeBackupFile(
   );
 }
 
-export async function readBackupFile(id: string): Promise<Buffer> {
+export async function readBackupFile(id: string, maxBytes?: number): Promise<Buffer> {
   await ensurePostgresSchema();
-  const result = await getPool().query<{ payload: Buffer }>(
-    'SELECT payload FROM zero_backup_files WHERE id = $1',
-    [id]
+  const result = await getPool().query<{ payload: Buffer | null; size_bytes: string }>(
+    `SELECT
+       CASE WHEN $2::bigint IS NULL OR octet_length(payload) <= $2::bigint
+         THEN payload ELSE NULL END AS payload,
+       octet_length(payload)::text AS size_bytes
+     FROM zero_backup_files WHERE id = $1`,
+    [id, maxBytes ?? null]
   );
   if (!result.rows[0]) throw new Error('Backup-Datei nicht gefunden.');
+  if (result.rows[0].payload === null) {
+    throw new Error(`Backup-Datei überschreitet das Größenlimit von ${maxBytes} Bytes (gespeichert: ${result.rows[0].size_bytes} Bytes).`);
+  }
   return result.rows[0].payload;
 }
 
