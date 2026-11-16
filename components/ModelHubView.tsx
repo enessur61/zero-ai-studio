@@ -20,6 +20,7 @@ import {
   getLoadedWebGPULocalModelId,
   getLoadedWebGPULocalModelIds,
   getWebGPULocalMemoryUsageMB,
+  restorePersistedWebGPULocalModels,
   isWebGPULocalModelLoaded,
   loadWebGPULocalModel,
   WEBGPU_LOCAL_MODEL_ID,
@@ -99,8 +100,47 @@ export function ModelHubView({
   }
 
   useEffect(() => {
-    if (webGpuLoaded) void verifyAndActivateLoadedWebGpuModel();
-    // The browser runtime is a shared singleton; verify it once when the Hub opens.
+    let cancelled = false;
+    const restore = async () => {
+      const remembered = getLoadedWebGPULocalModelIds();
+      if (remembered.length === 0) {
+        setWebGpuLoaded(false);
+        setResidentModelIds([]);
+        setResidentMemoryMB(0);
+      }
+      const persisted = await restorePersistedWebGPULocalModels((modelName, progress) => {
+        if (cancelled) return;
+        setWebGpuLoading(true);
+        setWebGpuProgress(progress.progress);
+        setWebGpuProgressText(`${modelName}: ${progress.text}`);
+      });
+      if (cancelled) return;
+      const loaded = getLoadedWebGPULocalModelIds();
+      setResidentModelIds(loaded);
+      setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
+      setWebGpuLoaded(loaded.includes(selectedWebGpuModelId as typeof WEBGPU_LOCAL_MODELS[number]['modelId']));
+      if (loaded.length > 0) {
+        setSelectedWebGpuModelId(loaded[loaded.length - 1]);
+        for (const modelId of persisted.restored) {
+          webGpuProbeRef.current = false;
+          await verifyAndActivateLoadedWebGpuModel(modelId);
+          if (cancelled) return;
+        }
+        setWebGpuMessage(`ZERO LOCAL RUNTIME wiederhergestellt: ${loaded.length} Modell(e) erneut in den GPU-Speicher geladen.`);
+      }
+      if (persisted.failures.length > 0) {
+        setWebGpuMessage(`Runtime-Wiederherstellung teilweise fehlgeschlagen: ${persisted.failures.join(' · ')}`);
+      }
+      setWebGpuLoading(false);
+    };
+    void restore().catch((error) => {
+      if (!cancelled) {
+        setWebGpuMessage(error instanceof Error ? error.message : 'WebGPU-Runtime konnte nicht wiederhergestellt werden.');
+        setWebGpuLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+    // Restore only the user's previously loaded local models when the Model Hub opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
