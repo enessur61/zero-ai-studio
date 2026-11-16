@@ -19,6 +19,12 @@ public struct PiperVoiceConfig: Codable, Sendable {
     }
 }
 
+/// Converts text into the phoneme IDs expected by the selected Piper voice model.
+/// A real eSpeak-ng/Piper-compatible phonemizer must be supplied by the native app.
+public protocol PiperTextPhonemizer: Sendable {
+    func phonemize(_ text: String, languageCode: String) async throws -> [Int64]
+}
+
 public protocol PiperONNXSessionBackend: Sendable {
     func synthesizePCM(
         onnxURL: URL,
@@ -31,6 +37,7 @@ public protocol PiperONNXSessionBackend: Sendable {
 public enum PiperAdapterError: Error, LocalizedError, Sendable {
     case voiceFilesMissing(onnx: String, json: String)
     case onnxRuntimeNotLinked
+    case phonemizerNotLinked
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +45,8 @@ public enum PiperAdapterError: Error, LocalizedError, Sendable {
             return "Piper ONNX Stimmdateien ('\(onnx)' / '\(json)') fehlen im Bundle oder Documents/ZeroModels."
         case .onnxRuntimeNotLinked:
             return "onnxruntime-swift-package-manager fehlt im Xcode-Target."
+        case .phonemizerNotLinked:
+            return "Piper benötigt einen kompatiblen eSpeak-ng-Phonemizer. Der native Phonemizer ist noch nicht im App-Target verlinkt."
         }
     }
 }
@@ -58,9 +67,14 @@ public final class PiperONNXAdapter: @unchecked Sendable {
     public let configFilename = "de_DE-thorsten-high.onnx.json"
     public let estimatedRamGB = 0.15
     private let backend: PiperONNXSessionBackend?
+    private let phonemizer: PiperTextPhonemizer?
 
-    public init(backend: PiperONNXSessionBackend? = nil) {
+    public init(
+        backend: PiperONNXSessionBackend? = nil,
+        phonemizer: PiperTextPhonemizer? = nil
+    ) {
         self.backend = backend
+        self.phonemizer = phonemizer
     }
 
     public static func locateVoiceFiles(
@@ -144,8 +158,14 @@ public final class PiperONNXAdapter: @unchecked Sendable {
         guard let backend else {
             throw PiperAdapterError.onnxRuntimeNotLinked
         }
-        // Einfache UTF-8-zu-Token Fallback-Vorstufe falls kein externer eSpeak-Phonemizer übergeben wurde
-        let phonemeIds = text.unicodeScalars.map { Int64($0.value) }
+        guard let phonemizer else {
+            throw PiperAdapterError.phonemizerNotLinked
+        }
+        // Piper ONNX erwartet sprachspezifische Phonem-IDs, keine Unicode-Codepoints.
+        let phonemeIds = try await phonemizer.phonemize(text, languageCode: "de")
+        guard !phonemeIds.isEmpty else {
+            throw PiperAdapterError.phonemizerNotLinked
+        }
         let samples = try await backend.synthesizePCM(
             onnxURL: files.onnx,
             configURL: files.config,
