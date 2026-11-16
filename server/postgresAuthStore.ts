@@ -16,30 +16,42 @@ export function createPostgresAuthStore(database: Pool) {
   async function ensureSchema(): Promise<void> {
     if (!schemaReady) {
       schemaReady = (async () => {
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_auth_sessions (
-            token_hash CHAR(64) PRIMARY KEY,
-            expires_at TIMESTAMPTZ NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-        await database.query('CREATE INDEX IF NOT EXISTS zero_auth_sessions_expiry_idx ON zero_auth_sessions (expires_at)');
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_login_attempts (
-            key_hash CHAR(64) PRIMARY KEY,
-            attempts INTEGER NOT NULL CHECK (attempts >= 0),
-            reset_at TIMESTAMPTZ NOT NULL
-          )
-        `);
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_gemini_quota_reservations (
-            model_id TEXT PRIMARY KEY,
-            reset_date DATE NOT NULL,
-            requests_today INTEGER NOT NULL CHECK (requests_today >= 0),
-            daily_limit INTEGER NOT NULL CHECK (daily_limit > 0),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
+        const client = await database.connect();
+        try {
+          await client.query('BEGIN');
+          // Serialize first-use DDL when multiple production instances start together.
+          await client.query('SELECT pg_advisory_xact_lock(1514480207, 50)');
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_auth_sessions (
+              token_hash CHAR(64) PRIMARY KEY,
+              expires_at TIMESTAMPTZ NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          await client.query('CREATE INDEX IF NOT EXISTS zero_auth_sessions_expiry_idx ON zero_auth_sessions (expires_at)');
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_login_attempts (
+              key_hash CHAR(64) PRIMARY KEY,
+              attempts INTEGER NOT NULL CHECK (attempts >= 0),
+              reset_at TIMESTAMPTZ NOT NULL
+            )
+          `);
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_gemini_quota_reservations (
+              model_id TEXT PRIMARY KEY,
+              reset_date DATE NOT NULL,
+              requests_today INTEGER NOT NULL CHECK (requests_today >= 0),
+              daily_limit INTEGER NOT NULL CHECK (daily_limit > 0),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          client.release();
+        }
       })().catch((error) => {
         schemaReady = null;
         throw error;
