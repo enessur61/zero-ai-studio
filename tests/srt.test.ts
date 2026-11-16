@@ -12,13 +12,13 @@ assert.equal(basic.srt, '1\n00:00:00,100 --> 00:00:01,200\nZERO ist bereit.');
 const maxWords = buildSrtFromTimedWords(
   Array.from({ length: 8 }, (_, index) => ({
     word: `Wort${index + 1}`,
-    startOffset: `${index}s`,
-    endOffset: `${index + 0.4}s`,
+    startOffset: `${index * 0.4}s`,
+    endOffset: `${index * 0.4 + 0.2}s`,
   })),
 );
 assert.equal(maxWords.subtitleCueCount, 2);
-assert.match(maxWords.srt ?? '', /1\n00:00:00,000 --> 00:00:06,400\nWort1 Wort2 Wort3 Wort4 Wort5 Wort6 Wort7/);
-assert.match(maxWords.srt ?? '', /2\n00:00:07,000 --> 00:00:07,400\nWort8/);
+assert.match(maxWords.srt ?? '', /1\n00:00:00,000 --> 00:00:02,600\nWort1 Wort2 Wort3 Wort4 Wort5 Wort6 Wort7/);
+assert.match(maxWords.srt ?? '', /2\n00:00:02,800 --> 00:00:03,000\nWort8/);
 
 const durationSplit = buildSrtFromTimedWords([
   { word: 'Anfang', startOffset: '0s', endOffset: '0.2s' },
