@@ -8,7 +8,7 @@ type TimedWord = { text: string; startMs: number; endMs: number };
 
 function parseOffsetMs(offset?: string): number | null {
   if (!offset) return null;
-  const match = /^\\s*(\\d+(?:\\.\\d+)?)s\\s*$/i.exec(offset);
+  const match = /^\s*(\d+(?:\.\d+)?)s\s*$/i.exec(offset);
   if (!match) return null;
   const seconds = Number(match[1]);
   return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 1000)) : null;
@@ -59,8 +59,8 @@ export function buildSrtFromTimedWords(words: TimedWordAnnotation[]): {
   flushCue();
 
   const srt = subtitleCues
-    .map((cue, index) => `${index + 1}\\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\\n${cue.text}`)
-    .join('\\n\\n');
+    .map((cue, index) => `${index + 1}\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\n${cue.text}`)
+    .join('\n\n');
 
   return { srt: srt || null, subtitleCueCount: subtitleCues.length };
 }
