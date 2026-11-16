@@ -382,6 +382,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
     });
   } catch (err) {
     if (db) {
+      if (isQuotaExhaustionError(err)) await markGeminiQuotaExhausted(modelId, db).catch(() => undefined);
       await saveDb(db).catch(() => undefined);
     }
     return res.json({
@@ -416,7 +417,7 @@ app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res)
       reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
       costEur: 0,
     });
-    await authStore().clearGeminiQuota(modelId);
+    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
     await saveDb(db);
     return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
   } catch (err) {
@@ -2307,7 +2308,7 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
         const response = await ai.models.embedContent({ model: modelId, contents });
         return response.embeddings?.[0]?.values;
       },
-      persistExhausted: () => saveDb(db),
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
     });
     queryVec = result.vector ?? null;
     embeddingNotice = result.notice;
