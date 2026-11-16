@@ -110,6 +110,21 @@ export async function buildFullProjectZip(
 
   let totalUncompressedBytes = 0;
   let estimatedArchiveBytes = 22;
+  const fileSizes = new Map<string, number>();
+  // Preflight every source before reading or compressing any file. This keeps
+  // aggregate-limit rejection from first allocating most of an oversized tree.
+  for (const relPath of files) {
+    const extra = extraFiles[relPath];
+    const sourceSize = extra !== undefined ? extra.length : (await fs.stat(path.join(rootDir, relPath))).size;
+    if (!Number.isSafeInteger(sourceSize) || sourceSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP-Datei "${relPath}" überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
+    }
+    totalUncompressedBytes += sourceSize;
+    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
+    }
+    fileSizes.set(relPath, sourceSize);
+  }
   const now = new Date();
   const dosTime =
     ((now.getHours() & 0x1f) << 11) |
@@ -123,14 +138,7 @@ export async function buildFullProjectZip(
   for (const relPath of files) {
     const fullPath = path.join(rootDir, relPath);
     const extra = extraFiles[relPath];
-    const sourceSize = extra ? extra.length : (await fs.stat(fullPath)).size;
-    if (!Number.isSafeInteger(sourceSize) || sourceSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
-      throw new Error(`ZIP-Datei "${relPath}" überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
-    }
-    totalUncompressedBytes += sourceSize;
-    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
-      throw new Error(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
-    }
+    const sourceSize = fileSizes.get(relPath)!;
     const raw = extra ?? await fs.readFile(fullPath);
     if (raw.length !== sourceSize) {
       throw new Error(`ZIP-Datei "${relPath}" hat sich während des Lesens in der Größe geändert.`);
