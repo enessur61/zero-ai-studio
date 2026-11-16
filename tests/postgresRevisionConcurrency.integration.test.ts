@@ -610,11 +610,11 @@ try {
   // after the real ZIP has been built and verified, inside the real atomic write.
   await poolB.query(`
     CREATE FUNCTION reject_zip_backup_publication() RETURNS trigger
-    LANGUAGE plpgsql AS $
+    LANGUAGE plpgsql AS $$
     BEGIN
       RAISE EXCEPTION 'injected ZIP publication failure' USING ERRCODE = 'P0001';
     END;
-    $;
+    $$;
     CREATE TRIGGER reject_zip_backup_publication
     BEFORE INSERT ON zero_backup_files
     FOR EACH ROW EXECUTE FUNCTION reject_zip_backup_publication();
