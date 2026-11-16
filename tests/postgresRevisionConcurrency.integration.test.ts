@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createRestoreHandlers } from '../server/restoreHandlers.ts';
 import { createVerifiedZipRestoreService } from '../server/verifiedZipRestore.ts';
 import { assertRestorableDatabase, type ZeroDatabase, type SaveDbOptions } from '../server/store.ts';
-import { createVersionedZipBackupService } from '../server/versionedZipBackup.ts';
+import { BackupCleanupError, createVersionedZipBackupService } from '../server/versionedZipBackup.ts';
 import { buildFullProjectZip, EXCLUDED_SECRETS_DOC, verifyZipBuffer } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
@@ -601,6 +601,112 @@ try {
     ),
     'production ZIP service must publish matching backup metadata'
   );
+  // Retention commits the new metadata/blob before deleting expired blobs.
+  // An injected delete failure must be reported as cleanup-pending, not as if
+  // publication had failed; every other deletion must still be awaited.
+  const beforeCleanupFailure = await storeA.read();
+  assert.ok(beforeCleanupFailure);
+  const legacyBackups: ZipBackupVersion[] = Array.from({ length: 11 }, (_, index) => ({
+    id: `retention-old-${index}`,
+    version: '1.0.0',
+    filename: `retention-old-${index}.zip`,
+    createdAt: new Date(Date.now() - (index + 1) * 60_000).toISOString(),
+    changelog: 'Retention cleanup failure fixture',
+    trigger: 'auto',
+    fileCount: 1,
+    sizeBytes: 1,
+    verified: true,
+    protected: false,
+    excludedSecrets: [],
+  }));
+  const cleanupFixtureDb = beforeCleanupFailure.payload as ZeroDatabase;
+  cleanupFixtureDb.backupConfig.zipBackups = [
+    ...cleanupFixtureDb.backupConfig.zipBackups,
+    ...legacyBackups,
+  ];
+  const cleanupFixtureRevision = await storeA.write(
+    cleanupFixtureDb,
+    beforeCleanupFailure.revision
+  );
+  for (const backup of legacyBackups) {
+    await poolB.query(
+      `INSERT INTO zero_backup_files (id, filename, content_type, payload)
+       VALUES ($1, $2, 'application/zip', $3)`,
+      [backup.id, backup.filename, Buffer.from('legacy ZIP fixture')]
+    );
+  }
+  const failedCleanupId = legacyBackups[8].id;
+  const cleanupFailureService = createVersionedZipBackupService({
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      backupRevisions.set(state.payload as ZeroDatabase, state.revision);
+      return state.payload as ZeroDatabase;
+    },
+    getDbRevision: (db) => {
+      const revision = backupRevisions.get(db);
+      if (revision === undefined) throw new Error('Cleanup fixture revision missing');
+      return revision;
+    },
+    saveDb: async (db, options: SaveDbOptions = {}) => {
+      assert.notEqual(options.expectedRevision, undefined);
+      assert.ok(options.backupFile);
+      const revision = await storeA.writeWithBackup(
+        db,
+        options.expectedRevision!,
+        options.backupFile,
+        options.recordAutoBackupSuccess ?? false
+      );
+      backupRevisions.set(db, revision);
+    },
+    deleteBackupFile: async (id) => {
+      if (id === failedCleanupId) throw new Error('injected backup blob cleanup failure');
+      await poolA.query('DELETE FROM zero_backup_files WHERE id = $1', [id]);
+    },
+    buildFullProjectZip,
+    verifyZipBuffer,
+    excludedSecrets: EXCLUDED_SECRETS_DOC,
+    isPersistent: () => true,
+    rootDir: () => process.cwd(),
+    zipBackupDir: '/tmp/zero-test-zips',
+  });
+  await assert.rejects(
+    () => cleanupFailureService({
+      changelog: 'Retention cleanup failure integration',
+      trigger: 'auto',
+    }),
+    (error: unknown) =>
+      error instanceof BackupCleanupError &&
+      error.orphanedBlobIds.length === 1 &&
+      error.orphanedBlobIds[0] === failedCleanupId &&
+      error.backup.verified,
+    'a post-commit cleanup failure must identify the committed backup and remaining orphan'
+  );
+  const afterCleanupFailure = await storeA.read();
+  assert.ok(afterCleanupFailure);
+  assert.equal(afterCleanupFailure.revision, cleanupFixtureRevision + 1);
+  assert.ok(
+    (afterCleanupFailure.payload as ZeroDatabase).backupConfig.zipBackups.some(
+      (backup) => backup.id !== failedCleanupId && backup.changelog === 'Retention cleanup failure integration'
+    ),
+    'the new backup metadata must remain committed despite old-blob cleanup failure'
+  );
+  const cleanupReport = await storeA.inspectBackupConsistency();
+  assert.deepEqual(cleanupReport, {
+    orphanedBlobIds: [failedCleanupId],
+    missingBlobIds: [],
+  }, 'reconciliation must identify the one blob whose cleanup failed');
+  const failedCleanupBlob = await poolB.query(
+    'SELECT id FROM zero_backup_files WHERE id = $1',
+    [failedCleanupId]
+  );
+  assert.equal(failedCleanupBlob.rowCount, 1, 'the failed deletion must leave its orphan blob for reconciliation');
+  await poolB.query('DELETE FROM zero_backup_files WHERE id = $1', [failedCleanupId]);
+  assert.deepEqual(await storeA.inspectBackupConsistency(), {
+    orphanedBlobIds: [],
+    missingBlobIds: [],
+  }, 'removing the test orphan must restore backup consistency');
+
   const autoMarkerBeforeFailure = await poolB.query<{ last_success_at: Date }>(
     "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
   );
