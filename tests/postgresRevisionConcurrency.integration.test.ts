@@ -4,7 +4,6 @@ import { Pool } from 'pg';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
-  writePersistentStateWithBackupFile,
 } from '../server/persistence.ts';
 
 const connectionString = process.env.DATABASE_URL;
@@ -71,7 +70,7 @@ try {
 
   // State metadata and the backup bytes must commit in the same PostgreSQL transaction.
   const backupBytes = Buffer.from('ZERO-BACKUP-CONSISTENCY-TEST');
-  const backupRevision = await writePersistentStateWithBackupFile(
+  const backupRevision = await storeA.writeWithBackup(
     { value: 'backup-published', backupId: 'backup-atomic-success' },
     finalState.revision,
     {
