@@ -2157,7 +2157,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
     const result = await runMemoryEmbedding({
       budgetGuard: db.budgetGuard,
       action: 'MEMORY_EMBED',
-      contents: [`${title}\\n${content}`],
+      contents: [`${title}\n${content}`],
       recordAudit: (entry) => recordBudgetAudit(db, entry),
       embed: async (modelId, contents) => {
         const ai = getGeminiClient();
@@ -2216,7 +2216,7 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
     embeddingNotice = result.notice;
   }
 
-  const terms = query.toLowerCase().split(/\\s+/).filter(Boolean);
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const scored = db.memories.map((m) => {
     const haystack = `${m.title} ${m.content} ${m.tags.join(' ')}`.toLowerCase();
     const lexicalHits = terms.filter((t) => haystack.includes(t)).length / Math.max(1, terms.length);
