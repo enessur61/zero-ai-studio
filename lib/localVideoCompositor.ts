@@ -438,6 +438,10 @@ export async function renderTimelineVideoMax60s(
 
       for (let f = 0; f < sceneFrames; f++) {
         if (recorder.state !== 'recording') break;
+        // Pace against an absolute frame budget. Sleeping a full frame AFTER
+        // drawing adds render time on top of the timeline and can truncate
+        // otherwise valid 55-60 second exports at the 60-second safety stop.
+        const frameStartedAt = performance.now();
         const progress = f / Math.max(1, sceneFrames - 1);
         ctx.fillStyle = '#090B10';
         ctx.fillRect(0, 0, width, height);
@@ -494,7 +498,11 @@ export async function renderTimelineVideoMax60s(
           const pct = Math.min(98, Math.round(10 + (frameIndex / totalFrames) * 88));
           onProgress?.(pct, `Rendere Szene ${sIdx + 1}/ ${renderScenes.length}...`);
         }
-        await new Promise((r) => setTimeout(r, 1000 / fps));
+        const frameWorkMs = performance.now() - frameStartedAt;
+        const remainingFrameMs = Math.max(0, 1000 / fps - frameWorkMs);
+        if (remainingFrameMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, remainingFrameMs));
+        }
       }
       sceneVideo?.pause();
     }
