@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -466,7 +467,6 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
-    const storedPayloadJson = stored ? JSON.stringify(stored.payload) : null;
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
     parsed.models = INITIAL_MODEL_CATALOG.map((def) => {
@@ -570,8 +570,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
     }
     dbCache = parsed;
     if (process.env.DATABASE_URL) {
-      const normalizedPayloadJson = JSON.stringify(parsed);
-      const needsPersistence = !stored || normalizedPayloadJson !== storedPayloadJson;
+      const needsPersistence = !stored || !isDeepStrictEqual(parsed, stored.payload);
       if (needsPersistence) {
         try {
           const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
