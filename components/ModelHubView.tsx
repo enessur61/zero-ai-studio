@@ -61,7 +61,7 @@ export function ModelHubView({
   const [webGpuLoading, setWebGpuLoading] = useState(false);
   const [webGpuProgress, setWebGpuProgress] = useState(0);
   const [webGpuProgressText, setWebGpuProgressText] = useState('');
-  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());\n  const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(WEBGPU_LOCAL_MODEL_ID);
   const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
@@ -75,7 +75,7 @@ export function ModelHubView({
       if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
       const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
         method: 'POST',
-        body: JSON.stringify({ probeResponse: probe.slice(0, 1000) }),
+        body: JSON.stringify({ modelId: selectedWebGpuModelId, probeResponse: probe.slice(0, 1000) }),
       });
       onModelUpdated(data.model);
       setWebGpuLoaded(true);
@@ -175,7 +175,7 @@ export function ModelHubView({
       setWebGpuSupported(support.supported);
       setWebGpuMessage(support.message);
       if (!support.supported) throw new Error(support.message);
-      await loadWebGPULocalModel((progress) => {
+      const selectedPreset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId) ?? WEBGPU_LOCAL_MODELS[0];\n      await loadWebGPULocalModel((progress) => {
         setWebGpuProgress(progress.progress);
         setWebGpuProgressText(progress.text);
       });
@@ -287,8 +287,14 @@ export function ModelHubView({
           <div className="space-y-1">
             <p className="text-xs font-mono text-sky-300">ZERO LOCAL RUNTIME · WEBGPU</p>
             <h2 className="text-base font-semibold text-white">Llama 3.2 1B · direkt auf diesem iPhone</h2>
-            <p className="text-xs text-slate-400">Modell-ID: {WEBGPU_LOCAL_MODEL_ID}</p>
-            <p className="text-xs text-slate-300">Einmaliger Download: ca. {WEBGPU_LOCAL_MODEL_DOWNLOAD_MB} MB · geschätzter GPU-Speicher: {WEBGPU_LOCAL_MODEL_VRAM_MB} MB · kostenlos und lokal.</p>
+            <label className="block text-xs text-slate-300 mt-2">
+              Lokales Modell auswählen
+              <select value={selectedWebGpuModelId} onChange={(event) => { setSelectedWebGpuModelId(event.target.value); setWebGpuLoaded(false); }} disabled={webGpuLoading || webGpuLoaded} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
+                {WEBGPU_LOCAL_MODELS.map((item) => <option key={item.modelId} value={item.modelId}>{item.name} · ca. {item.vramMB} MB GPU</option>)}
+              </select>
+            </label>
+            <p className="text-xs text-slate-400">Modell-ID: {selectedWebGpuModelId}</p>
+            <p className="text-xs text-slate-300">Einmaliger Download und GPU-Speicherbedarf variieren je nach Modell. Kostenlos und lokal; kein Cloud-Fallback.</p>
           </div>
           <span className={`text-xs font-medium ${webGpuLoaded ? 'text-emerald-300' : webGpuSupported === false ? 'text-rose-300' : 'text-slate-300'}`}>
             {webGpuLoaded ? 'Lokal geladen' : webGpuLoading ? 'Wird geladen…' : webGpuSupported === false ? 'Nicht unterstützt' : 'Noch nicht geladen'}
