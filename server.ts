@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { asyncRoute } from './server/asyncRoute.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
@@ -57,12 +58,6 @@ import type {
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
-
-function asyncRoute(handler: express.RequestHandler): express.RequestHandler {
-  return (req, res, next) => {
-    void Promise.resolve(handler(req, res, next)).catch(next);
-  };
-}
 
 // Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
 // makes req.ip reflect the client address for login rate limiting.
