@@ -1,4 +1,5 @@
 import type { ProjectAsset } from '../src/types/zero.ts';
+import { parseBase64DataUrl } from './mediaUtils.ts';
 
 const DATA_MIMES_BY_ASSET_TYPE: Record<ProjectAsset['type'], readonly string[]> = {
   image: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
@@ -24,6 +25,5 @@ export function isSafeProjectAssetUrl(value: unknown, type: ProjectAsset['type']
 
   if (url.startsWith('/src/assets/')) return true;
 
-  const dataUrl = /^data:([^;,]+)(?:;[^,]*)?,/i.exec(url);
-  return Boolean(dataUrl && DATA_MIMES_BY_ASSET_TYPE[type].includes(dataUrl[1].toLowerCase()));
+  return parseBase64DataUrl(url, DATA_MIMES_BY_ASSET_TYPE[type], 12 * 1024 * 1024) !== null;
 }
