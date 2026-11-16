@@ -35,11 +35,11 @@ let calledModel = '';
 const success = await runMemoryEmbedding({
   budgetGuard: state,
   action: 'MEMORY_EMBED',
-  contents: ['title\\ncontent'],
+  contents: ['title\ncontent'],
   recordAudit: (entry) => events.push(entry),
   embed: async (modelId, contents) => {
     calledModel = modelId;
-    assert.deepEqual(contents, ['title\\ncontent']);
+    assert.deepEqual(contents, ['title\ncontent']);
     return [0.1, 0.2, 0.3];
   },
   persistExhausted: () => { persisted += 1; },
