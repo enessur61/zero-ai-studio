@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
-import { isSafeProjectAssetUrl } from './server/safeProjectAssetUrl.ts';
+import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
@@ -1799,7 +1799,13 @@ Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
 // === ZERO PROJECTS ===
 app.get('/api/projects', asyncRoute(async (_req, res) => {
   const db = await loadDb();
-  res.json({ projects: db.projects });
+  const projects = db.projects.map((project) => ({
+    ...project,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
+    snapshots: sanitizeProjectSnapshots(project.snapshots),
+  }));
+  res.json({ projects });
 }));
 
 app.post('/api/projects', asyncRoute(async (req, res) => {
@@ -1870,19 +1876,11 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
     ? req.body as Record<string, unknown>
     : {};
-  const nextScenes = Array.isArray(body.scenes)
-    ? clampScenesToMax60Seconds(body.scenes.map((scene: unknown) => {
-        if (!scene || typeof scene !== 'object' || Array.isArray(scene)) return scene as FilmScene;
-        const safeScene = { ...scene } as Record<string, unknown>;
-        if ('imageUrl' in safeScene && !isSafeProjectAssetUrl(safeScene.imageUrl, 'image')) {
-          delete safeScene.imageUrl;
-        }
-        if ('audioDataUrl' in safeScene && !isSafeProjectAssetUrl(safeScene.audioDataUrl, 'audio')) {
-          delete safeScene.audioDataUrl;
-        }
-        return safeScene as unknown as FilmScene;
-      }))
-    : prev.scenes;
+  const nextScenes = sanitizeProjectScenes(
+    Array.isArray(body.scenes) ? clampScenesToMax60Seconds(body.scenes) : prev.scenes
+  );
+  const safePreviousAssets = sanitizeProjectAssets(prev.assets);
+  const safePreviousScenes = sanitizeProjectScenes(prev.scenes);
   const nextTotal = nextScenes.reduce((s, sc) => s + sc.durationSec, 0);
   const nextVersion = prev.version + 1;
   const now = new Date().toISOString();
@@ -1903,8 +1901,8 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
     story: prev.story,
     screenplay: prev.screenplay,
     characterIds: prev.characterIds,
-    scenes: prev.scenes,
-    assets: prev.assets,
+    scenes: safePreviousScenes,
+    assets: safePreviousAssets,
     status: prev.status,
   };
   const updated: StudioProject = {
@@ -1918,6 +1916,7 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
     characterIds: requestedCharacterIds,
     status: requestedStatus,
     scenes: nextScenes,
+    assets: safePreviousAssets,
     targetDurationSec: Math.min(60, nextTotal || prev.targetDurationSec),
     version: nextVersion,
     updatedAt: now,
@@ -1933,7 +1932,7 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
         totalDurationSec: Math.min(60, prev.targetDurationSec),
         state: previousState,
       },
-      ...prev.snapshots,
+      ...sanitizeProjectSnapshots(prev.snapshots),
     ].slice(0, 15),
   };
 
@@ -1963,11 +1962,11 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
     story: project.story,
     screenplay: project.screenplay,
     characterIds: project.characterIds,
-    scenes: project.scenes,
-    assets: project.assets,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
     status: project.status,
   };
-  const restoredScenes = clampScenesToMax60Seconds(snapshot.state.scenes);
+  const restoredScenes = sanitizeProjectScenes(clampScenesToMax60Seconds(snapshot.state.scenes));
   const restoredDuration = Math.min(60, restoredScenes.reduce((sum, scene) => sum + scene.durationSec, 0) || snapshot.state.targetDurationSec);
   const nextVersion = project.version + 1;
   const safetySnapshot = {
@@ -1984,11 +1983,11 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
     ...snapshot.state,
     id: project.id,
     scenes: restoredScenes,
-    assets: Array.isArray(snapshot.state.assets) ? snapshot.state.assets.slice(0, 200) : [],
+    assets: sanitizeProjectAssets(snapshot.state.assets),
     targetDurationSec: restoredDuration,
     version: nextVersion,
     updatedAt: now,
-    snapshots: [safetySnapshot, ...project.snapshots].slice(0, 15),
+    snapshots: [safetySnapshot, ...sanitizeProjectSnapshots(project.snapshots)].slice(0, 15),
   };
   db.projects[db.projects.indexOf(project)] = restoredProject;
   await saveDb(db);
