@@ -4,6 +4,22 @@ import type { ZipBackupVersion } from '../src/types/zero.ts';
 import type { ZeroDatabase, SaveDbOptions } from './store.ts';
 import type { ZipExportResult } from './zipExporter.ts';
 
+export class BackupCleanupError extends Error {
+  readonly cleanupErrors: unknown[];
+
+  constructor(
+    readonly backup: ZipBackupVersion,
+    readonly orphanedBlobIds: string[],
+    cleanupErrors: unknown[]
+  ) {
+    super(
+      `ZIP-Backup ${backup.id} wurde erfolgreich veröffentlicht; ${orphanedBlobIds.length} alte Backup-Datei(en) konnten nicht bereinigt werden.`
+    );
+    this.name = 'BackupCleanupError';
+    this.cleanupErrors = cleanupErrors;
+  }
+}
+
 export interface VersionedZipBackupDependencies {
   loadDb: () => Promise<ZeroDatabase>;
   getDbRevision: (db: ZeroDatabase) => number;
@@ -124,12 +140,24 @@ export function createVersionedZipBackupService(dependencies: VersionedZipBackup
       }
     }
 
-    if (persistent) {
-      await Promise.all(removedZipBackups.map((backup) => dependencies.deleteBackupFile(backup.id)));
-    } else {
-      await Promise.all(removedZipBackups.map((backup) =>
-        fs.rm(path.join(dependencies.zipBackupDir, backup.filename), { force: true })
-      ));
+    // Publication is already committed at this point. Wait for every cleanup
+    // attempt and report precisely which old blobs remain, rather than letting
+    // Promise.all reject early while other deletions continue in the background.
+    const cleanupResults = await Promise.allSettled(removedZipBackups.map(async (backup) => {
+      if (persistent) {
+        await dependencies.deleteBackupFile(backup.id);
+      } else {
+        await fs.rm(path.join(dependencies.zipBackupDir, backup.filename), { force: true });
+      }
+    }));
+    const failedCleanupIds = cleanupResults.flatMap((result, index) =>
+      result.status === 'rejected' ? [removedZipBackups[index].id] : []
+    );
+    if (failedCleanupIds.length > 0) {
+      const cleanupErrors = cleanupResults.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      );
+      throw new BackupCleanupError(record, failedCleanupIds, cleanupErrors);
     }
     return record;
   };
