@@ -431,7 +431,7 @@ export async function writeBackupFile(
 export async function readBackupFile(id: string, maxBytes?: number, database?: Pool): Promise<Buffer> {
   if (database) await createPostgresStateStore(database).ensureSchema();
   else await ensurePostgresSchema();
-  const result = await (database ?? getPool()).query<{ payload: Buffer | null; size_bytes: string }>(
+  const result = await (database ?? getPostgresPool()).query<{ payload: Buffer | null; size_bytes: string }>(
     `SELECT
        CASE WHEN $2::bigint IS NULL OR octet_length(payload) <= $2::bigint
          THEN payload ELSE NULL END AS payload,
@@ -448,12 +448,12 @@ export async function readBackupFile(id: string, maxBytes?: number, database?: P
 
 export async function deleteBackupFile(id: string): Promise<void> {
   await ensurePostgresSchema();
-  await getPool().query('DELETE FROM zero_backup_files WHERE id = $1', [id]);
+  await getPostgresPool().query('DELETE FROM zero_backup_files WHERE id = $1', [id]);
 }
 
 export async function checkPostgresConnection(): Promise<boolean> {
   if (!process.env.DATABASE_URL) return false;
   await ensurePostgresSchema();
-  await getPool().query('SELECT 1');
+  await getPostgresPool().query('SELECT 1');
   return true;
 }
