@@ -22,9 +22,9 @@ concurrency:
 
 jobs:
   launch:
-    name: Start OpenHands task
+    name: Start and monitor OpenHands task
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - name: Require explicit cloud execution approval
         if: ${{ inputs.confirm_cloud_execution != true }}
@@ -54,14 +54,10 @@ jobs:
             echo "::error::GitHub secret OPENHANDS_CLOUD_API_KEY is missing."
             exit 1
           fi
-
           payload="$(python3 -c 'import json,os; print(json.dumps({
             "initial_message":{"content":[{"type":"text","text":os.environ["TASK"]}]},
-            "selected_repository":"enessur61/zero-ai-studio",
-            "selected_branch":"main",
-            "title":"ZERO development task"
+            "selected_repository":"enessur61/zero-ai-studio"
           }))')"
-
           response="$(curl --silent --show-error --fail-with-body \
             --connect-timeout 10 --max-time 90 \
             --request POST \
@@ -69,28 +65,58 @@ jobs:
             --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" \
             --header 'Content-Type: application/json' \
             --data "${payload}")"
-
-          start_task_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id",""))' <<<"${response}")"
-          conversation_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("app_conversation_id",""))' <<<"${response}")"
-          status="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status","UNKNOWN"))' <<<"${response}")"
-
-          if [[ -z "${start_task_id}" && -z "${conversation_id}" ]]; then
-            echo "::error::OpenHands returned no recognizable task or conversation ID."
+          task_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id", ""))' <<<"${response}")"
+          conversation_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("app_conversation_id", ""))' <<<"${response}")"
+          status="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status", "UNKNOWN"))' <<<"${response}")"
+          if [[ -z "${task_id}" && -z "${conversation_id}" ]]; then
+            echo "::error::OpenHands response did not contain a start-task ID or conversation ID."
             exit 1
           fi
-
-          echo "start_task_id=${start_task_id}" >> "${GITHUB_OUTPUT}"
+          echo "task_id=${task_id}" >> "${GITHUB_OUTPUT}"
           echo "conversation_id=${conversation_id}" >> "${GITHUB_OUTPUT}"
-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
-          echo "OpenHands accepted the task. Startup status: ${status}"
-          if [[ -n "${conversation_id}" ]]; then
-            echo "Conversation: https://app.all-hands.dev/conversations/${conversation_id}"
-          else
-            echo "Start task ID: ${start_task_id}"
-          fi
+          echo "Initial OpenHands status: ${status}"
 
-      - name: Explain asynchronous startup
-        if: steps.start.outcome == 'success'
+      - name: Wait for conversation startup
+        if: steps.start.outputs.task_id != '' && steps.start.outputs.conversation_id == ''
+        shell: bash
+        env:
+          OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+          TASK_ID: ${{ steps.start.outputs.task_id }}
         run: |
-          echo "OpenHands startup is asynchronous. Check the run logs for the start-task ID and status."
-          echo "No claim is made here that the agent has completed the requested work."
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            response="$(curl --silent --show-error --fail-with-body \
+              --connect-timeout 10 --max-time 20 \
+              --get 'https://app.all-hands.dev/api/v1/app-conversations/start-tasks' \
+              --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" \
+              --data-urlencode "ids=${TASK_ID}")"
+            parsed="$(python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) and d else d; print(str(d.get("status","UNKNOWN"))+"|"+str(d.get("app_conversation_id", ""))+"|"+str(d.get("error", "")))' <<<"${response}")"
+            status="${parsed%%|*}"
+            rest="${parsed#*|}"
+            conversation_id="${rest%%|*}"
+            error="${rest#*|}"
+            echo "OpenHands startup: ${status} (attempt ${attempt}/30)"
+            if [[ "${status}" == "READY" && -n "${conversation_id}" ]]; then
+              echo "Conversation ready: https://app.all-hands.dev/conversations/${conversation_id}"
+              exit 0
+            fi
+            if [[ "${status}" == "ERROR" ]]; then
+              echo "::error::OpenHands startup failed: ${error}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::Timed out waiting for OpenHands startup. Check OpenHands Cloud for the task status."
+          exit 1
+
+      - name: Report immediate conversation link
+        if: steps.start.outputs.conversation_id != ''
+        env:
+          CONVERSATION_ID: ${{ steps.start.outputs.conversation_id }}
+        run: echo "Conversation ready: https://app.all-hands.dev/conversations/${CONVERSATION_ID}"
+
+      - name: Explain execution monitoring
+        if: success()
+        run: |
+          echo "OpenHands accepted the task and the conversation startup is ready."
+          echo "Agent execution is asynchronous; this workflow does not claim the requested code changes are complete."
