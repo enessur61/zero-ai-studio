@@ -70,19 +70,14 @@ export class ZeroQuotaExhaustedError extends Error {
 }
 
 /**
- * True when a stored quota record is still locked for the current UTC day.
- * A proven earlier reset date means the daily window already rolled over, so
- * the lock has legitimately expired. Missing/invalid/future reset dates and
- * malformed counters fail closed (stay locked).
+ * A local UTC date change is NOT proof that Google's provider-side quota reset.
+ * Keep an exhausted flag/limit lock until an independently verified provider
+ * reset is recorded. The optional now argument is retained for API compatibility.
  */
 export function isExhaustedWithinCurrentDay(
   quota: { requestsToday: number; dailySoftLimit: number; exhausted: boolean; lastResetDate?: string },
-  now = new Date()
+  _now = new Date()
 ): boolean {
-  const today = now.toISOString().slice(0, 10);
-  const reset = quota.lastResetDate;
-  const hasValidReset = typeof reset === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(reset);
-  if (hasValidReset && reset < today) return false;
   if (quota.exhausted) return true;
   return (
     Number.isSafeInteger(quota.requestsToday) &&
@@ -161,9 +156,17 @@ export function assertZeroBudgetModelAllowed(
       throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
     }
     if (quota.lastResetDate < today) {
-      quota.requestsToday = 0;
-      quota.exhausted = false;
-      quota.lastResetDate = today;
+      recordAudit({
+        adapterId: 'gemini-quota-guard',
+        modelId,
+        action,
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: 'Lokaler UTC-Tageswechsel beweist keinen Reset des Google-Free-Tier-Kontingents. Automatische Freigabe aus Sicherheitsgründen verweigert.',
+        costEur: 0,
+      });
+      throw new Error(
+        `Free-Tier-Reset für "${modelId}" ist nicht verifiziert. Das Modell bleibt gesperrt; kein automatischer Reset und kein kostenpflichtiger Fallback.`
+      );
     }
   } else {
     quota.lastResetDate = today;
