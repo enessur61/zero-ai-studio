@@ -2141,7 +2141,7 @@ app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) =
   }
   project.updatedAt = now;
   await saveDb(db);
-  return res.json({ ok: true, serverPersisted: true, project });
+  return res.json({ ok: true, serverPersisted: true });
 }));
 
 app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
