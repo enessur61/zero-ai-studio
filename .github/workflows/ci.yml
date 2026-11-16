@@ -234,6 +234,26 @@ jobs:
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
           }
+          const mediaDataUrl = 'data:video/mp4;base64,' + Buffer.alloc(2048, 0).toString('base64');
+          const sceneVideoPath = '/api/projects/' + durationProject.id + '/scenes/' + durationProject.scenes[0].id + '/video';
+          const mediaWrite = await authFetch(sceneVideoPath, {
+            method: 'PUT', body: JSON.stringify({ dataUrl: mediaDataUrl })
+          });
+          if (!mediaWrite.ok || !(await mediaWrite.json()).serverPersisted) throw new Error('Scene clip was not persisted to the project');
+          const mediaReadFromSecondInstance = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          const mediaPayload = await mediaReadFromSecondInstance.json();
+          if (!mediaReadFromSecondInstance.ok || mediaPayload.dataUrl !== mediaDataUrl) {
+            throw new Error('Scene media written on instance A was not visible on instance B');
+          }
+          const crossInstanceProjects = await fetch(baseB + '/api/projects', { headers: { cookie } });
+          const crossInstanceProjectPayload = await crossInstanceProjects.json();
+          if (!crossInstanceProjects.ok ||
+              !crossInstanceProjectPayload.projects?.some((project) =>
+                project.id === durationProject.id &&
+                project.assets?.some((asset) => asset.modelId === 'zero-scene-video:' + durationProject.scenes[0].id)
+              )) {
+            throw new Error('Project/asset reads on instance B returned stale PostgreSQL state');
+          }
           if (!durationProject.snapshots[0].state ||
               durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
             throw new Error('New projects must store a complete, restorable initial snapshot');
