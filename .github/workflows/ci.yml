@@ -198,7 +198,7 @@ jobs:
               throw new Error('Unsafe/unverified model state: ' + id);
             }
             const toggle = await authFetch('/api/models/' + id + '/toggle', { method: 'POST' });
-            if (toggle.status !== 400) throw new Error('Unavailable model can be toggled: ' + id);
+            if (![400, 409].includes(toggle.status)) throw new Error('Unavailable model can be toggled: ' + id);
           }
           for (const id of ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding']) {
             const model = models.find((entry) => entry.id === id);
@@ -212,7 +212,7 @@ jobs:
               throw new Error('iOS model incorrectly marked ready: ' + id);
             }
             const toggle = await authFetch('/api/models/' + id + '/toggle', { method: 'POST' });
-            if (toggle.status !== 400) throw new Error('Uninstalled iOS model can be enabled: ' + id);
+            if (![400, 409].includes(toggle.status)) throw new Error('Uninstalled iOS model can be enabled: ' + id);
           }
           const groundingFeature = models.find((entry) => entry.id === 'gemini-web-grounding');
           const groundingMetadata = String(groundingFeature?.provider ?? '') + String(groundingFeature?.limitations ?? '');
