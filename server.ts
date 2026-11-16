@@ -164,6 +164,18 @@ async function reserveZeroBudgetModelAllowed(
 
   recordBudgetAudit(db, allowedAudit);
 }
+
+async function markGeminiQuotaExhausted(
+  modelId: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  const quota = db.budgetGuard.freeQuotaUsage[modelId];
+  if (!quota) return;
+  quota.exhausted = true;
+  if (process.env.DATABASE_URL) {
+    await authStore().markGeminiQuotaExhausted(modelId, quota.lastResetDate ?? '');
+  }
+}
 // Baseline browser security headers. CSP starts in report-only mode so external
 // model assets and media can be audited without unexpectedly breaking the PWA.
 app.use((_req, res, next) => {
@@ -404,6 +416,7 @@ app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res)
       reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
       costEur: 0,
     });
+    await authStore().clearGeminiQuota(modelId);
     await saveDb(db);
     return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
   } catch (err) {
@@ -1040,7 +1053,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     if (db && isQuotaExhaustionError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
@@ -1110,7 +1123,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     if (isQuotaExhaustionError(err)) {
       for (const quotaKey of ['gemini-web-grounding', 'gemini-2.5-flash-lite']) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
@@ -1178,7 +1191,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
-      db.budgetGuard.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
+      await markGeminiQuotaExhausted('gemini-3.8-flash', db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1261,7 +1274,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
-      db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
+      await markGeminiQuotaExhausted(modelId, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1369,7 +1382,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
-      db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel].exhausted = true;
+      await markGeminiQuotaExhausted(selectedTranscriptionModel, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -2247,7 +2260,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
         const response = await ai.models.embedContent({ model: modelId, contents });
         return response.embeddings?.[0]?.values;
       },
-      persistExhausted: () => saveDb(db),
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
     });
     embedding = result.vector;
     embeddingNotice = result.notice;
