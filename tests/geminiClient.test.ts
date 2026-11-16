@@ -27,18 +27,23 @@ assert.throws(
   /Kontingentdatensatz/,
 );
 
-// Every allowed provider attempt reserves one local request slot before execution.
+// The production audit callback owns the single request-counter increment.
 const reserved = base();
-assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {});
+const recordAndCount = (event: { modelId: string; decision: string }) => {
+  if (event.decision === 'ERLAUBT_0_EUR') {
+    reserved.freeQuotaUsage[event.modelId].requestsToday += 1;
+  }
+};
+assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, recordAndCount);
 assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 1);
 for (let i = 1; i < 10; i += 1) {
-  assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {});
+  assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, recordAndCount);
 }
 assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 10);
 assert.throws(
-  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {}),
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, recordAndCount),
   /ausgeschöpft/,
-  'the local request budget must stop further provider calls at its configured limit',
+  'the audit-owned local request counter must stop further provider calls at its configured limit',
 );
 assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 10);
 
