@@ -94,7 +94,7 @@ try {
 
   // A failed backup-blob insert must roll back the state/revision update too.
   await assert.rejects(
-    () => writePersistentStateWithBackupFile(
+    () => storeA.writeWithBackup(
       { value: 'must-rollback', backupId: 'backup-atomic-failure' },
       backupRevision,
       {
