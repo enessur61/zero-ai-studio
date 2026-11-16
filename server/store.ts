@@ -448,7 +448,9 @@ const zipBackupRevisions = new WeakMap<ZipBackupVersion, number>();
 let persistenceSaveQueue: Promise<void> = Promise.resolve();
 
 export async function loadDb(): Promise<ZeroDatabase> {
-  if (dbCache) return dbCache;
+  // PostgreSQL is the cross-instance source of truth. Only file-backed local
+  // development may reuse the process cache between requests.
+  if (dbCache && !process.env.DATABASE_URL) return dbCache;
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.mkdir(BACKUP_DIR, { recursive: true });
   await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
@@ -464,6 +466,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
+    const storedPayloadJson = stored ? JSON.stringify(stored.payload) : null;
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
     parsed.models = INITIAL_MODEL_CATALOG.map((def) => {
@@ -567,16 +570,22 @@ export async function loadDb(): Promise<ZeroDatabase> {
     }
     dbCache = parsed;
     if (process.env.DATABASE_URL) {
-      try {
-        const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
-        dbRevisions.set(parsed, nextRevision);
-      } catch (error) {
-        if (!(error instanceof PersistentStateConflictError)) throw error;
-        // Another instance initialized or migrated the row first. Use its committed state.
-        const latest = await readPersistentState<ZeroDatabase>();
-        if (!latest) throw error;
-        dbCache = latest.payload;
-        dbRevisions.set(latest.payload, latest.revision);
+      const normalizedPayloadJson = JSON.stringify(parsed);
+      const needsPersistence = !stored || normalizedPayloadJson !== storedPayloadJson;
+      if (needsPersistence) {
+        try {
+          const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
+          dbRevisions.set(parsed, nextRevision);
+        } catch (error) {
+          if (!(error instanceof PersistentStateConflictError)) throw error;
+          // Another instance initialized or migrated the row first. Use its latest committed state.
+          const latest = await readPersistentState<ZeroDatabase>();
+          if (!latest) throw error;
+          dbCache = latest.payload;
+          dbRevisions.set(latest.payload, latest.revision);
+        }
+      } else if (stored) {
+        dbRevisions.set(parsed, stored.revision);
       }
     }
     return dbCache;
