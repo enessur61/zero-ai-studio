@@ -103,7 +103,8 @@ app.use('/api', (req, res, next) => {
   return next();
 });
 
-app.use(express.json({ limit: '25mb' }));
+// 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
+app.use(express.json({ limit: '26mb' }));
 
 app.get('/api/auth/status', (_req, res) => {
   const configured =
@@ -1062,6 +1063,7 @@ app.post('/api/audio/tts', async (req, res) => {
 
 app.post('/api/audio/transcribe', async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  let selectedTranscriptionModel = 'gemini-3.5-transcribe';
 
   try {
     const database = await loadDb();
@@ -1070,7 +1072,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
     if (!routeDecision) {
       return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Transkriptionsmodell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
     }
-    const selectedTranscriptionModel = routeDecision.modelId;
+    selectedTranscriptionModel = routeDecision.modelId;
     const audioDataUrl = String(req.body?.audioDataUrl ?? '');
     const audio = parseBase64DataUrl(
       audioDataUrl,
@@ -1139,8 +1141,8 @@ app.post('/api/audio/transcribe', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.5-transcribe']) {
-      db.budgetGuard.freeQuotaUsage['gemini-3.5-transcribe'].exhausted = true;
+    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
+      db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel].exhausted = true;
       try {
         await saveDb(db);
       } catch (persistError) {

@@ -214,10 +214,18 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
       return;
     }
     const reader = new FileReader();
-    reader.onloadend = () => {
-      void sendAudioForTranscription(String(reader.result));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string' || !reader.result.startsWith('data:audio/')) {
+        setTranscribeError('Die Audiodatei konnte nicht gelesen werden. Bitte erneut auswählen.');
+        return;
+      }
+      void sendAudioForTranscription(reader.result);
+    };
+    reader.onerror = () => {
+      setTranscribeError('Die Audiodatei konnte nicht gelesen werden. Bitte erneut auswählen.');
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   }
 
   return (
@@ -369,6 +377,8 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                           );
                           onProjectUpdated(res.project);
                           setSavedAudioMsg(`In "${res.project.title}" gespeichert.`);
+                        } catch (err) {
+                          setTtsError(err instanceof Error ? err.message : 'Audio konnte nicht im Projekt gespeichert werden.');
                         } finally {
                           setSavingAudio(false);
                         }
