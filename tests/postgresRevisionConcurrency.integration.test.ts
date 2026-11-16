@@ -3,6 +3,10 @@ import express from 'express';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createRestoreHandlers } from '../server/restoreHandlers.ts';
+import { createVerifiedZipRestoreService } from '../server/verifiedZipRestore.ts';
+import { assertRestorableDatabase, type ZeroDatabase } from '../server/store.ts';
+import { buildFullProjectZip, verifyZipBuffer } from '../server/zipExporter.ts';
+import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import {
   createPostgresStateStore,
@@ -285,6 +289,242 @@ try {
     httpServer.close();
     await once(httpServer, 'close');
   }
+
+
+  // Exercise the complete production ZIP restore orchestration with real ZIP
+  // construction/verification, a committed safety archive, HTTP routing, and a
+  // deterministic normal-write race across two independent PostgreSQL pools.
+  const makeRestoreDb = (title: string): ZeroDatabase => ({
+    models: [],
+    budgetGuard: { auditLog: [], freeQuotaUsage: {} },
+    memories: [],
+    characters: [],
+    projects: [{ id: 'restore-race-project', title, scenes: [], assets: [], characterIds: [] }],
+    chatHistory: [],
+    automationRuns: [],
+    backups: [],
+    backupConfig: {
+      currentVersion: '1.2.0',
+      autoZipOnChange: false,
+      lastVerifiedAt: new Date().toISOString(),
+      zipBackups: [],
+      changelogHistory: [],
+    },
+    settings: {
+      targetDevice: 'iPhone 16 Pro Max',
+      maxVideoDurationSec: 60,
+      preferredVideoDurationSec: 58,
+      language: 'de-DE',
+      offlineFirstPreferLocal: false,
+    },
+  } as unknown as ZeroDatabase);
+
+  const liveBeforeRestore = makeRestoreDb('live-before-restore');
+  const currentBeforeRestore = await storeA.read();
+  assert.ok(currentBeforeRestore);
+  const liveRevision = await storeA.write(liveBeforeRestore, currentBeforeRestore.revision);
+  const archivedDb = makeRestoreDb('restored-from-verified-zip');
+  const archive = await buildFullProjectZip(process.cwd(), {
+    'data/zero-studio-db.json': Buffer.from(JSON.stringify(archivedDb), 'utf8'),
+  });
+  const archiveVerification = verifyZipBuffer(archive.buffer);
+  assert.equal(archiveVerification.result.valid, true, 'the test archive must pass the production ZIP verifier');
+  assert.ok(archiveVerification.extractedFiles.has('data/zero-studio-db.json'));
+
+  const sourceRecord = {
+    id: 'verified-restore-source',
+    version: '1.2.3',
+    filename: 'verified-source.zip',
+    createdAt: new Date().toISOString(),
+    changelog: 'Integration test restore source',
+    trigger: 'manual',
+    fileCount: archive.fileCount,
+    sizeBytes: archive.buffer.length,
+    verified: true,
+    protected: true,
+    excludedSecrets: [],
+  } as unknown as ZipBackupVersion;
+
+  let announceSafetyBackupCommitted!: () => void;
+  const safetyBackupCommitted = new Promise<void>((resolve) => { announceSafetyBackupCommitted = resolve; });
+  let releaseRestoreAfterSafety!: () => void;
+  const restoreAfterSafetyGate = new Promise<void>((resolve) => { releaseRestoreAfterSafety = resolve; });
+  const safetyRevisions = new WeakMap<ZipBackupVersion, number>();
+  let safetyBackupCalls = 0;
+
+  const completeRestoreService = createVerifiedZipRestoreService({
+    getZipBackupFilePath: async (zipId) => {
+      assert.equal(zipId, 'verified-restore-source');
+      return { record: sourceRecord, buffer: archive.buffer };
+    },
+    verifyZipBuffer,
+    assertRestorableDatabase,
+    createSafetyBackup: async (source) => {
+      safetyBackupCalls += 1;
+      assert.equal(source.id, sourceRecord.id);
+      const beforeSafetyBackup = await storeA.read();
+      assert.ok(beforeSafetyBackup);
+      const safetyArchive = await buildFullProjectZip(process.cwd(), {
+        'data/zero-studio-db.json': Buffer.from(JSON.stringify(beforeSafetyBackup.payload), 'utf8'),
+      });
+      assert.equal(verifyZipBuffer(safetyArchive.buffer).result.valid, true, 'the safety archive must be a verified ZIP');
+      const safetyRecord = {
+        id: 'verified-restore-safety',
+        version: '1.2.4',
+        filename: 'verified-safety.zip',
+        createdAt: new Date().toISOString(),
+        changelog: 'Safety backup before verified ZIP restore',
+        trigger: 'pre_restore',
+        fileCount: safetyArchive.fileCount,
+        sizeBytes: safetyArchive.buffer.length,
+        verified: true,
+        protected: true,
+        excludedSecrets: [],
+      } as unknown as ZipBackupVersion;
+      const stateWithSafetyMetadata = {
+        ...beforeSafetyBackup.payload,
+        backupConfig: {
+          ...beforeSafetyBackup.payload.backupConfig,
+          zipBackups: [safetyRecord, ...beforeSafetyBackup.payload.backupConfig.zipBackups],
+        },
+      };
+      const revision = await storeB.writeWithBackup(
+        stateWithSafetyMetadata,
+        beforeSafetyBackup.revision,
+        {
+          id: safetyRecord.id,
+          filename: safetyRecord.filename,
+          contentType: 'application/zip',
+          payload: safetyArchive.buffer,
+        }
+      );
+      safetyRevisions.set(safetyRecord, revision);
+      announceSafetyBackupCommitted();
+      await restoreAfterSafetyGate;
+      return safetyRecord;
+    },
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      return state.payload as ZeroDatabase;
+    },
+    getZipBackupRevision: (backup) => {
+      const revision = safetyRevisions.get(backup);
+      if (revision === undefined) throw new Error('Safety backup revision missing from test fixture');
+      return revision;
+    },
+    saveDb: async (db, options) => {
+      assert.notEqual(options.expectedRevision, undefined);
+      await storeA.write(db, options.expectedRevision!);
+    },
+    enrichModelMetadata: (model) => model,
+  });
+
+  const completeRestoreHandlers = createRestoreHandlers({
+    restoreSystemBackup: async () => ({ projects: [], memories: [] }),
+    restoreZipBackup: completeRestoreService,
+  });
+  const completeRestoreApp = express();
+  completeRestoreApp.use(express.json());
+  completeRestoreApp.post('/api/system/zip-backups/:id/restore', completeRestoreHandlers.zip);
+  const completeRestoreServer = completeRestoreApp.listen(0, '127.0.0.1');
+  await once(completeRestoreServer, 'listening');
+  const completeRestoreAddress = completeRestoreServer.address();
+  assert.ok(completeRestoreAddress && typeof completeRestoreAddress !== 'string');
+  const completeRestoreRequest = fetch(
+    `http://127.0.0.1:${completeRestoreAddress.port}/api/system/zip-backups/verified-restore-source/restore`,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) }
+  );
+
+  try {
+    await safetyBackupCommitted;
+    const stateAfterSafetyBackup = await storeB.read();
+    assert.ok(stateAfterSafetyBackup);
+    assert.equal(stateAfterSafetyBackup.revision, liveRevision + 1, 'safety backup must commit before restore proceeds');
+    const safetyBlob = await poolB.query<{ payload: Buffer }>(
+      'SELECT payload FROM zero_backup_files WHERE id = $1',
+      ['verified-restore-safety']
+    );
+    assert.equal(safetyBlob.rowCount, 1, 'verified safety ZIP bytes must be persisted in PostgreSQL');
+    assert.equal(verifyZipBuffer(safetyBlob.rows[0].payload).result.valid, true, 'persisted safety ZIP must verify');
+
+    const newerLiveDb = makeRestoreDb('newer-concurrent-normal-write');
+    newerLiveDb.backupConfig = stateAfterSafetyBackup.payload.backupConfig;
+    const winningRevision = await storeB.write(newerLiveDb, stateAfterSafetyBackup.revision);
+    releaseRestoreAfterSafety();
+    const response = await completeRestoreRequest;
+    assert.equal(response.status, 409, 'full production ZIP restore must reject a write after its safety snapshot');
+    const responseBody = await response.json() as { code?: string; expectedRevision?: number; actualRevision?: number };
+    assert.equal(responseBody.code, 'PERSISTENCE_REVISION_CONFLICT');
+    assert.equal(responseBody.expectedRevision, stateAfterSafetyBackup.revision);
+    assert.equal(responseBody.actualRevision, winningRevision);
+    const finalLiveState = await storeA.read();
+    assert.ok(finalLiveState);
+    assert.equal(
+      (finalLiveState.payload as ZeroDatabase).projects[0]?.title,
+      'newer-concurrent-normal-write',
+      'the newer normal write must survive the rejected full ZIP restore'
+    );
+    assert.equal(safetyBackupCalls, 1);
+    assert.deepEqual(await storeA.inspectBackupConsistency(), {
+      orphanedBlobIds: [],
+      missingBlobIds: [],
+    }, 'safety backup metadata and ZIP bytes must remain consistent after the conflict');
+  } finally {
+    releaseRestoreAfterSafety();
+    completeRestoreServer.close();
+    await once(completeRestoreServer, 'close');
+  }
+
+  // Invalid archives must fail before the mandatory safety-backup operation.
+  let invalidArchiveSafetyCalls = 0;
+  const invalidArchiveService = createVerifiedZipRestoreService({
+    getZipBackupFilePath: async () => ({ record: sourceRecord, buffer: Buffer.from('not a ZIP archive') }),
+    verifyZipBuffer,
+    assertRestorableDatabase,
+    createSafetyBackup: async () => {
+      invalidArchiveSafetyCalls += 1;
+      throw new Error('Safety backup must not run for invalid archive');
+    },
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      return state.payload as ZeroDatabase;
+    },
+    getZipBackupRevision: () => { throw new Error('Must not request revision for invalid archive'); },
+    saveDb: async () => { throw new Error('Must not persist an invalid restore'); },
+    enrichModelMetadata: (model) => model,
+  });
+  await assert.rejects(
+    () => invalidArchiveService('corrupt-zip'),
+    /ZIP beschädigt oder unvollständig/,
+    'corrupt ZIP archives must be rejected by the production verifier'
+  );
+  assert.equal(invalidArchiveSafetyCalls, 0, 'corrupt ZIP must not trigger a safety backup');
+
+  // A safety-backup failure must also stop before the restored payload is committed.
+  const beforeSafetyFailure = await storeA.read();
+  assert.ok(beforeSafetyFailure);
+  const failedSafetyService = createVerifiedZipRestoreService({
+    getZipBackupFilePath: async () => ({ record: sourceRecord, buffer: archive.buffer }),
+    verifyZipBuffer,
+    assertRestorableDatabase,
+    createSafetyBackup: async () => { throw new Error('injected safety backup publication failure'); },
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      return state.payload as ZeroDatabase;
+    },
+    getZipBackupRevision: () => { throw new Error('Must not request revision after failed safety backup'); },
+    saveDb: async () => { throw new Error('Must not persist restore after failed safety backup'); },
+    enrichModelMetadata: (model) => model,
+  });
+  await assert.rejects(
+    () => failedSafetyService('verified-restore-source'),
+    /injected safety backup publication failure/,
+    'restore must abort when mandatory safety backup publication fails'
+  );
+  assert.deepEqual(await storeA.read(), beforeSafetyFailure, 'failed safety backup must leave live state untouched');
 
   console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
 } finally {
