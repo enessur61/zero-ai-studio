@@ -2172,21 +2172,21 @@ app.post('/api/automation/run', async (req, res) => {
       steps: Array<{ title: string; module: string; outputSummary: string }>;
     };
 
+    // This endpoint creates a plan only. It does not execute arbitrary modules,
+    // so never label generated steps as successful or the run as completed.
     const run: AutomationRun = {
       id: `auto-${Date.now()}`,
       goal,
-      status: includeExternalPublishGate ? 'pausiert_bestätigung' : 'abgeschlossen',
+      status: includeExternalPublishGate ? 'pausiert_bestätigung' : 'geplant',
       createdAt: new Date().toISOString(),
-      finishedAt: includeExternalPublishGate ? undefined : new Date().toISOString(),
       steps: (parsed.steps || []).slice(0, 4).map((st, idx) => ({
         id: `step-${idx + 1}`,
         title: st.title,
         module: st.module,
         modelId: 'gemini-3.8-flash',
-        status: 'erfolgreich',
+        status: 'wartend',
         requiresConfirmation: false,
-        outputSummary: st.outputSummary,
-        durationMs: 320 + idx * 140,
+        outputSummary: `Geplanter Arbeitsschritt – noch nicht ausgeführt. Vorschlag: ${st.outputSummary}`,
       })),
     };
 
@@ -2226,8 +2226,10 @@ app.post('/api/automation/:id/confirm', async (req, res) => {
         }
       : s
   );
-  run.status = 'abgeschlossen';
-  run.finishedAt = new Date().toISOString();
+  // Approval authorizes the gated action but does not execute the plan.
+  // Keep the run open until real module executors report completion.
+  run.status = 'geplant';
+  run.finishedAt = undefined;
   await saveDb(db);
   res.json({ run });
 });
