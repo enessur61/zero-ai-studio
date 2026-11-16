@@ -12,14 +12,17 @@ type RestoreServices = {
 };
 
 function restoreError(res: Parameters<RequestHandler>[1], error: unknown): void {
-  const conflict = error instanceof PersistentStateConflictError;
-  res.status(conflict ? 409 : 400).json({
-    error: error instanceof Error ? error.message : 'Wiederherstellung fehlgeschlagen',
-    ...(conflict ? {
+  if (error instanceof PersistentStateConflictError) {
+    res.status(409).json({
+      error: error.message,
       code: 'PERSISTENCE_REVISION_CONFLICT',
       expectedRevision: error.expectedRevision,
       actualRevision: error.actualRevision,
-    } : {}),
+    });
+    return;
+  }
+  res.status(400).json({
+    error: error instanceof Error ? error.message : 'Wiederherstellung fehlgeschlagen',
   });
 }
 
