@@ -2,16 +2,23 @@ name: ZERO AI STUDIO CI
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# This workflow validates the current commit. Obsolete runs may be cancelled;
+# the full native iOS build is handled by its own workflow.
 concurrency:
   group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}
-  # Let the iOS/macOS validation finish; newer commits must not cancel it mid-queue.
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -31,7 +38,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Block committed local data and secrets
+      - name: Block committed local data and credential files
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -64,7 +71,7 @@ jobs:
               process.exit(1);
             }
           }
-          console.log('No local database or secret files are tracked.');
+          console.log('No prohibited local database or credential files are tracked.');
           NODE
       - run: npm install --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
@@ -376,6 +383,7 @@ jobs:
 
   ios-swift-package:
     runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Verify Swift toolchain
