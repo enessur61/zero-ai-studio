@@ -158,7 +158,7 @@ try {
   const beforeAutoBackup = await storeA.read();
   assert.ok(beforeAutoBackup);
   await assert.rejects(
-    () => storeA.writeWithBackup(
+    () => storeB.writeWithBackup(
       { value: 'auto-backup-must-rollback' },
       beforeAutoBackup.revision,
       {
@@ -182,7 +182,7 @@ try {
     backups: [{ id: 'backup-atomic-success' }, { id: 'auto-backup-atomic-success' }],
     backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }, { id: 'auto-backup-atomic-success' }] },
   };
-  const autoRevision = await storeA.writeWithBackup(
+  const autoRevision = await storeB.writeWithBackup(
     autoPayload,
     beforeAutoBackup.revision,
     {
