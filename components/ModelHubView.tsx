@@ -219,8 +219,10 @@ export function ModelHubView({
     setTestingAll(true);
     setFeedback(null);
     const report: string[] = [];
+    let latestModels = models;
     try {
       const data = await registryRef.current.verifyAndRegisterAll();
+      latestModels = data.models;
       if (onModelsReplaced) {
         onModelsReplaced(data.models);
       } else {
