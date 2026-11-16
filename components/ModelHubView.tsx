@@ -17,6 +17,7 @@ import { StatusLabel } from './StatusLabel.tsx';
 import {
   checkWebGPULocalModelSupport,
   generateWebGPULocalChat,
+  getLoadedWebGPULocalModelId,
   isWebGPULocalModelLoaded,
   loadWebGPULocalModel,
   WEBGPU_LOCAL_MODEL_ID,
@@ -61,7 +62,7 @@ export function ModelHubView({
   const [webGpuLoading, setWebGpuLoading] = useState(false);
   const [webGpuProgress, setWebGpuProgress] = useState(0);
   const [webGpuProgressText, setWebGpuProgressText] = useState('');
-  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());\n  const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(WEBGPU_LOCAL_MODEL_ID);
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());\n  const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(getLoadedWebGPULocalModelId() ?? WEBGPU_LOCAL_MODEL_ID);
   const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
@@ -289,7 +290,7 @@ export function ModelHubView({
             <h2 className="text-base font-semibold text-white">Lokale Open-Source-Modelle · direkt auf diesem Gerät</h2>
             <label className="block text-xs text-slate-300 mt-2">
               Lokales Modell auswählen
-              <select value={selectedWebGpuModelId} onChange={(event) => { const nextId = event.target.value; void unloadWebGPULocalModel().finally(() => { setSelectedWebGpuModelId(nextId); setWebGpuLoaded(false); setWebGpuProgress(0); }); }} disabled={webGpuLoading} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
+              <select value={selectedWebGpuModelId} onChange={(event) => { const nextId = event.target.value; void unloadWebGPULocalModel().finally(() => { webGpuProbeRef.current = false; setSelectedWebGpuModelId(nextId); setWebGpuLoaded(false); setWebGpuProgress(0); }); }} disabled={webGpuLoading} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
                 {WEBGPU_LOCAL_MODELS.map((item) => <option key={item.modelId} value={item.modelId}>{item.name} · ca. {item.vramMB} MB GPU</option>)}
               </select>
             </label>
