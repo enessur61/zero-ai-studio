@@ -37,7 +37,7 @@ export interface VersionedZipBackupDependencies {
 }
 
 function bumpPatchVersion(version: string): string {
-  const match = /^(0|[1-9]\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$/.exec(version);
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
   if (!match) {
     throw new Error(`Ungültige ZIP-Backup-Version "${version}"; erwartet wird MAJOR.MINOR.PATCH.`);
   }
