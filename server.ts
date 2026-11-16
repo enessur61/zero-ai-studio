@@ -1814,7 +1814,7 @@ app.post('/api/projects', asyncRoute(async (req, res) => {
   const rawDuration = Number(req.body?.targetDurationSec ?? 58);
   const clampedDuration = Math.min(60, Math.max(10, rawDuration));
   const scenes = Array.isArray(req.body?.scenes)
-    ? clampScenesToMax60Seconds(req.body.scenes as FilmScene[])
+    ? sanitizeProjectScenes(clampScenesToMax60Seconds(req.body.scenes as FilmScene[]))
     : [];
   const scenesDuration = scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
   const projectDuration = Math.min(60, scenesDuration || clampedDuration);
