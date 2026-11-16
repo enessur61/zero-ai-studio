@@ -143,3 +143,15 @@ Implemented in the follow-up draft:
 - Integration tests run only against an explicitly local PostgreSQL endpoint and do not inspect production data.
 
 The integration test is wired as a dedicated CI step. Its assertions are not considered passed until the corresponding GitHub Actions job completes successfully on the latest PR head SHA.
+
+
+## Automatic ZIP throttle and backup reconciliation follow-up
+
+- PostgreSQL-backed automatic ZIP creation now holds a dedicated session-level advisory lock across archive generation and publication. Independent server instances cannot both pass the throttle check and create overlapping automatic backups.
+- A successful automatic backup records `last_success_at` in `zero_backup_auto_state`; the next automatic attempt is refused for 15 minutes. A failed attempt releases the lock without advancing the successful-backup timestamp.
+- Local file-only development retains the existing process-local 15-minute check; it is not a multi-process coordination mechanism.
+- A read-only `inspectBackupConsistency` diagnostic compares backup metadata IDs in the primary JSONB state with IDs in `zero_backup_files`, reporting orphaned blob IDs and metadata entries whose blob is missing.
+- The diagnostic deliberately does not delete or rewrite anything. Automated cleanup remains a separate, approval-sensitive maintenance operation.
+- The PostgreSQL integration test now checks lease exclusion across two pools, the 15-minute throttle after success, a clean backup consistency report, and detection of both orphaned bytes and missing blobs.
+
+**Residual recovery window:** if a process commits an automatic ZIP backup but crashes before it records `last_success_at`, the session lock is released and a subsequent process could retry earlier than 15 minutes. The backup row and primary state remain transactionally consistent; only the throttle timestamp can lag. A future improvement could commit the throttle success marker in the same transaction as backup publication.
