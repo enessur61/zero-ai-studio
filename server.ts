@@ -20,6 +20,7 @@ import {
   isQuotaExhaustionError,
   ThinkingLevel,
   Type,
+  ZeroQuotaExhaustedError,
   withTransientRetry,
 } from './server/geminiClient.ts';
 import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
@@ -117,6 +118,49 @@ async function createSessionCookie(): Promise<string> {
   await authStore().createSession(tokenDigest(token), new Date(Number(expiresAt)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
+}
+
+async function reserveZeroBudgetModelAllowed(
+  modelId: string,
+  action: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  let allowedAudit: Parameters<typeof recordBudgetAudit>[1] | null = null;
+  assertZeroBudgetModelAllowed(modelId, action, db.budgetGuard, (entry) => {
+    if (entry.decision === 'ERLAUBT_0_EUR') allowedAudit = entry;
+    else recordBudgetAudit(db, entry);
+  });
+  if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
+
+  if (process.env.DATABASE_URL) {
+    const quota = db.budgetGuard.freeQuotaUsage[modelId];
+    if (!quota) throw new Error(`Kein Kontingentdatensatz für "${modelId}".`);
+    const reservation = await authStore().reserveGeminiQuota({
+      modelId,
+      resetDate: quota.lastResetDate ?? '',
+      currentRequests: quota.requestsToday,
+      dailyLimit: quota.dailySoftLimit,
+    });
+    if (!reservation.allowed) {
+      quota.exhausted = true;
+      recordBudgetAudit(db, {
+        adapterId: 'gemini-quota-guard',
+        modelId,
+        action,
+        decision: 'GESTOPPT_KONTINGENT',
+        reason: `Globales Free-Tier-Kontingent ausgeschöpft (${reservation.requestsToday}/${quota.dailySoftLimit}). Anfrage vor dem Provider-Aufruf gestoppt.`,
+        costEur: 0,
+      });
+      throw new ZeroQuotaExhaustedError(
+        `Globales kostenloses Tageskontingent für "${modelId}" ausgeschöpft. Kein kostenpflichtiger Fallback.`
+      );
+    }
+    // recordBudgetAudit increments once; align the process-local display count
+    // with the atomic cross-instance reservation immediately before that increment.
+    quota.requestsToday = Math.max(0, reservation.requestsToday - 1);
+  }
+
+  recordBudgetAudit(db, allowedAudit);
 }
 // Baseline browser security headers. CSP starts in report-only mode so external
 // model assets and media can be audited without unexpectedly breaking the PWA.
@@ -284,7 +328,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
     db = await loadDb();
-    assertZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
+    await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
       recordBudgetAudit(db!, entry)
     );
 
@@ -882,7 +926,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
+      await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
         recordBudgetAudit(database, e)
       );
       const ai = getGeminiClient();
@@ -898,10 +942,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
+        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
           recordBudgetAudit(database, e)
         );
-        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
+        await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
           recordBudgetAudit(database, e)
         );
         const searchResponse = await withTransientRetry(() =>
@@ -1040,10 +1084,10 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     const query = String(req.body?.query ?? '').trim();
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
-    assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
 
@@ -1121,7 +1165,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
     }
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
       recordBudgetAudit(database, e)
     );
 
@@ -1185,7 +1229,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
     }
 
-    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
       recordBudgetAudit(database, e)
     );
 
@@ -1281,7 +1325,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
       });
     }
 
-    assertZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
       recordBudgetAudit(database, e)
     );
 
@@ -1363,7 +1407,7 @@ app.post('/api/music/compose', asyncRoute(async (req, res) => {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
     const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
 
@@ -1609,7 +1653,7 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
 
@@ -1823,7 +1867,7 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
 
@@ -2314,7 +2358,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     const includeExternalPublishGate = Boolean(req.body?.includeExternalPublishGate);
     if (!goal) return res.status(400).json({ error: 'Automatisierungsziel fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db.budgetGuard, (e) =>
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db.budgetGuard, (e) =>
       recordBudgetAudit(db, e)
     );
 
