@@ -253,3 +253,34 @@ The reconciliation endpoint is intentionally read-only; no automatic orphan dele
 - Expected PostgreSQL `NOT NULL` violations and the injected `injected ZIP publication failure` are negative-test fixtures proving rollback behavior, not CI failures. Non-blocking warnings: Go cache cannot find `go.sum`; GitHub Actions reports Node.js 20 action deprecation. No actionable warning or failure remained on CI #755.
 
 **Coverage boundary:** tests use isolated local PostgreSQL schemas and independent pools, plus the production ZIP builder/verifier and shared backup/restore orchestration. They do not inspect or modify production rows, production backup blobs, or a live deployed service. PR #84 remains open and Draft. No merge or deployment was performed.
+
+
+## ZIP archive tamper resistance, PostgreSQL blob integrity and restart restore — CI #762
+
+**Validated implementation head:** `74d04b1dc720a0de15e2ff91e8503e028dad30e2`  
+**Workflow run:** [CI #762](https://github.com/enessur61/zero-ai-studio/actions/runs/43978442314) — run `43978442314`, job `133688369006` (`verify`)  
+**Result:** `completed / success`; all 19 job steps passed. Complete job log retrieved and reviewed: 1,021 lines / 94,374 characters.
+
+### Verified code risks and corrections
+
+- The prior ZIP verifier found the EOCD signature but did not prove that the EOCD comment ended exactly at the archive boundary, nor that the Central Directory size/offset terminated exactly at the EOCD. It now validates both boundaries and rejects unsupported multi-disk and ZIP64 layouts.
+- Each Central Directory record is bounds-checked. The verifier now rejects truncated records, duplicate paths, unsafe absolute/traversal/backslash paths, non-UTF-8-only exporter flags, encryption/data-descriptor flags, and unsupported compression methods.
+- Local File Header flags, method, CRC, compressed/uncompressed sizes, and filename bytes must agree with the authoritative Central Directory record. Compressed data must end before the Central Directory.
+- Deflate output is bounded by the entry's declared uncompressed size; actual output length must match exactly. Stored entries must have matching compressed and uncompressed sizes. CRC32 is recomputed over every extracted member and compared with the archive value.
+- The restore orchestrator now compares the persisted `ZipBackupVersion.sizeBytes` metadata with the actual PostgreSQL blob length before parsing the ZIP. A mismatch stops restore before safety-backup creation or live-state writes.
+
+### Reproducible regression coverage
+
+- Unit tests exercise truncated EOCD, unaccounted trailing bytes, altered compressed payload, incorrect CRC with matching local/central CRC fields, local/central method disagreement, out-of-range Central Directory offset, size disagreement, unsupported compression, and duplicate paths.
+- PostgreSQL integration tests publish ZIP bytes through the shared production backup service and then alter the actual `zero_backup_files.payload` row. Both same-length payload corruption and a truncated stored blob are rejected by the production restore service before safety-backup creation; the live JSONB state/revision remains unchanged.
+- Restart recovery is simulated with entirely new PostgreSQL pools, new state-store instances, and newly constructed backup and restore service instances. The new service reads a previously persisted ZIP blob, creates a protected pre-restore safety ZIP, restores the older snapshot, and finishes with zero orphaned or missing blobs.
+- CI #761 (run `43978347520`, head `aa976f9a8641d585c8abf1fa0b15d2db618db52a`) passed all 19 steps and logged the explicit corruption/truncation/restart test marker. CI #762 validates the additional persisted-size check and the final test state.
+
+### Intermediate CI failures and correction
+
+- CI #757 and #758 failed at TypeScript lint because the first generated verifier source had escaped template delimiters. The complete logs were reviewed; the delimiters were corrected.
+- CI #759 passed lint and unit tests but its PostgreSQL test file contained escaped template delimiters in the fresh-pool fixture. The complete log identified the exact syntax location; it was corrected before CI #760.
+- CI #760 then passed all 19 steps (head `e14547b32b8d7fa716a531df14fa95279b1b6105`; 1,020 log lines / 94,246 characters). CI #761 and #762 subsequently passed all 19 steps each.
+- CI #762's expected PostgreSQL `NOT NULL` violations and injected `injected ZIP publication failure` are negative-test fixtures. Non-blocking warnings remain: Go cache cannot find `go.sum`; GitHub Actions reports Node.js 20 action deprecation. No actionable failure remained on CI #762.
+
+**Coverage boundary:** The restart test uses fresh PostgreSQL pools and newly constructed service instances against an isolated local schema; it is a deterministic restart simulation, not a restart/restore drill against a deployed production database. No production database, deployed service, or production backup blob was accessed or modified. PR #84 remains open and Draft; no merge or deployment was performed.
