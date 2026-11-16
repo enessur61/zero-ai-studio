@@ -15,6 +15,7 @@ import {
 } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
+import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -44,6 +45,32 @@ try {
   // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
   await storeA.ensureSchema();
   await storeB.ensureSchema();
+
+  // Production auth state must be shared across independent Node-process pools.
+  const authA = createPostgresAuthStore(poolA);
+  const authB = createPostgresAuthStore(poolB);
+  await authA.ensureSchema();
+  await authB.ensureSchema();
+  const sessionHash = 'a'.repeat(64);
+  await authA.createSession(sessionHash, new Date(Date.now() + 60_000));
+  assert.equal(await authB.hasSession(sessionHash), true, 'a session created on pool A must validate on pool B');
+  await authB.deleteSession(sessionHash);
+  assert.equal(await authA.hasSession(sessionHash), false, 'logout on pool B must revoke the session on pool A');
+  await authA.createSession('b'.repeat(64), new Date(Date.now() - 1));
+  assert.equal(await authB.hasSession('b'.repeat(64)), false, 'expired sessions must fail closed across pools');
+
+  // Eight failed logins are shared; the ninth attempt is rejected across pools.
+  const loginKeyHash = 'c'.repeat(64);
+  const loginNow = new Date();
+  const loginAttempts = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+    (index % 2 ? authA : authB).consumeLoginAttempt(loginKeyHash, loginNow, 15 * 60 * 1000, 8)
+  ));
+  assert.equal(loginAttempts.filter((entry) => entry.allowed).length, 8);
+  const blockedLogin = await authB.consumeLoginAttempt(loginKeyHash, loginNow, 15 * 60 * 1000, 8);
+  assert.equal(blockedLogin.allowed, false, 'the ninth attempt must be blocked even when it reaches another pool');
+  assert.equal(blockedLogin.attempts, 9);
+  await authA.clearLoginAttempts(loginKeyHash);
+  assert.equal((await authB.consumeLoginAttempt(loginKeyHash, loginNow, 15 * 60 * 1000, 8)).allowed, true);
 
   // PostgreSQL must reject oversized BYTEA reads using octet_length in SQL,
   // before transferring the blob into the Node.js process.
