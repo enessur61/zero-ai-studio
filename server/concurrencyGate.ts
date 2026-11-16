@@ -114,6 +114,10 @@ export function createPostgresConcurrencyGate(
                 destroy = true;
                 throw error;
               } finally {
+                if (!released) {
+                  released = true;
+                  active--;
+                }
                 client.release(destroy);
               }
             })();
