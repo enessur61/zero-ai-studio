@@ -96,26 +96,38 @@ try {
 
   const oversizedRoot = await mkdtemp(path.join(os.tmpdir(), 'zero-zip-limits-'));
   try {
-    for (const [name, size] of [
-      ['entry-too-large.bin', MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1],
-      ...Array.from({ length: Math.ceil(MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES / MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) + 1 }, (_, index) =>
-        [`aggregate-${index}.bin`, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES] as [string, number]
-      ),
-    ] as Array<[string, number]>) {
-      const target = path.join(oversizedRoot, name);
+    const tooLargeEntry = path.join(oversizedRoot, 'entry-too-large.bin');
+    await writeFile(tooLargeEntry, '');
+    await truncate(tooLargeEntry, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1);
+    await assert.rejects(
+      () => buildFullProjectZip(oversizedRoot),
+      /Größenlimit/,
+      'ZIP creation must reject an oversized disk entry from stat metadata before reading it'
+    );
+    await rm(tooLargeEntry, { force: true });
+    for (let index = 0; index <= Math.ceil(MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES / MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES); index++) {
+      const target = path.join(oversizedRoot, `aggregate-${index}.bin`);
       await writeFile(target, '');
-      await truncate(target, size);
+      await truncate(target, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES);
     }
     await assert.rejects(
       () => buildFullProjectZip(oversizedRoot),
-      /Größenlimit|Gesamtlimit/,
-      'ZIP creation must reject oversized disk files from stat metadata before reading them'
+      /Gesamtlimit/,
+      'ZIP creation must reject aggregate disk size from stat metadata before reading any file'
     );
   } finally {
     await rm(oversizedRoot, { recursive: true, force: true });
   }
 
   assert.ok(MAX_ZIP_ARCHIVE_BYTES > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES);
+  const tooManyEntries = Buffer.from(archive.buffer);
+  const tooManyEocd = tooManyEntries.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  tooManyEntries.writeUInt16LE(10_001, tooManyEocd + 8);
+  tooManyEntries.writeUInt16LE(10_001, tooManyEocd + 10);
+  assert.ok(
+    verifyZipBuffer(tooManyEntries).result.errors.some((error) => error.includes('zu viele Dateien')),
+    'ZIP entry count must be capped before parsing individual records'
+  );
   const truncatedArchive = archive.buffer.subarray(0, archive.buffer.length - 1);
   assert.equal(verifyZipBuffer(truncatedArchive).result.valid, false, 'truncated EOCD must be rejected');
 
