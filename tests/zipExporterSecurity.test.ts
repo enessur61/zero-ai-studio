@@ -71,6 +71,13 @@ try {
   damagedPayload[firstEntry.dataOffset] ^= 0xff;
   assert.equal(verifyZipBuffer(damagedPayload).result.valid, false, 'payload corruption must fail decompression or CRC validation');
 
+  const incorrectChecksum = Buffer.from(archive.buffer);
+  const checksumFixture = findFirstEntry(incorrectChecksum);
+  const declaredCrc = incorrectChecksum.readUInt32LE(checksumFixture.central + 16);
+  incorrectChecksum.writeUInt32LE(declaredCrc ^ 1, checksumFixture.central + 16);
+  incorrectChecksum.writeUInt32LE(declaredCrc ^ 1, checksumFixture.localOffset + 14);
+  assert.equal(verifyZipBuffer(incorrectChecksum).result.valid, false, 'matching but incorrect local/central CRC values must fail actual content checksum validation');
+
   const mismatchedLocalHeader = Buffer.from(archive.buffer);
   const localMethod = mismatchedLocalHeader.readUInt16LE(firstEntry.localOffset + 8);
   mismatchedLocalHeader.writeUInt16LE(localMethod === 8 ? 0 : 8, firstEntry.localOffset + 8);
