@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildFullProjectZip, verifyZipBuffer } from '../server/zipExporter.ts';
+import {
+  buildFullProjectZip,
+  MAX_ZIP_ARCHIVE_BYTES,
+  MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES,
+  MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES,
+  verifyZipBuffer,
+} from '../server/zipExporter.ts';
+import { truncate } from 'node:fs/promises';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'zero-zip-security-'));
 try {
@@ -60,6 +67,55 @@ try {
     const extraLength = buffer.readUInt16LE(localOffset + 28);
     return { central, localOffset, dataOffset: localOffset + 30 + nameLength + extraLength };
   };
+  const oversizedEntry = Buffer.from(archive.buffer);
+  const oversizedEntryFixture = findFirstEntry(oversizedEntry);
+  const oversizedEntrySize = MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1;
+  oversizedEntry.writeUInt32LE(oversizedEntrySize, oversizedEntryFixture.central + 24);
+  oversizedEntry.writeUInt32LE(oversizedEntrySize, oversizedEntryFixture.localOffset + 22);
+  assert.ok(
+    verifyZipBuffer(oversizedEntry).result.errors.some((error) => error.includes('Größenlimit')),
+    'an entry exceeding the absolute expanded-size limit must be rejected before inflate'
+  );
+
+  const aggregateBomb = Buffer.from(archive.buffer);
+  const aggregateEocd = aggregateBomb.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  let aggregatePtr = aggregateBomb.readUInt32LE(aggregateEocd + 16);
+  const aggregateCount = aggregateBomb.readUInt16LE(aggregateEocd + 10);
+  const forgedPerEntrySize = Math.floor(MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES / aggregateCount) + 1;
+  for (let entry = 0; entry < aggregateCount; entry++) {
+    const localOffset = aggregateBomb.readUInt32LE(aggregatePtr + 42);
+    aggregateBomb.writeUInt32LE(forgedPerEntrySize, aggregatePtr + 24);
+    aggregateBomb.writeUInt32LE(forgedPerEntrySize, localOffset + 22);
+    aggregatePtr += 46 + aggregateBomb.readUInt16LE(aggregatePtr + 28) +
+      aggregateBomb.readUInt16LE(aggregatePtr + 30) + aggregateBomb.readUInt16LE(aggregatePtr + 32);
+  }
+  assert.ok(
+    verifyZipBuffer(aggregateBomb).result.errors.some((error) => error.includes('Gesamtlimit')),
+    'aggregate expanded size must be capped independently of each entry size'
+  );
+
+  const oversizedRoot = await mkdtemp(path.join(os.tmpdir(), 'zero-zip-limits-'));
+  try {
+    for (const [name, size] of [
+      ['entry-too-large.bin', MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1],
+      ...Array.from({ length: Math.ceil(MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES / MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) + 1 }, (_, index) =>
+        [`aggregate-${index}.bin`, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES] as [string, number]
+      ),
+    ] as Array<[string, number]>) {
+      const target = path.join(oversizedRoot, name);
+      await writeFile(target, '');
+      await truncate(target, size);
+    }
+    await assert.rejects(
+      () => buildFullProjectZip(oversizedRoot),
+      /Größenlimit|Gesamtlimit/,
+      'ZIP creation must reject oversized disk files from stat metadata before reading them'
+    );
+  } finally {
+    await rm(oversizedRoot, { recursive: true, force: true });
+  }
+
+  assert.ok(MAX_ZIP_ARCHIVE_BYTES > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES);
   const truncatedArchive = archive.buffer.subarray(0, archive.buffer.length - 1);
   assert.equal(verifyZipBuffer(truncatedArchive).result.valid, false, 'truncated EOCD must be rejected');
 
