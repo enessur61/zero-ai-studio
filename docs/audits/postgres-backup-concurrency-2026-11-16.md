@@ -121,3 +121,25 @@ Measure production JSONB row size and backup growth before choosing thresholds. 
 ## Validation boundary
 
 This is a source-code audit, not a live production database inspection. No production row sizes, Render instance count, backup contents, or restore drill were queried. Findings describe code paths and risks visible in the audited revision; they do not assert that data has already been lost.
+
+
+## PR #84 implementation follow-up
+
+**Implementation branch:** `feat/postgres-revision-control-concurrency`  
+**Scope:** PostgreSQL state writes, JSON/ZIP backup publication, and restore conflict handling.
+
+Implemented in the follow-up draft:
+- Every primary-state write acquires the same PostgreSQL transaction-scoped advisory lock before checking/advancing the revision. The revision compare remains mandatory; the lock is not a substitute for the CAS check.
+- Restore creates its safety backup first, then captures the current revision and uses that revision for the full-state replacement. If a normal write commits after the safety snapshot, the restore is rejected as a revision conflict rather than overwriting that write.
+- JSON and ZIP backup bytes are inserted in the same PostgreSQL transaction as the state payload/revision containing their metadata. ZIP version/changelog changes are built on a detached snapshot and are not published before archive verification.
+- Filesystem backup publication uses compensating cleanup if the state save fails.
+- Integration tests cover two independent pools racing on the same revision, stale restore rejection after a normal write, atomic state-plus-backup publication, and rollback/no orphan blob after an injected backup metadata constraint failure.
+
+**Remaining limitations / follow-up risks**
+- The advisory lock serializes each primary-state transaction. The complete restore workflow is not held inside one long-lived transaction while archive verification and filesystem work execute; instead the final revision fence aborts restore if the live state changed after the safety snapshot. This favors safety over automatic retry.
+- Automatic ZIP backup throttling is still a check-then-act workflow. The state lock prevents simultaneous state commits from corrupting the revision, but a database-level uniqueness/lease rule is still needed to guarantee one auto-backup per 15-minute window across multiple processes.
+- Pruning backup blobs occurs after metadata publication. A cleanup failure can leave orphaned bytes; a reconciliation/diagnostic task is still needed.
+- Browser IndexedDB scene clips remain outside server ZIP backups.
+- Integration tests run only against an explicitly local PostgreSQL endpoint and do not inspect production data.
+
+The integration test is wired as a dedicated CI step. Its assertions are not considered passed until the corresponding GitHub Actions job completes successfully on the latest PR head SHA.
