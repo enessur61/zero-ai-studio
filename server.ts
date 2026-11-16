@@ -217,14 +217,20 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       ai.models.generateContent({
         model: modelId,
         contents: 'Antworte ausschließlich mit: ZERO_CONNECTION_OK',
-        config: { maxOutputTokens: 16, temperature: 0 },
+        config: { maxOutputTokens: 256, temperature: 0 },
       })
     );
     const reply = (response.text ?? '').trim();
     // A successful, non-empty model response confirms connectivity. Do not fail
     // the connection check just because the model adds punctuation or extra text.
     if (!reply) {
-      throw new Error('Google hat die Anfrage angenommen, aber keine Textantwort zurückgegeben.');
+      const candidate = response.candidates?.[0];
+      const finishReason = candidate?.finishReason ?? 'UNBEKANNT';
+      const blockReason = response.promptFeedback?.blockReason ?? 'KEINER';
+      const thoughtTokens = response.usageMetadata?.thoughtsTokenCount ?? 'unbekannt';
+      throw new Error(
+        `Gemini lieferte keinen Text (finishReason: ${finishReason}; blockReason: ${blockReason}; thinkingTokens: ${thoughtTokens}).`
+      );
     }
 
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
