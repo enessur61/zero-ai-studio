@@ -145,6 +145,34 @@ jobs:
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
           }
+          if (!durationProject.snapshots[0].state ||
+              durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
+            throw new Error('New projects must store a complete, restorable initial snapshot');
+          }
+          const editedProjectResponse = await authFetch('/api/projects/' + durationProject.id, {
+            method: 'PUT',
+            body: JSON.stringify({
+              title: 'CI edited project',
+              scenes: durationProject.scenes.slice(0, 1),
+              snapshotNote: 'CI snapshot restore test'
+            })
+          });
+          if (!editedProjectResponse.ok) throw new Error('Project edit for snapshot test failed');
+          const editedProject = (await editedProjectResponse.json()).project;
+          const snapshotToRestore = editedProject.snapshots.find((snapshot) => snapshot.state);
+          if (!snapshotToRestore) throw new Error('Project edit did not create a restorable snapshot');
+          const restoreResponse = await authFetch(
+            '/api/projects/' + durationProject.id + '/snapshots/' + snapshotToRestore.id + '/restore',
+            { method: 'POST' }
+          );
+          if (!restoreResponse.ok) throw new Error('Project snapshot restore endpoint failed: ' + await restoreResponse.text());
+          const restoredProject = (await restoreResponse.json()).project;
+          if (restoredProject.title !== durationProject.title ||
+              restoredProject.scenes.length !== durationProject.scenes.length ||
+              restoredProject.version <= editedProject.version ||
+              !restoredProject.snapshots[0].state) {
+            throw new Error('Project snapshot restore did not restore content and preserve a safety snapshot');
+          }
           const removedLegacyModel = await authFetch('/api/models/gemini-3.7-flash/test', { method: 'POST' });
           if (removedLegacyModel.status !== 404) {
             throw new Error('Deprecated Gemini alias is still exposed by the API');
