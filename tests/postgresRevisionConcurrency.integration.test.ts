@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
+  writePersistentStateWithBackupFile,
 } from '../server/persistence.ts';
 
 const connectionString = process.env.DATABASE_URL;
@@ -68,7 +69,72 @@ try {
   const finalState = await storeA.read();
   assert.deepEqual(finalState, { payload: { value: 'after-conflict' }, revision: 3 });
 
-  console.log('PostgreSQL revision concurrency tests passed using two independent pools.');
+  // State metadata and the backup bytes must commit in the same PostgreSQL transaction.
+  const backupBytes = Buffer.from('ZERO-BACKUP-CONSISTENCY-TEST');
+  const backupRevision = await writePersistentStateWithBackupFile(
+    { value: 'backup-published', backupId: 'backup-atomic-success' },
+    finalState.revision,
+    {
+      id: 'backup-atomic-success',
+      filename: 'atomic-success.zip',
+      contentType: 'application/zip',
+      payload: backupBytes,
+    }
+  );
+  assert.equal(backupRevision, 4);
+  const published = await storeA.read();
+  assert.deepEqual(published, {
+    payload: { value: 'backup-published', backupId: 'backup-atomic-success' },
+    revision: 4,
+  });
+  const storedBytes = await poolB.query<{ payload: Buffer }>(
+    'SELECT payload FROM zero_backup_files WHERE id = $1',
+    ['backup-atomic-success']
+  );
+  assert.deepEqual(storedBytes.rows[0]?.payload, backupBytes);
+
+  // A failed backup-blob insert must roll back the state/revision update too.
+  await assert.rejects(
+    () => writePersistentStateWithBackupFile(
+      { value: 'must-rollback', backupId: 'backup-atomic-failure' },
+      backupRevision,
+      {
+        id: 'backup-atomic-failure',
+        filename: 'atomic-failure.zip',
+        contentType: null as unknown as string,
+        payload: Buffer.from('invalid backup metadata'),
+      }
+    ),
+    'invalid backup metadata must abort the shared transaction'
+  );
+  const afterFailedBackup = await storeA.read();
+  assert.deepEqual(afterFailedBackup, published, 'failed backup publication must not advance state');
+  const failedBlob = await poolB.query(
+    'SELECT id FROM zero_backup_files WHERE id = $1',
+    ['backup-atomic-failure']
+  );
+  assert.equal(failedBlob.rowCount, 0, 'failed backup publication must not leave orphaned bytes');
+
+  // Restore is a full-state replacement: any intervening normal write must fence it off.
+  const restoreSnapshot = await storeA.read();
+  assert.ok(restoreSnapshot);
+  const concurrentWriteRevision = await storeB.write(
+    { value: 'newer-normal-write' },
+    restoreSnapshot.revision
+  );
+  assert.equal(concurrentWriteRevision, 5);
+  await assert.rejects(
+    () => storeA.write({ value: 'stale-restored-state' }, restoreSnapshot.revision),
+    (error: unknown) => error instanceof PersistentStateConflictError,
+    'a restore based on a stale revision must abort instead of overwriting a newer write'
+  );
+  const afterRestoreRace = await storeA.read();
+  assert.deepEqual(afterRestoreRace, {
+    payload: { value: 'newer-normal-write' },
+    revision: 5,
+  });
+
+  console.log('PostgreSQL revision, restore-race, and atomic-backup tests passed using two independent pools.');
 } finally {
   await Promise.all([poolA.end(), poolB.end()]);
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
