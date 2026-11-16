@@ -182,10 +182,24 @@ assert.equal(
 
 const localVideo = makeMediaModel('zero-timeline-video-60s', 'Videogenerierung');
 localVideo.executionMode = 'LOCAL ON-DEVICE';
+localVideo.status = 'BROWSER TEST ERFORDERLICH';
+localVideo.enabled = true;
+localVideo.hasRealAdapter = false;
+localVideo.testPassed = false;
 assert.equal(chooseZeroMediaModel([localVideo], budget, 'video', [], now), null);
 assert.equal(
   chooseZeroMediaModel([localVideo], budget, 'video', ['zero-timeline-video-60s'], now)?.modelId,
   'zero-timeline-video-60s',
+);
+const disabledLocalVideo = { ...localVideo, enabled: false };
+assert.equal(
+  chooseZeroMediaModel([disabledLocalVideo], budget, 'video', ['zero-timeline-video-60s'], now),
+  null,
+);
+const paidLocalVideo = { ...localVideo, requiresPaidKey: true };
+assert.equal(
+  chooseZeroMediaModel([paidLocalVideo], budget, 'video', ['zero-timeline-video-60s'], now),
+  null,
 );
 
 const unverifiedImage = makeMediaModel('flux-1-schnell-free', 'Bildgenerierung');
