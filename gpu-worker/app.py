@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from job_store import PersistentJobStore
+
 import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
@@ -22,8 +24,24 @@ MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="ZERO Wan GPU Worker", version="0.1.0")
-_jobs: dict[str, dict[str, Any]] = {}
+
+def has_persistent_mount(path: Path) -> bool:
+    current = path
+    while current != current.parent:
+        if current != Path('/') and current.is_mount():
+            return True
+        current = current.parent
+    return False
+
+
+PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
+if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true" and not PERSISTENT_MOUNT_CONFIGURED:
+    raise RuntimeError("WAN_REQUIRE_PERSISTENT_STORAGE=true but WAN_OUTPUT_DIR is not on a mounted persistent volume")
+
+_JOB_STORE = PersistentJobStore(OUTPUT_DIR)
+
+app = FastAPI(title="ZERO Wan GPU Worker", version="0.2.0")
+_jobs: dict[str, dict[str, Any]] = _JOB_STORE.load_all()
 _jobs_lock = Lock()
 _generation_lock = Lock()
 _pipeline: WanPipeline | None = None
@@ -60,12 +78,18 @@ def get_pipeline() -> WanPipeline:
     return _pipeline
 
 
+def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
+    with _jobs_lock:
+        job = _jobs[job_id]
+        job.update(changes)
+        _JOB_STORE.save(dict(job))
+        return dict(job)
+
+
 def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None) -> None:
-    job = _jobs[job_id]
     output_path = OUTPUT_DIR / f"{job_id}.mp4"
     try:
-        job["status"] = "running"
-        job["started_at"] = datetime.now(timezone.utc).isoformat()
+        update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
         # Wan T2V-1.3B generates one short 480p shot (81 frames / about 5s).
         width, height = (832, 480) if aspect_ratio == "16:9" else (480, 832)
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
@@ -85,19 +109,21 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
-        job.update({
-            "status": "succeeded",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "filename": output_path.name,
-            "size_bytes": output_path.stat().st_size,
-            "duration_sec": 5,
-        })
+        update_job(
+            job_id,
+            status="succeeded",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            filename=output_path.name,
+            size_bytes=output_path.stat().st_size,
+            duration_sec=5,
+        )
     except Exception as exc:  # Report failure; never fall back to a paid API.
-        job.update({
-            "status": "failed",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "error": str(exc)[:500],
-        })
+        update_job(
+            job_id,
+            status="failed",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error=str(exc)[:500],
+        )
 
 
 @app.get("/health")
@@ -111,6 +137,8 @@ def health() -> dict[str, Any]:
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
+        "job_store": "sqlite",
+        "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
     }
 
 
@@ -129,9 +157,9 @@ def create_job(
         # Keep only a small in-memory history; do not let an unauthenticated
         # caller or long-running host grow the job registry without bound.
         if len(_jobs) >= 50:
-            completed = [key for key, value in _jobs.items() if value["status"] in {"succeeded", "failed"}]
-            for old_id in completed[: max(0, len(_jobs) - 40)]:
-                old = _jobs.pop(old_id, {})
+            for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
+                old_id = str(old["id"])
+                _jobs.pop(old_id, None)
                 old_file = OUTPUT_DIR / str(old.get("filename", ""))
                 if old_file.parent == OUTPUT_DIR and old_file.is_file():
                     old_file.unlink(missing_ok=True)
@@ -144,6 +172,7 @@ def create_job(
             "duration_sec": 5,
             "engine": "Wan 2.1",
         }
+        _JOB_STORE.save(dict(_jobs[job_id]))
     background_tasks.add_task(
         asyncio.to_thread,
         run_generation,
@@ -162,10 +191,11 @@ def get_job(job_id: str, authorization: str | None = Header(default=None)) -> di
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _jobs.get(job_id)
+    with _jobs_lock:
+        job = dict(_jobs.get(job_id, {}))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return dict(job)
+    return job
 
 
 @app.get("/jobs/{job_id}/video")
@@ -175,7 +205,8 @@ def get_video(job_id: str, authorization: str | None = Header(default=None)) -> 
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _jobs.get(job_id)
+    with _jobs_lock:
+        job = dict(_jobs.get(job_id, {}))
     if not job or job.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="Video is not ready")
     video_path = OUTPUT_DIR / str(job.get("filename", ""))
