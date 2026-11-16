@@ -11,6 +11,7 @@ assert.equal(isSafeProjectAssetUrl('data:text/plain;base64,SGVsbG8=', 'script'),
 assert.equal(isSafeProjectAssetUrl('javascript:alert(1)', 'image'), false);
 assert.equal(isSafeProjectAssetUrl('data:text/html;base64,PHNjcmlwdD4=', 'image'), false);
 assert.equal(isSafeProjectAssetUrl('data:image/svg+xml;base64,PHN2Zz4=', 'image'), false);
+assert.equal(isSafeProjectAssetUrl('data:image/png,not-base64', 'image'), false);
 assert.equal(isSafeProjectAssetUrl('data:image/png;base64,AAAA', 'audio'), false);
 assert.equal(isSafeProjectAssetUrl('https://', 'image'), false);
 assert.equal(isSafeProjectAssetUrl('blob:https://example.com/id', 'video'), false);
