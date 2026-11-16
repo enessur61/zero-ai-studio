@@ -25,10 +25,50 @@ function clipKey(projectId: string, sceneId: string): string {
   return `${projectId}:${sceneId}`;
 }
 
-export async function saveSceneVideoClip(projectId: string, sceneId: string, blob: Blob): Promise<void> {
+export interface SceneVideoStorageStatus {
+  persistent: boolean | null;
+  usageBytes: number | null;
+  quotaBytes: number | null;
+}
+
+/** Best-effort request to protect local media from automatic browser eviction. */
+export async function requestSceneVideoStoragePersistence(
+  storage?: StorageManager
+): Promise<SceneVideoStorageStatus> {
+  const manager = storage ?? (typeof navigator !== 'undefined' ? navigator.storage : undefined);
+  if (!manager) return { persistent: null, usageBytes: null, quotaBytes: null };
+
+  let persistent: boolean | null = null;
+  try {
+    persistent = await manager.persisted();
+    if (!persistent) persistent = await manager.persist();
+  } catch {
+    // A denied/unsupported persistence request must not block a local save.
+    persistent = null;
+  }
+
+  let usageBytes: number | null = null;
+  let quotaBytes: number | null = null;
+  try {
+    const estimate = await manager.estimate();
+    usageBytes = typeof estimate.usage === 'number' ? estimate.usage : null;
+    quotaBytes = typeof estimate.quota === 'number' ? estimate.quota : null;
+  } catch {
+    // Estimates are advisory only.
+  }
+
+  return { persistent, usageBytes, quotaBytes };
+}
+
+export async function saveSceneVideoClip(
+  projectId: string,
+  sceneId: string,
+  blob: Blob
+): Promise<SceneVideoStorageStatus> {
   if (!projectId || !sceneId || blob.size < 1024 || !blob.type.startsWith('video/')) {
     throw new Error('Der Szenenclip ist ungültig und wurde nicht gespeichert.');
   }
+  const storageStatus = await requestSceneVideoStoragePersistence();
   const db = await openMediaDb();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -41,6 +81,7 @@ export async function saveSceneVideoClip(projectId: string, sceneId: string, blo
   } finally {
     db.close();
   }
+  return storageStatus;
 }
 
 export async function loadSceneVideoClip(projectId: string, sceneId: string): Promise<Blob | null> {
