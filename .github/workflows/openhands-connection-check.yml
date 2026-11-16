@@ -1,6 +1,9 @@
 name: OpenHands connection check
 
 on:
+  push:
+    branches:
+      - security/phase-1-hardening
   workflow_dispatch:
 
 permissions:
