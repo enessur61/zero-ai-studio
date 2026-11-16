@@ -154,11 +154,29 @@ jobs:
             body: JSON.stringify({
               title: 'CI edited project',
               scenes: durationProject.scenes.slice(0, 1),
-              snapshotNote: 'CI snapshot restore test'
+              snapshotNote: 'CI snapshot restore test',
+              id: 'attacker-controlled-id',
+              createdAt: '2000-01-01T00:00:00.000Z',
+              updatedAt: '2000-01-01T00:00:00.000Z',
+              version: 999999,
+              targetDurationSec: 999999,
+              snapshots: [],
+              assets: [{ id: 'forged-asset', type: 'image', title: 'Injected', url: 'javascript:alert(1)', modelId: 'attacker', createdAt: '2000-01-01T00:00:00.000Z' }],
+              status: 'HACKED'
             })
           });
           if (!editedProjectResponse.ok) throw new Error('Project edit for snapshot test failed');
           const editedProject = (await editedProjectResponse.json()).project;
+          if (editedProject.id !== durationProject.id ||
+              editedProject.createdAt !== durationProject.createdAt ||
+              editedProject.version !== durationProject.version + 1 ||
+              editedProject.targetDurationSec > 60 ||
+              editedProject.status !== durationProject.status ||
+              editedProject.assets.length !== durationProject.assets.length ||
+              editedProject.snapshots.length === 0 ||
+              editedProject.updatedAt === '2000-01-01T00:00:00.000Z') {
+            throw new Error('Project update accepted client-controlled server fields (mass-assignment regression)');
+          }
           const snapshotToRestore = editedProject.snapshots.find((snapshot) => snapshot.state);
           if (!snapshotToRestore) throw new Error('Project edit did not create a restorable snapshot');
           const restoreResponse = await authFetch(
