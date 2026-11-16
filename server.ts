@@ -1824,12 +1824,26 @@ app.put('/api/projects/:id', async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
   const prev = db.projects[idx];
-  const nextScenes = Array.isArray(req.body?.scenes)
-    ? clampScenesToMax60Seconds(req.body.scenes)
+
+  // Only explicitly supported content fields may be changed through this route.
+  // Identity, timestamps, versions, snapshots and assets are server-managed;
+  // assets must continue to use the dedicated validated /assets endpoint.
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown>
+    : {};
+  const nextScenes = Array.isArray(body.scenes)
+    ? clampScenesToMax60Seconds(body.scenes)
     : prev.scenes;
   const nextTotal = nextScenes.reduce((s, sc) => s + sc.durationSec, 0);
   const nextVersion = prev.version + 1;
   const now = new Date().toISOString();
+  const allowedStatuses: StudioProject['status'][] = ['Konzept', 'In Produktion', 'Schnittbereit', 'Exportiert'];
+  const requestedStatus = typeof body.status === 'string' && allowedStatuses.includes(body.status as StudioProject['status'])
+    ? body.status as StudioProject['status']
+    : prev.status;
+  const requestedCharacterIds = Array.isArray(body.characterIds)
+    ? body.characterIds.filter((id): id is string => typeof id === 'string').slice(0, 100)
+    : prev.characterIds;
 
   const previousState = {
     title: prev.title,
@@ -1846,8 +1860,14 @@ app.put('/api/projects/:id', async (req, res) => {
   };
   const updated: StudioProject = {
     ...prev,
-    ...req.body,
-    id: prev.id,
+    title: typeof body.title === 'string' ? body.title.slice(0, 200) : prev.title,
+    logline: typeof body.logline === 'string' ? body.logline.slice(0, 2000) : prev.logline,
+    genre: typeof body.genre === 'string' ? body.genre.slice(0, 120) : prev.genre,
+    concept: typeof body.concept === 'string' ? body.concept.slice(0, 10000) : prev.concept,
+    story: typeof body.story === 'string' ? body.story.slice(0, 20000) : prev.story,
+    screenplay: typeof body.screenplay === 'string' ? body.screenplay.slice(0, 30000) : prev.screenplay,
+    characterIds: requestedCharacterIds,
+    status: requestedStatus,
     scenes: nextScenes,
     targetDurationSec: Math.min(60, nextTotal || prev.targetDurationSec),
     version: nextVersion,
@@ -1856,7 +1876,9 @@ app.put('/api/projects/:id', async (req, res) => {
       {
         id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         version: prev.version,
-        note: String(req.body?.snapshotNote || `Sicherung vor Version ${nextVersion}`),
+        note: typeof body.snapshotNote === 'string' && body.snapshotNote.trim()
+          ? body.snapshotNote.trim().slice(0, 200)
+          : `Sicherung vor Version ${nextVersion}`,
         createdAt: now,
         sceneCount: prev.scenes.length,
         totalDurationSec: Math.min(60, prev.targetDurationSec),
