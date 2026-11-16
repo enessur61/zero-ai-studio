@@ -89,8 +89,8 @@ function baseBudget(): BudgetGuardState {
   );
   assert.equal(
     isExhaustedWithinCurrentDay({ requestsToday: 5, dailySoftLimit: 10, exhausted: true, lastResetDate: '2020-01-01' }),
-    false,
-    'a proven earlier reset date means the daily window rolled over',
+    true,
+    'an earlier local date is not proof of a provider-side quota reset',
   );
   assert.equal(
     isExhaustedWithinCurrentDay({ requestsToday: 10, dailySoftLimit: 10, exhausted: false, lastResetDate: today }),
@@ -123,9 +123,31 @@ function baseBudget(): BudgetGuardState {
     exhausted: true,
     lastResetDate: '2020-01-01',
   };
-  assert.doesNotThrow(() => assertZeroBudgetModelAllowed(MODEL, 'MODEL_TEST', rollover, () => {}));
-  assert.equal(rollover.freeQuotaUsage[MODEL].exhausted, false);
-  assert.equal(rollover.freeQuotaUsage[MODEL].lastResetDate, today);
+  const rolloverAudits: Array<{ decision: string; reason: string }> = [];
+  assert.throws(
+    () => assertZeroBudgetModelAllowed(MODEL, 'MODEL_TEST', rollover, (event) => rolloverAudits.push(event)),
+    /Reset.*nicht verifiziert/,
+    'a local UTC date rollover must never clear a provider quota lock',
+  );
+  assert.equal(rollover.freeQuotaUsage[MODEL].exhausted, true);
+  assert.equal(rollover.freeQuotaUsage[MODEL].requestsToday, 10);
+  assert.equal(rollover.freeQuotaUsage[MODEL].lastResetDate, '2020-01-01');
+  assert.equal(rolloverAudits.at(-1)?.decision, 'BLOCKIERT_BUDGET_GUARD');
+
+  const staleButNotExhausted = baseBudget();
+  staleButNotExhausted.freeQuotaUsage[MODEL] = {
+    requestsToday: 2,
+    dailySoftLimit: 10,
+    exhausted: false,
+    lastResetDate: '2020-01-01',
+  };
+  assert.throws(
+    () => assertZeroBudgetModelAllowed(MODEL, 'MODEL_TEST', staleButNotExhausted, () => {}),
+    /Reset.*nicht verifiziert/,
+    'stale quota metadata must fail closed even when the local counter is below its limit',
+  );
+  assert.equal(staleButNotExhausted.freeQuotaUsage[MODEL].requestsToday, 2);
+  assert.equal(staleButNotExhausted.freeQuotaUsage[MODEL].exhausted, false);
 }
 
 // ---------------------------------------------------------------------------
