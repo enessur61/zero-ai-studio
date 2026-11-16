@@ -93,10 +93,18 @@ function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: str
   if (!quota || typeof quota.lastResetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
     return false;
   }
-  if (quota.lastResetDate !== today) return true;
+  const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
+  if (!Number.isFinite(resetDate.getTime()) || resetDate.toISOString().slice(0, 10) !== quota.lastResetDate) {
+    return false;
+  }
+  // A future reset date is corrupt metadata, not evidence of a fresh quota.
+  if (quota.lastResetDate > today) return false;
+  if (quota.lastResetDate < today) return true;
   return quota.exhausted !== true &&
-    Number.isFinite(quota.requestsToday) &&
-    Number.isFinite(quota.dailySoftLimit) &&
+    Number.isSafeInteger(quota.requestsToday) &&
+    quota.requestsToday >= 0 &&
+    Number.isSafeInteger(quota.dailySoftLimit) &&
+    quota.dailySoftLimit > 0 &&
     quota.requestsToday < quota.dailySoftLimit;
 }
 
