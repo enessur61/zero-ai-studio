@@ -31,6 +31,11 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
     db: ZeroDatabase;
   }> {
     const { record, buffer: zipBuf } = await dependencies.getZipBackupFilePath(zipId);
+    if (!Number.isSafeInteger(record.sizeBytes) || record.sizeBytes !== zipBuf.length) {
+      throw new Error(
+        `Wiederherstellung abgebrochen — ZIP beschädigt oder unvollständig: gespeicherte Größe ${record.sizeBytes} stimmt nicht mit der Blob-Größe ${zipBuf.length} überein.`
+      );
+    }
     const verification = dependencies.verifyZipBuffer(zipBuf);
 
     if (!verification.result.valid) {
