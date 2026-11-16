@@ -284,3 +284,18 @@ The reconciliation endpoint is intentionally read-only; no automatic orphan dele
 - CI #762's expected PostgreSQL `NOT NULL` violations and injected `injected ZIP publication failure` are negative-test fixtures. Non-blocking warnings remain: Go cache cannot find `go.sum`; GitHub Actions reports Node.js 20 action deprecation. No actionable failure remained on CI #762.
 
 **Coverage boundary:** The restart test uses fresh PostgreSQL pools and newly constructed service instances against an isolated local schema; it is a deterministic restart simulation, not a restart/restore drill against a deployed production database. No production database, deployed service, or production backup blob was accessed or modified. PR #84 remains open and Draft; no merge or deployment was performed.
+
+
+## CI #763 — persisted ZIP size guard and final archive-integrity verification
+
+**Validated documentation head:** `b3ec3402b933c781e5fcd443dbf153a5c8120f36`  
+**Workflow run:** [CI #763](https://github.com/enessur61/zero-ai-studio/actions/runs/43978687981) — run `43978687981`, job `133689200325` (`verify`)  
+**Result:** `completed / success`; all 19 job steps passed. Complete job log retrieved and reviewed: 1,021 lines / 94,374 characters.
+
+- CI #762 validated the implementation commit `74d04b1dc720a0de15e2ff91e8503e028dad30e2`, including the persisted ZIP `sizeBytes` comparison in the restore orchestrator.
+- CI #763 validates the audit documentation commit and the exact PR head. The standalone PostgreSQL integration step explicitly logged: `ZIP corruption, truncated PostgreSQL blob rejection, and fresh-pool restart restore tests passed.`
+- All phases passed: secret scan, dependency installation, Gemini free-only billing guard, lint, npm tests, PostgreSQL revision/concurrency integration, production build, authenticated production smoke test, post-job hooks, and PostgreSQL container cleanup.
+- The PostgreSQL `NOT NULL` errors and `injected ZIP publication failure` in the server log are intentional negative-test fixtures. Non-blocking warnings: Go cache cannot find `go.sum`; GitHub Actions warns that the selected actions still target deprecated Node.js 20. No actionable CI failure remained.
+- Restart coverage remains an isolated local PostgreSQL simulation with fresh pools and newly constructed service instances; it is not a deployed production database restart drill. No production data was accessed or modified.
+
+**Scope:** PR #84 remains open and Draft. No merge and no deployment.
