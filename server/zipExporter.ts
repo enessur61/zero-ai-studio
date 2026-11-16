@@ -244,7 +244,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   const seenNames = new Set<string>();
   for (let i = 0; i < totalEntries; i++) {
     if (ptr + 46 > centralEnd || zipBuf.readUInt32LE(ptr) !== 0x02014b50) {
-      errors.push(\`Ungültiger oder abgeschnittener Central-Directory-Eintrag bei Index \${i}.\`);
+      errors.push(`Ungültiger oder abgeschnittener Central-Directory-Eintrag bei Index ${i}.`);
       break;
     }
 
@@ -259,7 +259,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
     const localHeaderOffset = zipBuf.readUInt32LE(ptr + 42);
     const recordEnd = ptr + 46 + nameLen + extraLen + commentLen;
     if (recordEnd > centralEnd) {
-      errors.push(\`Central-Directory-Metadaten für Eintrag \${i} sind abgeschnitten.\`);
+      errors.push(`Central-Directory-Metadaten für Eintrag ${i} sind abgeschnitten.`);
       break;
     }
 
@@ -269,33 +269,33 @@ export function verifyZipBuffer(zipBuf: Buffer): {
 
     if (!name || name.includes('\\') || name.startsWith('/') || /^[a-zA-Z]:/.test(name) ||
         name.split('/').some((segment) => segment === '..' || segment === '')) {
-      errors.push(\`Unsicherer oder ungültiger ZIP-Dateipfad "\${name}".\`);
+      errors.push(`Unsicherer oder ungültiger ZIP-Dateipfad "${name}".`);
       continue;
     }
     if (seenNames.has(name)) {
-      errors.push(\`Doppelter ZIP-Dateieintrag "\${name}".\`);
+      errors.push(`Doppelter ZIP-Dateieintrag "${name}".`);
       continue;
     }
     seenNames.add(name);
 
     // This exporter writes UTF-8 names, no encryption, and no data descriptors.
     if (flags !== 0x0800) {
-      errors.push(\`Nicht unterstützte ZIP-Flags für "\${name}".\`);
+      errors.push(`Nicht unterstützte ZIP-Flags für "${name}".`);
       continue;
     }
     if (compressionMethod !== 0 && compressionMethod !== 8) {
-      errors.push(\`Nicht unterstützte Kompressionsmethode für "\${name}".\`);
+      errors.push(`Nicht unterstützte Kompressionsmethode für "${name}".`);
       continue;
     }
     if (compressionMethod === 0 && compressedSize !== uncompressedSize) {
-      errors.push(\`Gespeicherte und entpackte Größe stimmen für "\${name}" nicht überein.\`);
+      errors.push(`Gespeicherte und entpackte Größe stimmen für "${name}" nicht überein.`);
       continue;
     }
     if (
       localHeaderOffset + 30 > centralOffset ||
       zipBuf.readUInt32LE(localHeaderOffset) !== 0x04034b50
     ) {
-      errors.push(\`Lokaler Header ungültig für "\${name}".\`);
+      errors.push(`Lokaler Header ungültig für "${name}".`);
       continue;
     }
 
@@ -322,7 +322,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
       dataEnd < dataStart ||
       !zipBuf.subarray(localNameStart, localNameStart + localNameLen).equals(nameBytes)
     ) {
-      errors.push(\`Lokaler Header und Central Directory widersprechen sich für "\${name}".\`);
+      errors.push(`Lokaler Header und Central Directory widersprechen sich für "${name}".`);
       continue;
     }
 
@@ -332,18 +332,18 @@ export function verifyZipBuffer(zipBuf: Buffer): {
         ? compressedSlice
         : zlib.inflateRawSync(compressedSlice, { maxOutputLength: Math.max(1, uncompressedSize) });
       if (rawData.length !== uncompressedSize) {
-        errors.push(\`Entpackte Dateigröße stimmt für "\${name}" nicht mit dem Archiv überein.\`);
+        errors.push(`Entpackte Dateigröße stimmt für "${name}" nicht mit dem Archiv überein.`);
         continue;
       }
       if (crc32(rawData) !== expectedCrc) {
-        errors.push(\`CRC32-Prüfsummenfehler bei "\${name}".\`);
+        errors.push(`CRC32-Prüfsummenfehler bei "${name}".`);
         continue;
       }
       files.push(name);
       extractedFiles.set(name, rawData);
     } catch (err) {
       errors.push(
-        \`Dekomprimierungsfehler bei "\${name}": \${err instanceof Error ? err.message : String(err)}\`
+        `Dekomprimierungsfehler bei "${name}": ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
@@ -355,7 +355,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   const missingCoreFiles = requiredCore.filter((required) => !extractedFiles.has(required));
   for (const file of files) {
     if (isSensitiveFile(file)) {
-      errors.push(\`Sicherheitsverstoß: vertrauliche Datei "\${file}" im Backup gefunden.\`);
+      errors.push(`Sicherheitsverstoß: vertrauliche Datei "${file}" im Backup gefunden.`);
     }
   }
 
