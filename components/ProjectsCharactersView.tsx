@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Download, FolderPlus, Loader2, Search, Trash2, UserPlus } from 'lucide-react';
+import { Download, FolderPlus, Loader2, RotateCcw, Search, Trash2, UserPlus } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
 
@@ -8,6 +8,7 @@ interface ProjectsCharactersViewProps {
   characters: CharacterProfile[];
   onProjectCreated: (p: StudioProject) => void;
   onProjectDeleted: (id: string) => void;
+  onProjectUpdated: (p: StudioProject) => void;
   onCharacterCreated: (c: CharacterProfile) => void;
   onOpenDirector: () => void;
 }
@@ -17,11 +18,14 @@ export function ProjectsCharactersView({
   characters,
   onProjectCreated,
   onProjectDeleted,
+  onProjectUpdated,
   onCharacterCreated,
   onOpenDirector,
 }: ProjectsCharactersViewProps) {
   const [tab, setTab] = useState<'projects' | 'characters'>('projects');
   const [deletingProjId, setDeletingProjId] = useState<string | null>(null);
+  const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [projectSearch, setProjectSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState<'Alle' | 'Aktiv' | 'Entwurf' | 'Abgeschlossen'>('Alle');
   const filteredProjects = useMemo(() => projects.filter((p) => {
@@ -248,6 +252,50 @@ export function ProjectsCharactersView({
                   </div>
                 </div>
                 <p className="text-xs text-slate-300 leading-relaxed">{p.logline}</p>
+                {p.snapshots && p.snapshots.length > 0 && (
+                  <div className="pt-3 border-t border-white/[0.06] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-slate-400">Versionsverlauf ({p.snapshots.length})</p>
+                      <span className="text-[10px] text-slate-500">Vollständige Sicherungen sind wiederherstellbar</span>
+                    </div>
+                    {p.snapshots.slice(0, 5).map((snapshot) => (
+                      <div key={snapshot.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#090B10] border border-white/[0.06] px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-xs text-slate-200">Version {snapshot.version} · {snapshot.sceneCount} Szenen · {snapshot.totalDurationSec}s</p>
+                          <p className="text-[10px] text-slate-500 truncate">{snapshot.note} · {new Date(snapshot.createdAt).toLocaleString('de-DE')}</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!snapshot.state || restoringSnapshotId === snapshot.id}
+                          onClick={async () => {
+                            if (!snapshot.state || restoringSnapshotId) return;
+                            const confirmed = window.confirm(`Projekt "${p.title}" wirklich auf Version ${snapshot.version} zurücksetzen? Der aktuelle Stand wird vorher als neue Sicherung gespeichert.`);
+                            if (!confirmed) return;
+                            setRestoringSnapshotId(snapshot.id);
+                            setSnapshotError(null);
+                            try {
+                              const result = await apiRequest<{ project: StudioProject }>(
+                                `/api/projects/${p.id}/snapshots/${snapshot.id}/restore`,
+                                { method: 'POST' }
+                              );
+                              onProjectUpdated(result.project);
+                            } catch (error) {
+                              setSnapshotError(error instanceof Error ? error.message : 'Version konnte nicht wiederhergestellt werden.');
+                            } finally {
+                              setRestoringSnapshotId(null);
+                            }
+                          }}
+                          className="min-h-[34px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] disabled:opacity-40 disabled:cursor-not-allowed text-[11px] text-white inline-flex items-center gap-1.5"
+                          title={snapshot.state ? 'Diese Projektversion wiederherstellen' : 'Nur Metadaten vorhanden; diese alte Version ist nicht wiederherstellbar'}
+                        >
+                          {restoringSnapshotId === snapshot.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                          {snapshot.state ? 'Wiederherstellen' : 'Nur Info'}
+                        </button>
+                      </div>
+                    ))}
+                    {snapshotError && <p role="alert" className="text-xs text-rose-300">{snapshotError}</p>}
+                  </div>
+                )}
                 {p.assets && p.assets.length > 0 && (
                   <div className="pt-2 border-t border-white/[0.06] space-y-1.5">
                     <p className="text-[11px] font-medium text-slate-400">
