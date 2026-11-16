@@ -77,7 +77,11 @@ export function ModelHubView({
       if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
       const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
         method: 'POST',
-        body: JSON.stringify({ modelId: selectedWebGpuModelId, probeResponse: probe.slice(0, 1000) }),
+        body: JSON.stringify({
+          // The server catalog uses ZERO IDs; WebLLM uses a separate runtime model ID.
+          modelId: WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId)?.id ?? '',
+          probeResponse: probe.slice(0, 1000),
+        }),
       });
       onModelUpdated(data.model);
       setWebGpuLoaded(true);
