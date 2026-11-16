@@ -221,7 +221,9 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       })
     );
     const reply = (response.text ?? '').trim();
-    if (!reply) throw new Error('Google hat eine leere Testantwort zurückgegeben.');
+    if (!reply.includes('ZERO_CONNECTION_OK')) {
+      throw new Error('Google hat geantwortet, aber die erwartete Testantwort nicht bestätigt.');
+    }
 
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
     if (quota) quota.requestsToday += 1;
