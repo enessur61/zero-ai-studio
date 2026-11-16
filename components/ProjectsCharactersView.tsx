@@ -256,7 +256,7 @@ export function ProjectsCharactersView({
                   <div className="pt-3 border-t border-white/[0.06] space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-[11px] font-medium text-slate-400">Versionsverlauf ({p.snapshots.length})</p>
-                      <span className="text-[10px] text-slate-500">Vollständige Sicherungen sind wiederherstellbar</span>
+                      <span className="text-[10px] text-slate-500">Gespeicherte Projektversionen</span>
                     </div>
                     {p.snapshots.slice(0, 5).map((snapshot) => (
                       <div key={snapshot.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#090B10] border border-white/[0.06] px-3 py-2">

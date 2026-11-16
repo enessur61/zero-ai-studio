@@ -206,6 +206,10 @@ export function SettingsView({
 
   async function handleRestoreZip(b: ZipBackupVersion) {
     if (restoringZipId) return;
+    const confirmed = window.confirm(
+      `ZERO AI STUDIO wirklich auf ZIP-Version v${b.version} zurücksetzen? Der aktuelle Stand wird vorher automatisch als Sicherheitsbackup gespeichert.`
+    );
+    if (!confirmed) return;
     setRestoringZipId(b.id);
     setErrorMsg(null);
     setStatusMsg(null);
@@ -238,12 +242,20 @@ export function SettingsView({
       });
       setBackups((prev) => [data.backup, ...prev]);
       setStatusMsg(`JSON-Backup "${data.backup.filename}" erfolgreich gespeichert.`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'JSON-Backup konnte nicht erstellt werden.');
     } finally {
       setCreating(false);
     }
   }
 
   async function handleRestore(id: string) {
+    if (restoringId) return;
+    const selected = backups.find((backup) => backup.id === id);
+    const confirmed = window.confirm(
+      `JSON-Backup "${selected?.filename ?? id}" wirklich wiederherstellen? Der aktuelle Datenstand wird vorher automatisch als Sicherheitsbackup gespeichert.`
+    );
+    if (!confirmed) return;
     setRestoringId(id);
     setStatusMsg(null);
     setErrorMsg(null);
@@ -252,8 +264,10 @@ export function SettingsView({
         method: 'POST',
         body: JSON.stringify({ backupId: id }),
       });
-      setStatusMsg('JSON-Backup erfolgreich wiederhergestellt.');
+      setStatusMsg('JSON-Backup erfolgreich wiederhergestellt. Der vorherige Datenstand liegt als Sicherheitsbackup vor.');
       onRestored();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'JSON-Backup konnte nicht wiederhergestellt werden.');
     } finally {
       setRestoringId(null);
     }
