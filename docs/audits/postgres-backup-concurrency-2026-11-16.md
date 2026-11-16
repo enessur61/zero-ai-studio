@@ -137,12 +137,12 @@ Implemented in the follow-up draft:
 
 **Remaining limitations / follow-up risks**
 - The advisory lock serializes each primary-state transaction. The complete restore workflow is not held inside one long-lived transaction while archive verification and filesystem work execute; instead the final revision fence aborts restore if the live state changed after the safety snapshot. This favors safety over automatic retry.
-- Automatic ZIP backup throttling is still a check-then-act workflow. The state lock prevents simultaneous state commits from corrupting the revision, but a database-level uniqueness/lease rule is still needed to guarantee one auto-backup per 15-minute window across multiple processes.
+- PostgreSQL automatic ZIP throttling is now coordinated by a dedicated session-level advisory-lock lease across archive generation and publication; the 15-minute throttle is checked while holding that lease. The lease and throttle are exercised across two independent pools in the integration test.
 - Pruning backup blobs occurs after metadata publication. A cleanup failure can leave orphaned bytes; a reconciliation/diagnostic task is still needed.
 - Browser IndexedDB scene clips remain outside server ZIP backups.
 - Integration tests run only against an explicitly local PostgreSQL endpoint and do not inspect production data.
 
-The integration test is wired as a dedicated CI step. Its assertions are not considered passed until the corresponding GitHub Actions job completes successfully on the latest PR head SHA.
+The integration test is wired as a dedicated CI step and passed on PR #84 head `221366f56ebc957f02590ac3f4db842446cd7e86` in CI run #728 (`43971499532`): all 19 job steps completed successfully, including PostgreSQL revision/concurrency integration, production build, and production server smoke test. The HTTP restore-vs-write test also passed using two independent PostgreSQL pools.
 
 
 ## Automatic ZIP throttle and backup reconciliation follow-up
@@ -154,4 +154,4 @@ The integration test is wired as a dedicated CI step. Its assertions are not con
 - The diagnostic deliberately does not delete or rewrite anything. Automated cleanup remains a separate, approval-sensitive maintenance operation.
 - The PostgreSQL integration test now checks lease exclusion across two pools, the 15-minute throttle after success, a clean backup consistency report, and detection of both orphaned bytes and missing blobs.
 
-**Residual recovery window:** if a process commits an automatic ZIP backup but crashes before it records `last_success_at`, the session lock is released and a subsequent process could retry earlier than 15 minutes. The backup row and primary state remain transactionally consistent; only the throttle timestamp can lag. A future improvement could commit the throttle success marker in the same transaction as backup publication.
+**Atomic throttle marker:** for PostgreSQL-backed automatic ZIP backups, the `last_success_at` success marker is written in the same transaction as the primary state/revision and backup bytes. A failed publication rolls back the marker as well, so there is no post-commit crash window between publishing the backup and recording throttle success. Filesystem-only development still uses a process-local throttle and does not provide multi-process coordination.
