@@ -15,7 +15,7 @@ No merge, deployment, schema change, migration, or database write was performed 
 
 ## Findings
 
-### P0 / High — No cross-instance concurrency control for the primary state
+### P1 / High — No cross-instance concurrency control for the primary state
 
 **Evidence**
 - `server/persistence.ts`: `zero_app_state` contains one `payload JSONB` row, keyed by `primary`.
