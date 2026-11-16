@@ -108,14 +108,14 @@ export const IST_ZUSTAND_REPORT: IstZustandItem[] = [
   {
     area: 'Kostenlose Cloud-KI-Modelle (0 €)',
     status: 'neu_implementiert',
-    summary: 'Echte Server-Adapter für Gemini 3.8 Flash, 3.1 Flash Lite, 3.8 TTS, 3.5 Transcribe, Embedding 2, Google Search Grounding & FLUX.1 Schnell (Pollinations).',
-    details: 'Alle aktiven Free-Cloud-Adapter kommunizieren über serverseitige Endpunkte ohne API-Schlüssel im Frontend.',
+    summary: 'Server-Adapter für Gemini-Text, TTS, Transkription, Embeddings & Google Search Grounding; Cloud-Bildgenerierung ist derzeit deaktiviert.',
+    details: 'Gemini-Zugriff benötigt einen eigenen API-Key und bleibt durch den 0-€-Free-Tier-Schutz begrenzt. Pollinations-Bildgenerierung ist deaktiviert, da kostenloser Zugriff nicht verifiziert ist; es gibt keinen kostenpflichtigen Fallback.',
   },
   {
     area: 'Lokale On-Device Engines (iPhone 16 Pro Max)',
     status: 'neu_implementiert',
-    summary: 'Web Audio Thriller/Atmospheric Synthesizer (+ WAV-Export), Canvas/MediaRecorder Video-Pipeline (<= 60s), Image-to-Image/Upscaling & Apple Web Speech.',
-    details: 'Läuft direkt im Browser / iOS Safari auf dem iPhone 16 Pro Max ohne externe Serverkosten.',
+    summary: 'Lokaler Web-Audio-Synthesizer (+ WAV-Export), Canvas/MediaRecorder-Videoeditor (<= 60s), einfache Canvas-Bildbearbeitung & Apple Web Speech.',
+    details: 'Browser-Funktionen benötigen einen erfolgreichen Gerätetest. Canvas-Bildbearbeitung ist keine KI-Bild-Neugenerierung; der Videoeditor schneidet vorhandene Szenenbilder/-clips und erzeugt keine generativen Videoclips. Keine externe GPU ist enthalten.',
   },
   {
     area: 'Lokale Open-Weight Modelle (CoreML / MLX / MediaPipe / whisper.cpp / Piper / Kokoro)',
