@@ -63,7 +63,9 @@ function baseBudget(): BudgetGuardState {
   assert.equal(classifyProviderError(perMinuteQuota), 'rate-limited');
   assert.equal(isQuotaExhaustionError(perMinuteQuota), false);
 
-  assert.equal(classifyProviderError(new Error('Gemini gesperrt: Setze ZERO_GEMINI_FREE_TIER_ONLY=true erst nachdem im Google-Cloud-Projekt die Abrechnung deaktiviert wurde.')), 'auth');
+  const billingGateError = new Error('Gemini gesperrt: Setze ZERO_GEMINI_FREE_TIER_ONLY=true erst nachdem im Google-Cloud-Projekt die Abrechnung deaktiviert wurde.');
+  assert.equal(classifyProviderError(billingGateError), 'auth');
+  assert.match(formatGermanApiError(billingGateError), /ZERO_GEMINI_FREE_TIER_ONLY=true/);
   assert.equal(classifyProviderError(new ZeroQuotaExhaustedError('x')), 'quota-exhausted');
 
   const quotaMessage = formatGermanApiError(realQuota);
