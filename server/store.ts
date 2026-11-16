@@ -17,7 +17,7 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
-import { deleteBackupFile, readBackupFile, readPersistentState, writeBackupFile, writePersistentState } from './persistence.ts';
+import { deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writeBackupFile, writePersistentState } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -439,6 +439,8 @@ function createDefaultDatabase(): ZeroDatabase {
 }
 
 let dbCache: ZeroDatabase | null = null;
+const dbRevisions = new WeakMap<ZeroDatabase, number>();
+let persistenceSaveQueue: Promise<void> = Promise.resolve();
 
 export async function loadDb(): Promise<ZeroDatabase> {
   if (dbCache) return dbCache;
@@ -453,7 +455,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
     const stored = process.env.DATABASE_URL
       ? await readPersistentState<ZeroDatabase>()
       : null;
-    const raw = stored ? JSON.stringify(stored) : process.env.DATABASE_URL
+    const raw = stored ? JSON.stringify(stored.payload) : process.env.DATABASE_URL
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
@@ -559,7 +561,19 @@ export async function loadDb(): Promise<ZeroDatabase> {
       };
     }
     dbCache = parsed;
-    if (process.env.DATABASE_URL) await writePersistentState(parsed);
+    if (process.env.DATABASE_URL) {
+      try {
+        const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
+        dbRevisions.set(parsed, nextRevision);
+      } catch (error) {
+        if (!(error instanceof PersistentStateConflictError)) throw error;
+        // Another instance initialized or migrated the row first. Use its committed state.
+        const latest = await readPersistentState<ZeroDatabase>();
+        if (!latest) throw error;
+        dbCache = latest.payload;
+        dbRevisions.set(latest.payload, latest.revision);
+      }
+    }
     return dbCache;
   } catch (error) {
     if (process.env.DATABASE_URL || process.env.NODE_ENV === 'production') throw error;
@@ -571,11 +585,27 @@ export async function loadDb(): Promise<ZeroDatabase> {
 }
 
 export async function saveDb(db: ZeroDatabase): Promise<void> {
-  dbCache = db;
   if (process.env.DATABASE_URL) {
-    await writePersistentState(db);
-    return;
+    // Serialize writes inside this process; PostgreSQL CAS protects across instances.
+    const operation = persistenceSaveQueue.then(async () => {
+      const expectedRevision = dbRevisions.get(db);
+      if (expectedRevision === undefined) {
+        throw new PersistentStateConflictError(-1, null);
+      }
+      try {
+        const nextRevision = await writePersistentState(db, expectedRevision);
+        dbRevisions.set(db, nextRevision);
+      } catch (error) {
+        // Never let a stale in-memory object silently become the active cache again.
+        if (error instanceof PersistentStateConflictError && dbCache === db) dbCache = null;
+        throw error;
+      }
+    });
+    persistenceSaveQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
+
+  dbCache = db;
   await fs.mkdir(DATA_DIR, { recursive: true });
   const tmpPath = `${DB_PATH}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(db, null, 2), 'utf8');
