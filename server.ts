@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
+import { isSafeProjectAssetUrl } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
@@ -1864,7 +1865,17 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
     ? req.body as Record<string, unknown>
     : {};
   const nextScenes = Array.isArray(body.scenes)
-    ? clampScenesToMax60Seconds(body.scenes)
+    ? clampScenesToMax60Seconds(body.scenes.map((scene: unknown) => {
+        if (!scene || typeof scene !== 'object' || Array.isArray(scene)) return scene as FilmScene;
+        const safeScene = { ...scene } as Record<string, unknown>;
+        if ('imageUrl' in safeScene && !isSafeProjectAssetUrl(safeScene.imageUrl, 'image')) {
+          delete safeScene.imageUrl;
+        }
+        if ('audioDataUrl' in safeScene && !isSafeProjectAssetUrl(safeScene.audioDataUrl, 'audio')) {
+          delete safeScene.audioDataUrl;
+        }
+        return safeScene as unknown as FilmScene;
+      }))
     : prev.scenes;
   const nextTotal = nextScenes.reduce((s, sc) => s + sc.durationSec, 0);
   const nextVersion = prev.version + 1;
@@ -1996,11 +2007,8 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   if (url.length > 16 * 1024 * 1024) {
     return res.status(413).json({ error: 'Asset ist zu groß (maximal 16 MB Daten). Bitte kleinere Datei verwenden.' });
   }
-  const isDataUrl = /^data:[a-z0-9.+-]+\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(url);
-  const isHttpUrl = /^https?:\/\//i.test(url);
-  const isLocalAssetPath = url.startsWith('/src/assets/');
-  if (!isDataUrl && !isHttpUrl && !isLocalAssetPath) {
-    return res.status(400).json({ error: 'Ungültige Asset-Quelle. Erlaubt sind Bild-/Mediendaten, HTTPS/HTTP oder lokale Studio-Assets.' });
+  if (!isSafeProjectAssetUrl(url, type)) {
+    return res.status(400).json({ error: 'Ungültige Asset-Quelle oder nicht erlaubter Medientyp. Erlaubt sind passende Bild-/Audio-/Video-Daten, HTTPS/HTTP oder lokale Studio-Assets.' });
   }
   const rawDuration = req.body?.durationSec;
   const durationSec = rawDuration === undefined || rawDuration === null || rawDuration === ''
