@@ -833,8 +833,8 @@ try {
   ]);
   await assert.rejects(
     () => corruptBlobRestore(versionChain[0].id),
-    /ZIP beschädigt oder unvollständig/,
-    'the production restore service must reject a truncated PostgreSQL ZIP blob'
+    /gespeicherte Größe/,
+    'the production restore service must reject a truncated PostgreSQL ZIP blob against its persisted size metadata'
   );
   assert.equal(corruptBlobSafetyBackupCalls, 0, 'truncated persisted bytes must not trigger a safety backup');
   assert.deepEqual(await storeA.read(), stateBeforeCorruptRestore, 'truncated ZIP restore must not alter live PostgreSQL state');
