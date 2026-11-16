@@ -326,7 +326,7 @@ export function getPostgresPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      max: 3,
+      max: 5,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 8_000,
       statement_timeout: 15_000,
