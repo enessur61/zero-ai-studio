@@ -71,7 +71,11 @@ try {
   // State metadata and the backup bytes must commit in the same PostgreSQL transaction.
   const backupBytes = Buffer.from('ZERO-BACKUP-CONSISTENCY-TEST');
   const backupRevision = await storeA.writeWithBackup(
-    { value: 'backup-published', backupId: 'backup-atomic-success' },
+    {
+      value: 'backup-published',
+      backups: [{ id: 'backup-atomic-success' }],
+      backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }] },
+    },
     finalState.revision,
     {
       id: 'backup-atomic-success',
@@ -83,9 +87,17 @@ try {
   assert.equal(backupRevision, 4);
   const published = await storeA.read();
   assert.deepEqual(published, {
-    payload: { value: 'backup-published', backupId: 'backup-atomic-success' },
+    payload: {
+      value: 'backup-published',
+      backups: [{ id: 'backup-atomic-success' }],
+      backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }] },
+    },
     revision: 4,
   });
+  assert.deepEqual(await storeA.inspectBackupConsistency(), {
+    orphanedBlobIds: [],
+    missingBlobIds: [],
+  }, 'a committed backup must have matching metadata and bytes');
   const storedBytes = await poolB.query<{ payload: Buffer }>(
     'SELECT payload FROM zero_backup_files WHERE id = $1',
     ['backup-atomic-success']
@@ -116,13 +128,40 @@ try {
   assert.equal(failedBlob.rowCount, 0, 'failed backup publication must not leave orphaned bytes');
 
   // Restore is a full-state replacement: any intervening normal write must fence it off.
+  // The read-only reconciliation report detects both orphaned bytes and missing blobs.
+  await poolB.query(
+    `INSERT INTO zero_backup_files (id, filename, content_type, payload)
+     VALUES ('orphaned-blob', 'orphan.zip', 'application/zip', $1)`,
+    [Buffer.from('orphan')]
+  );
+  const reconciliationRevision = await storeB.write({
+    value: 'reconciliation-check',
+    backups: [{ id: 'backup-atomic-success' }, { id: 'missing-backup' }],
+    backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }] },
+  }, backupRevision);
+  assert.equal(reconciliationRevision, 5);
+  assert.deepEqual(await storeA.inspectBackupConsistency(), {
+    orphanedBlobIds: ['orphaned-blob'],
+    missingBlobIds: ['missing-backup'],
+  }, 'reconciliation must report orphaned bytes and metadata without blobs');
+  await poolB.query("DELETE FROM zero_backup_files WHERE id = 'orphaned-blob'");
+
+  // A session-level lease prevents duplicate automatic backups across independent pools.
+  const autoLeaseA = await storeA.acquireAutoBackupLease();
+  assert.ok(autoLeaseA, 'first pool must acquire the automatic backup lease');
+  const autoLeaseB = await storeB.acquireAutoBackupLease();
+  assert.equal(autoLeaseB, null, 'second pool must not acquire the active automatic backup lease');
+  await autoLeaseA.complete();
+  const throttledLease = await storeB.acquireAutoBackupLease();
+  assert.equal(throttledLease, null, 'successful automatic backup must enforce the 15-minute throttle');
+
   const restoreSnapshot = await storeA.read();
   assert.ok(restoreSnapshot);
   const concurrentWriteRevision = await storeB.write(
     { value: 'newer-normal-write' },
     restoreSnapshot.revision
   );
-  assert.equal(concurrentWriteRevision, 5);
+  assert.equal(concurrentWriteRevision, 6);
   await assert.rejects(
     () => storeA.write({ value: 'stale-restored-state' }, restoreSnapshot.revision),
     (error: unknown) => error instanceof PersistentStateConflictError,
@@ -131,7 +170,7 @@ try {
   const afterRestoreRace = await storeA.read();
   assert.deepEqual(afterRestoreRace, {
     payload: { value: 'newer-normal-write' },
-    revision: 5,
+    revision: 6,
   });
 
   console.log('PostgreSQL revision, restore-race, and atomic-backup tests passed using two independent pools.');
