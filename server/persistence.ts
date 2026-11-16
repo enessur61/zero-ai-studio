@@ -161,7 +161,16 @@ export function createPostgresStateStore(database: Pool) {
     }
   }
 
-  return { ensureSchema, read, write };
+  return {
+    ensureSchema,
+    read,
+    write,
+    writeWithBackup: <T>(
+      payload: T,
+      expectedRevision: number,
+      backupFile: { id: string; filename: string; contentType: string; payload: Buffer }
+    ) => write(payload, expectedRevision, backupFile),
+  };
 }
 
 function getPool(): Pool {
