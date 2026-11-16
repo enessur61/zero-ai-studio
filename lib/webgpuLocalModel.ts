@@ -37,7 +37,56 @@ let engine: MLCEngineInterface | null = null;
 let modelWorker: Worker | null = null;
 let loadedModelId: WebGPULocalModelId | null = null;
 const loadedModelIds = new Set<WebGPULocalModelId>();
+const PERSISTED_WEBGPU_MODELS_KEY = 'zero.webgpu.resident-models.v1';
 let operationQueue: Promise<void> = Promise.resolve();
+
+function readPersistedWebGPUModelIds(): WebGPULocalModelId[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(PERSISTED_WEBGPU_MODELS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is WebGPULocalModelId =>
+      WEBGPU_LOCAL_MODELS.some((preset) => preset.modelId === id)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistWebGPUModelIds(): void {
+  try {
+    globalThis.localStorage?.setItem(PERSISTED_WEBGPU_MODELS_KEY, JSON.stringify([...loadedModelIds]));
+  } catch {
+    // Storage restrictions must not break local inference.
+  }
+}
+
+export function getPersistedWebGPULocalModelIds(): WebGPULocalModelId[] {
+  return readPersistedWebGPUModelIds();
+}
+
+export async function restorePersistedWebGPULocalModels(
+  onProgress?: (modelName: string, progress: WebGPULocalModelProgress) => void
+): Promise<{ restored: WebGPULocalModelId[]; failures: string[] }> {
+  const requested = readPersistedWebGPUModelIds();
+  const restored: WebGPULocalModelId[] = [];
+  const failures: string[] = [];
+  for (const modelId of requested) {
+    const preset = WEBGPU_LOCAL_MODELS.find((item) => item.modelId === modelId);
+    try {
+      await loadWebGPULocalModel(
+        (progress) => onProgress?.(preset?.name ?? modelId, progress),
+        modelId
+      );
+      restored.push(modelId);
+    } catch (error) {
+      failures.push(`${preset?.name ?? modelId}: ${error instanceof Error ? error.message : 'Wiederherstellung fehlgeschlagen'}`);
+    }
+  }
+  persistWebGPUModelIds();
+  return { restored, failures };
+}
 
 export function getLoadedWebGPULocalModelIds(): WebGPULocalModelId[] {
   return [...loadedModelIds];
@@ -136,6 +185,7 @@ async function loadModelInternal(
         initProgressCallback: progress,
       });
       loadedModelIds.add(requestedModelId);
+      persistWebGPUModelIds();
       loadedModelId = requestedModelId;
     } catch (error) {
       modelWorker?.terminate();
@@ -152,6 +202,7 @@ async function loadModelInternal(
   await engine.reload([...loadedModelIds, requestedModelId]);
   onProgress?.({ progress: 1, text: 'Modell im gemeinsamen GPU-Runtime geladen.' });
   loadedModelIds.add(requestedModelId);
+  persistWebGPUModelIds();
   loadedModelId = requestedModelId;
 }
 
@@ -216,12 +267,14 @@ export async function unloadWebGPULocalModel(modelId?: WebGPULocalModelId): Prom
     const remaining = [...loadedModelIds].filter((id) => id !== modelId);
     await activeEngine.reload(remaining);
     loadedModelIds.delete(modelId);
+    persistWebGPUModelIds();
     if (loadedModelId === modelId) loadedModelId = remaining[0] ?? null;
     return;
   }
 
   engine = null;
   loadedModelIds.clear();
+  persistWebGPUModelIds();
   loadedModelId = null;
   try {
     await activeEngine.unload();
