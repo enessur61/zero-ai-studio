@@ -316,6 +316,9 @@ export function formatGermanApiError(err: unknown): string {
     case 'transient':
       return 'Free-Tier Server vorübergehend stark ausgelastet (HTTP 503). Bitte in wenigen Sekunden erneut versuchen (kein kostenpflichtiger Fallback).';
     case 'auth':
+      if (raw.toLowerCase().includes('zero_gemini_free_tier_only')) {
+        return 'Gemini gesperrt: ZERO_GEMINI_FREE_TIER_ONLY=true muss erst bestätigt werden, nachdem die Abrechnung im Google-Cloud-Projekt deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.';
+      }
       return 'GEMINI_API_KEY fehlt oder ist ungültig konfiguriert.';
     case 'not-found':
       return `Modell-Endpunkt aktuell nicht erreichbar (HTTP 404): ${extracted.slice(0, 140)}`;
