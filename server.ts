@@ -2263,6 +2263,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
       action: 'MEMORY_EMBED',
       contents: [`${title}\n${content}`],
       recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db),
       embed: async (modelId, contents) => {
         const ai = getGeminiClient();
         const response = await ai.models.embedContent({ model: modelId, contents });
@@ -2309,6 +2310,7 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
       action: 'MEMORY_SEARCH',
       contents: [query],
       recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db),
       embed: async (modelId, contents) => {
         const ai = getGeminiClient();
         const response = await ai.models.embedContent({ model: modelId, contents });
