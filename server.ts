@@ -18,7 +18,7 @@ import {
   Type,
   withTransientRetry,
 } from './server/geminiClient.ts';
-import { recordEmbeddingFailure } from './server/embeddingGuard.ts';
+import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
 import {
   generateFreeCloudImage,
   runAllModelTests,
@@ -2154,29 +2154,20 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
   let embedding: number[] | undefined;
   let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
-    try {
-      assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
-      const ai = getGeminiClient();
-      const emb = await ai.models.embedContent({
-        model: 'gemini-embedding-2',
-        contents: [`${title}\n${content}`],
-      });
-      embedding = emb.embeddings?.[0]?.values;
-    } catch (err) {
-      // Never swallow a provider failure: classify it, audit it, and persist a
-      // durable exhausted lock when the provider confirms real quota exhaustion.
-      const outcome = recordEmbeddingFailure({
-        modelId: 'gemini-embedding-2',
-        action: 'MEMORY_EMBED',
-        err,
-        budgetGuard: db.budgetGuard,
-        recordAudit: (entry) => recordBudgetAudit(db, entry),
-      });
-      embeddingNotice = outcome.message;
-      if (outcome.persistedExhausted) await saveDb(db);
-    }
+    const result = await runMemoryEmbedding({
+      budgetGuard: db.budgetGuard,
+      action: 'MEMORY_EMBED',
+      contents: [`${title}\\n${content}`],
+      recordAudit: (entry) => recordBudgetAudit(db, entry),
+      embed: async (modelId, contents) => {
+        const ai = getGeminiClient();
+        const response = await ai.models.embedContent({ model: modelId, contents });
+        return response.embeddings?.[0]?.values;
+      },
+      persistExhausted: () => saveDb(db),
+    });
+    embedding = result.vector;
+    embeddingNotice = result.notice;
   }
 
   const now = new Date().toISOString();
@@ -2209,33 +2200,23 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
   let queryVec: number[] | null = null;
   let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
-    try {
-      assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
-      const ai = getGeminiClient();
-      const emb = await ai.models.embedContent({
-        model: 'gemini-embedding-2',
-        contents: [query],
-      });
-      queryVec = emb.embeddings?.[0]?.values ?? null;
-    } catch (err) {
-      // A failed embedding must never silently fall back: it is classified,
-      // audited, and persisted as a durable lock on real quota exhaustion.
-      const outcome = recordEmbeddingFailure({
-        modelId: 'gemini-embedding-2',
-        action: 'MEMORY_SEARCH',
-        err,
-        budgetGuard: db.budgetGuard,
-        recordAudit: (entry) => recordBudgetAudit(db, entry),
-      });
-      embeddingNotice = outcome.message;
-      queryVec = null;
-      if (outcome.persistedExhausted) await saveDb(db);
-    }
+    const result = await runMemoryEmbedding({
+      budgetGuard: db.budgetGuard,
+      action: 'MEMORY_SEARCH',
+      contents: [query],
+      recordAudit: (entry) => recordBudgetAudit(db, entry),
+      embed: async (modelId, contents) => {
+        const ai = getGeminiClient();
+        const response = await ai.models.embedContent({ model: modelId, contents });
+        return response.embeddings?.[0]?.values;
+      },
+      persistExhausted: () => saveDb(db),
+    });
+    queryVec = result.vector ?? null;
+    embeddingNotice = result.notice;
   }
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = query.toLowerCase().split(/\\s+/).filter(Boolean);
   const scored = db.memories.map((m) => {
     const haystack = `${m.title} ${m.content} ${m.tags.join(' ')}`.toLowerCase();
     const lexicalHits = terms.filter((t) => haystack.includes(t)).length / Math.max(1, terms.length);
