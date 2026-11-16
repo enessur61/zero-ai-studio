@@ -532,7 +532,9 @@ app.post('/api/models/webgpu/activate', asyncRoute(async (req, res) => {
   // Keep the model disabled until verification can be performed by a trusted runtime.
   model.hasRealAdapter = false;
   model.testPassed = false;
-  model.enabled = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
+  model.enabled = true;
   model.status = 'BROWSER TEST ERFORDERLICH';
   model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
@@ -563,7 +565,9 @@ app.post('/api/models/local/activate', asyncRoute(async (req, res) => {
   // Do not convert it into a trusted adapter or successful server-side test.
   model.hasRealAdapter = false;
   model.testPassed = false;
-  model.enabled = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
+  model.enabled = true;
   model.status = 'BROWSER TEST ERFORDERLICH';
   model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
@@ -586,7 +590,9 @@ app.post('/api/models/native/activate', asyncRoute(async (req, res) => {
   // A client-supplied response cannot prove that the signed native runtime executed it.
   model.hasRealAdapter = false;
   model.testPassed = false;
-  model.enabled = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
+  model.enabled = true;
   model.status = 'BROWSER TEST ERFORDERLICH';
   model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
