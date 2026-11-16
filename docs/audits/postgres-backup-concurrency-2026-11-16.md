@@ -299,3 +299,34 @@ The reconciliation endpoint is intentionally read-only; no automatic orphan dele
 - Restart coverage remains an isolated local PostgreSQL simulation with fresh pools and newly constructed service instances; it is not a deployed production database restart drill. No production data was accessed or modified.
 
 **Scope:** PR #84 remains open and Draft. No merge and no deployment.
+
+
+## ZIP decompression-bomb and resource-exhaustion audit — CI #771
+
+**Validated implementation head:** 786a858503c658b73bd359e0118ed67329d52d80  
+**Workflow run:** [CI #771](https://github.com/enessur61/zero-ai-studio/actions/runs/43979643004) — run 43979643004, job 133692489069  
+**Result:** completed / success; all 19 job steps passed. Complete job log retrieved and reviewed: 1,021 lines / 94,374 characters.
+
+### Verified limits and enforcement
+
+- Maximum compressed ZIP archive: **160 MiB**.
+- Maximum expanded size per entry: **32 MiB**.
+- Maximum total expanded size: **128 MiB**.
+- Maximum entry count: **10,000**.
+- ZIP creation preflights every source with filesystem stat / supplied Buffer sizes before reading or compressing any file; it rejects per-entry and aggregate overflow.
+- ZIP verification rejects archive size and entry-count overflow before central-directory processing, and checks each declared expanded size and the running aggregate before invoking inflateRawSync. The existing per-entry maxOutputLength remains an additional bound.
+- ZIP restore checks metadata size before reading. In PostgreSQL mode, readBackupFile uses octet_length(payload) in SQL and returns the BYTEA only when within the cap, preventing an oversized blob from being transferred into the Node.js process. Filesystem mode checks stat.size before readFile.
+
+### Regression evidence
+
+- Unit fixtures forge oversized entry declarations and aggregate expansion declarations while leaving compressed payloads small; the verifier rejects them before inflation.
+- Sparse-file fixtures prove ZIP creation rejects a single oversized source and aggregate source size from metadata, without reading the oversized content.
+- PostgreSQL integration uses an isolated schema and two independent pools. It verifies the bounded BYTEA query rejects a blob over the supplied cap but still reads an allowed blob.
+- The production restore orchestrator is given a persisted PostgreSQL ZIP with a forged expansion declaration; restore is rejected before safety-backup creation or live-state mutation.
+- Existing ZIP corruption, truncated-blob, restore-race, restart, production build, and authenticated smoke tests remain green.
+
+**Scope and caveats:** Limits are application-level safeguards for this ZIP format; the full archive is still read into one bounded Buffer and verified entries are retained in memory up to the 128 MiB aggregate ceiling. This is not a streaming restore. The integration suite uses local isolated PostgreSQL test schemas, not production data. No production database was accessed or changed.
+
+**CI warnings:** Missing go.sum cache pattern and GitHub Actions Node.js 20 deprecation warnings are non-blocking. PostgreSQL NOT NULL errors and injected ZIP publication failure are deliberate negative-test fixtures.
+
+PR #84 remains Open and Draft. No merge and no deployment.
