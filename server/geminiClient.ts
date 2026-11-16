@@ -96,28 +96,54 @@ export function assertZeroBudgetModelAllowed(
 
   const today = getTodayUtcDate();
   const quota = budgetGuard.freeQuotaUsage[modelId];
-  if (quota) {
-    if (quota.lastResetDate && quota.lastResetDate !== today) {
+  if (!quota) {
+    recordAudit({
+      adapterId: 'gemini-quota-guard',
+      modelId,
+      action,
+      decision: 'BLOCKIERT_BUDGET_GUARD',
+      reason: 'Quota-Metadaten fehlen. Aufruf aus Sicherheitsgründen blockiert.',
+      costEur: 0,
+    });
+    throw new Error(`Kein gültiger Free-Tier-Kontingentdatensatz für "${modelId}". Sicher gestoppt (kein kostenpflichtiger Fallback).`);
+  }
+
+  if (!Number.isSafeInteger(quota.requestsToday) || quota.requestsToday < 0 ||
+      !Number.isSafeInteger(quota.dailySoftLimit) || quota.dailySoftLimit <= 0 ||
+      typeof quota.exhausted !== 'boolean') {
+    throw new Error(`Free-Tier-Kontingentdaten für "${modelId}" sind ungültig. Sicher gestoppt (kein kostenpflichtiger Fallback).`);
+  }
+
+  if (quota.lastResetDate) {
+    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(quota.lastResetDate)) {
+      throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
+    }
+    const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
+    if (!Number.isFinite(resetDate.getTime()) || resetDate.toISOString().slice(0, 10) !== quota.lastResetDate ||
+        quota.lastResetDate > today) {
+      throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
+    }
+    if (quota.lastResetDate < today) {
       quota.requestsToday = 0;
       quota.exhausted = false;
       quota.lastResetDate = today;
-    } else if (!quota.lastResetDate) {
-      quota.lastResetDate = today;
     }
+  } else {
+    quota.lastResetDate = today;
+  }
 
-    if (quota.exhausted || quota.requestsToday >= quota.dailySoftLimit) {
-      recordAudit({
-        adapterId: 'gemini-quota-guard',
-        modelId,
-        action,
-        decision: 'GESTOPPT_KONTINGENT',
-        reason: `Kostenloses Kontingent für "${modelId}" erreicht (${quota.requestsToday}/${quota.dailySoftLimit}). Sicher gestoppt ohne kostenpflichtigen Fallback.`,
-        costEur: 0,
-      });
-      throw new Error(
-        `Kostenloses Tageskontingent für "${modelId}" ausgeschöpft. Funktion sicher gestoppt (kein kostenpflichtiger Fallback).`
-      );
-    }
+  if (quota.exhausted || quota.requestsToday >= quota.dailySoftLimit) {
+    recordAudit({
+      adapterId: 'gemini-quota-guard',
+      modelId,
+      action,
+      decision: 'GESTOPPT_KONTINGENT',
+      reason: `Kostenloses Kontingent für "${modelId}" erreicht (${quota.requestsToday}/${quota.dailySoftLimit}). Sicher gestoppt ohne kostenpflichtigen Fallback.`,
+      costEur: 0,
+    });
+    throw new Error(
+      `Kostenloses Tageskontingent für "${modelId}" ausgeschöpft. Funktion sicher gestoppt (kein kostenpflichtiger Fallback).`
+    );
   }
 
   recordAudit({
