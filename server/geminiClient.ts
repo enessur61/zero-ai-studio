@@ -115,7 +115,7 @@ export function assertZeroBudgetModelAllowed(
   }
 
   if (quota.lastResetDate) {
-    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(quota.lastResetDate)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
       throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
     }
     const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
