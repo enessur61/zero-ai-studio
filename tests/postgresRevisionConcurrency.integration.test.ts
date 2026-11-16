@@ -37,6 +37,38 @@ try {
   // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
   await storeA.ensureSchema();
   await storeB.ensureSchema();
+
+  // Reconciliation must use one checked-out connection and one stable snapshot.
+  const reconciliationSql: string[] = [];
+  let reconciliationClientReleased = false;
+  const reconciliationClient = {
+    query: async (sql: string) => {
+      reconciliationSql.push(sql);
+      if (sql.includes('FROM zero_app_state')) {
+        return { rows: [{ backups: [], zip_backups: [] }] };
+      }
+      if (sql.includes('FROM zero_backup_files')) return { rows: [] };
+      return { rows: [] };
+    },
+    release: () => { reconciliationClientReleased = true; },
+  };
+  const reconciliationPool = {
+    query: async () => ({ rows: [] }),
+    connect: async () => reconciliationClient,
+  } as unknown as Pool;
+  const reconciliationStore = createPostgresStateStore(reconciliationPool);
+  assert.deepEqual(await reconciliationStore.inspectBackupConsistency(), {
+    orphanedBlobIds: [],
+    missingBlobIds: [],
+  });
+  assert.equal(
+    reconciliationSql[0],
+    'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
+    'reconciliation must start a stable read-only transaction'
+  );
+  assert.ok(reconciliationSql.includes('COMMIT'));
+  assert.equal(reconciliationClientReleased, true, 'reconciliation must always release its checked-out client');
+
   const initialRevision = await storeA.write({ value: 0 }, 0);
   assert.equal(initialRevision, 1, 'initial insert must create revision 1');
 
