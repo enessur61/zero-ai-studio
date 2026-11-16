@@ -183,7 +183,7 @@ try {
   duplicateCentralEntry.writeUInt32LE(movedEocd - (centralSize + duplicateRecord.length), movedEocd + 16);
   assert.equal(verifyZipBuffer(duplicateCentralEntry).result.valid, false, 'duplicate paths must be rejected');
 
-  console.log('ZIP credential exclusion and archive-integrity tests passed.');
+  console.log('ZIP credential exclusion, archive-integrity, decompression-bomb and resource-limit tests passed.');
 } finally {
   await rm(root, { recursive: true, force: true });
 }
