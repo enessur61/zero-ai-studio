@@ -35,11 +35,11 @@ let calledModel = '';
 const success = await runMemoryEmbedding({
   budgetGuard: state,
   action: 'MEMORY_EMBED',
-  contents: ['title\ncontent'],
+  contents: ['title\\ncontent'],
   recordAudit: (entry) => events.push(entry),
   embed: async (modelId, contents) => {
     calledModel = modelId;
-    assert.deepEqual(contents, ['title\ncontent']);
+    assert.deepEqual(contents, ['title\\ncontent']);
     return [0.1, 0.2, 0.3];
   },
   persistExhausted: () => { persisted += 1; },
@@ -101,5 +101,24 @@ const blockedResult = await runMemoryEmbedding({
 assert.ok(blockedResult.notice);
 assert.equal(providerCalled, false);
 assert.equal(blockedEvents.at(-1)?.decision, 'GESTOPPT_KONTINGENT');
+
+// Malformed quota metadata must be fail-closed AND auditable, even when the
+// lower-level guard rejects before writing its own audit event.
+const malformed = budget();
+malformed.freeQuotaUsage[MEMORY_EMBEDDING_MODEL_ID].requestsToday = -1;
+const malformedEvents: Array<Omit<BudgetAuditEvent, 'id' | 'timestamp'>> = [];
+let malformedProviderCalled = false;
+const malformedResult = await runMemoryEmbedding({
+  budgetGuard: malformed,
+  action: 'MEMORY_SEARCH',
+  contents: ['query'],
+  recordAudit: (entry) => malformedEvents.push(entry),
+  embed: async () => { malformedProviderCalled = true; return [1]; },
+});
+assert.ok(malformedResult.notice);
+assert.equal(malformedProviderCalled, false);
+assert.equal(malformedEvents.length, 1);
+assert.equal(malformedEvents[0].decision, 'BLOCKIERT_BUDGET_GUARD');
+assert.match(malformedEvents[0].reason, /Kontingentprüfung fehlgeschlagen/);
 
 console.log('Memory embedding integration tests passed.');
