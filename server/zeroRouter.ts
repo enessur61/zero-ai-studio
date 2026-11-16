@@ -35,10 +35,7 @@ export function chooseZeroChatModel(
     if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.requiresPaidKey || model.requiresExternalGpu || model.costEur !== 0) return false;
     if (model.status !== 'FUNKTIONIERT') return false;
-    const quota = budget.freeQuotaUsage[model.id];
-    if (!quota) return false;
-    const quotaIsCurrent = !quota.lastResetDate || quota.lastResetDate === today;
-    return !quotaIsCurrent || (!quota.exhausted && quota.requestsToday < quota.dailySoftLimit);
+    return hasAvailableQuota(budget, model.id, today);
   });
 
   const consideredModelIds = eligible.map((model) => model.id);
@@ -91,9 +88,24 @@ const MEDIA_TASKS: Record<ZeroMediaTask, {
 
 function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: string): boolean {
   const quota = budget.freeQuotaUsage[modelId];
-  if (!quota) return false;
-  const quotaIsCurrent = !quota.lastResetDate || quota.lastResetDate === today;
-  return !quotaIsCurrent || (!quota.exhausted && quota.requestsToday < quota.dailySoftLimit);
+  // Fail closed when quota metadata is missing or malformed. Treat only a valid
+  // earlier date as a fresh daily window; never infer unlimited quota.
+  if (!quota || typeof quota.lastResetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
+    return false;
+  }
+  const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
+  if (!Number.isFinite(resetDate.getTime()) || resetDate.toISOString().slice(0, 10) !== quota.lastResetDate) {
+    return false;
+  }
+  // A future reset date is corrupt metadata, not evidence of a fresh quota.
+  if (quota.lastResetDate > today) return false;
+  if (quota.lastResetDate < today) return true;
+  return quota.exhausted !== true &&
+    Number.isSafeInteger(quota.requestsToday) &&
+    quota.requestsToday >= 0 &&
+    Number.isSafeInteger(quota.dailySoftLimit) &&
+    quota.dailySoftLimit > 0 &&
+    quota.requestsToday < quota.dailySoftLimit;
 }
 
 /**
