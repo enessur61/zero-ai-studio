@@ -186,8 +186,8 @@ export function ModelHubView({
       await verifyAndActivateLoadedWebGpuModel();
       setFeedback(
         webGpuProbeRef.current
-          ? '${selectedPreset.name} wurde lokal geladen und der Inferenztest gestartet.'
-          : '${selectedPreset.name} wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.'
+          ? `${selectedPreset.name} wurde lokal geladen und der Inferenztest gestartet.`
+          : `${selectedPreset.name} wurde lokal geladen. ZERO prüft jetzt die lokale Inferenz.`
       );
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
