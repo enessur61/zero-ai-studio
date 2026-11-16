@@ -49,6 +49,16 @@ assert.throws(
   /Reset-Datum/,
 );
 
+const missingResetDate = base();
+delete missingResetDate.freeQuotaUsage['gemini-3.8-flash'].lastResetDate;
+const missingResetAudits: Array<{ decision: string; reason: string }> = [];
+assert.throws(
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', missingResetDate, (event) => missingResetAudits.push(event)),
+  /Reset-Datum.*fehlt/,
+  'missing reset metadata must fail closed instead of being silently initialized',
+);
+assert.equal(missingResetAudits.at(-1)?.decision, 'BLOCKIERT_BUDGET_GUARD');
+
 const invalidCounters = base();
 invalidCounters.freeQuotaUsage['gemini-3.8-flash'].requestsToday = -1;
 assert.throws(
