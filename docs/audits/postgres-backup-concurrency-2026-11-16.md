@@ -130,8 +130,8 @@ This is a source-code audit, not a live production database inspection. No produ
 
 Implemented in the follow-up draft:
 - Every primary-state write acquires the same PostgreSQL transaction-scoped advisory lock before checking/advancing the revision. The revision compare remains mandatory; the lock is not a substitute for the CAS check.
-- Restore creates its safety backup first, then captures the current revision and uses that revision for the full-state replacement. If a normal write commits after the safety snapshot, the restore is rejected as a revision conflict rather than overwriting that write.
-- JSON and ZIP backup bytes are inserted in the same PostgreSQL transaction as the state payload/revision containing their metadata. ZIP version/changelog changes are built on a detached snapshot and are not published before archive verification.
+- Restore creates its safety backup from a detached snapshot. The exact revision committed with that safety backup is retained and used as the expected revision for the full-state replacement. If a normal write commits after the safety backup, restore is rejected as a revision conflict rather than overwriting that write.
+- JSON and ZIP backup bytes are inserted in the same PostgreSQL transaction as the state payload/revision containing their metadata. Backup creation uses a detached state snapshot and captured base revision; ZIP version/changelog changes are not published before archive verification. If a concurrent write commits while a ZIP is being built, the final revision check aborts publication instead of creating a backup for stale state.
 - Filesystem backup publication uses compensating cleanup if the state save fails.
 - Integration tests cover two independent pools racing on the same revision, stale restore rejection after a normal write, atomic state-plus-backup publication, and rollback/no orphan blob after an injected backup metadata constraint failure.
 
