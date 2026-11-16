@@ -428,9 +428,10 @@ export async function writeBackupFile(
   );
 }
 
-export async function readBackupFile(id: string, maxBytes?: number): Promise<Buffer> {
-  await ensurePostgresSchema();
-  const result = await getPool().query<{ payload: Buffer | null; size_bytes: string }>(
+export async function readBackupFile(id: string, maxBytes?: number, database?: Pool): Promise<Buffer> {
+  if (database) await createPostgresStateStore(database).ensureSchema();
+  else await ensurePostgresSchema();
+  const result = await (database ?? getPool()).query<{ payload: Buffer | null; size_bytes: string }>(
     `SELECT
        CASE WHEN $2::bigint IS NULL OR octet_length(payload) <= $2::bigint
          THEN payload ELSE NULL END AS payload,
