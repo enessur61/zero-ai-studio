@@ -781,15 +781,29 @@ try {
     excludedSecrets: [],
   }));
   const cleanupFixtureDb = beforeCleanupFailure.payload as ZeroDatabase;
+  const protectedRetentionFixture: ZipBackupVersion = {
+    id: 'retention-protected-manual',
+    version: '1.0.0',
+    filename: 'retention-protected-manual.zip',
+    createdAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+    changelog: 'Protected retention fixture',
+    trigger: 'manual',
+    fileCount: 1,
+    sizeBytes: 1,
+    verified: true,
+    protected: true,
+    excludedSecrets: [],
+  };
   cleanupFixtureDb.backupConfig.zipBackups = [
     ...cleanupFixtureDb.backupConfig.zipBackups,
+    protectedRetentionFixture,
     ...legacyBackups,
   ];
   const cleanupFixtureRevision = await storeA.write(
     cleanupFixtureDb,
     beforeCleanupFailure.revision
   );
-  for (const backup of legacyBackups) {
+  for (const backup of [...legacyBackups, protectedRetentionFixture]) {
     await poolB.query(
       `INSERT INTO zero_backup_files (id, filename, content_type, payload)
        VALUES ($1, $2, 'application/zip', $3)`,
@@ -852,6 +866,17 @@ try {
     ),
     'the new backup metadata must remain committed despite old-blob cleanup failure'
   );
+  assert.ok(
+    (afterCleanupFailure.payload as ZeroDatabase).backupConfig.zipBackups.some(
+      (backup) => backup.id === protectedRetentionFixture.id && backup.protected
+    ),
+    'retention must preserve explicitly protected manual backups even when older than the automatic retention window'
+  );
+  const protectedBlob = await poolB.query(
+    'SELECT id FROM zero_backup_files WHERE id = $1',
+    [protectedRetentionFixture.id]
+  );
+  assert.equal(protectedBlob.rowCount, 1, 'retention must not delete the blob of a protected backup');
   const cleanupReport = await storeA.inspectBackupConsistency();
   assert.deepEqual(cleanupReport, {
     orphanedBlobIds: [failedCleanupId],
