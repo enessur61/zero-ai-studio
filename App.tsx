@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   Brain,
   Clapperboard,
@@ -31,17 +31,17 @@ import type {
   StudioProject,
   SystemBackupMeta,
 } from './types/zero.ts';
-import { HomeView } from './components/HomeView.tsx';
-import { BrainView } from './components/BrainView.tsx';
-import { ModelHubView } from './components/ModelHubView.tsx';
-import { ImageStudioView } from './components/ImageStudioView.tsx';
-import { VideoStudioView } from './components/VideoStudioView.tsx';
-import { AudioStudioView } from './components/AudioStudioView.tsx';
-import { MusicStudioView } from './components/MusicStudioView.tsx';
-import { FilmDirectorView } from './components/FilmDirectorView.tsx';
-import { ProjectsCharactersView } from './components/ProjectsCharactersView.tsx';
-import { MemoryView } from './components/MemoryView.tsx';
-import { SettingsView } from './components/SettingsView.tsx';
+const HomeView = lazy(() => import('./components/HomeView.tsx').then((module) => ({ default: module.HomeView })));
+const BrainView = lazy(() => import('./components/BrainView.tsx').then((module) => ({ default: module.BrainView })));
+const ModelHubView = lazy(() => import('./components/ModelHubView.tsx').then((module) => ({ default: module.ModelHubView })));
+const ImageStudioView = lazy(() => import('./components/ImageStudioView.tsx').then((module) => ({ default: module.ImageStudioView })));
+const VideoStudioView = lazy(() => import('./components/VideoStudioView.tsx').then((module) => ({ default: module.VideoStudioView })));
+const AudioStudioView = lazy(() => import('./components/AudioStudioView.tsx').then((module) => ({ default: module.AudioStudioView })));
+const MusicStudioView = lazy(() => import('./components/MusicStudioView.tsx').then((module) => ({ default: module.MusicStudioView })));
+const FilmDirectorView = lazy(() => import('./components/FilmDirectorView.tsx').then((module) => ({ default: module.FilmDirectorView })));
+const ProjectsCharactersView = lazy(() => import('./components/ProjectsCharactersView.tsx').then((module) => ({ default: module.ProjectsCharactersView })));
+const MemoryView = lazy(() => import('./components/MemoryView.tsx').then((module) => ({ default: module.MemoryView })));
+const SettingsView = lazy(() => import('./components/SettingsView.tsx').then((module) => ({ default: module.SettingsView })));
 
 interface NavItem {
   id: NavigationTab;
@@ -441,6 +441,7 @@ export default function App() {
               </div>
             </section>
           )}
+          <Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center gap-3 text-sm text-slate-400"><Loader2 className="h-5 w-5 animate-spin text-rose-400" />Studio wird geladen…</div>}>
           {activeTab === 'home' && (
             <HomeView
               models={models}
@@ -548,6 +549,7 @@ export default function App() {
               onRestored={() => void loadAllData()}
             />
           )}
+          </Suspense>
         </main>
       </div>
 
