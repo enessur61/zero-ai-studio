@@ -17,7 +17,7 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
-import { deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
+import { acquirePersistentAutoBackupLease, deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -885,20 +885,32 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
   const db = await loadDb();
   if (!db.backupConfig.autoZipOnChange) return null;
 
-  // Coalesce bursts of edits into at most one automatic full-project archive per 15 minutes.
-  const latestAutoBackup = db.backupConfig.zipBackups.find((backup) => backup.trigger === 'auto');
-  if (
-    latestAutoBackup &&
-    Date.now() - Date.parse(latestAutoBackup.createdAt) < 15 * 60 * 1000
-  ) {
-    return null;
-  }
-
-  return createVersionedZipBackup({
+  const create = () => createVersionedZipBackup({
     changelog,
     trigger: 'auto',
     bumpVersion: true,
   });
+
+  if (process.env.DATABASE_URL) {
+    // A session-level PostgreSQL lock spans ZIP generation and publication across all instances.
+    const lease = await acquirePersistentAutoBackupLease();
+    if (!lease) return null;
+    try {
+      const backup = await create();
+      await lease.complete();
+      return backup;
+    } catch (error) {
+      await lease.release();
+      throw error;
+    }
+  }
+
+  // Local file mode has only one process; retain the local 15-minute throttle.
+  const latestAutoBackup = db.backupConfig.zipBackups.find((backup) => backup.trigger === 'auto');
+  if (latestAutoBackup && Date.now() - Date.parse(latestAutoBackup.createdAt) < 15 * 60 * 1000) {
+    return null;
+  }
+  return create();
 }
 
 export async function getZipBackupFilePath(zipId: string): Promise<{
