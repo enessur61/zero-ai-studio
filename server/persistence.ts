@@ -319,7 +319,7 @@ export function createPostgresStateStore(database: Pool) {
   };
 }
 
-function getPool(): Pool {
+export function getPostgresPool(): Pool {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL fehlt. In Produktion ist eine dauerhafte PostgreSQL-Datenbank erforderlich.');
   }
@@ -340,7 +340,7 @@ function getPool(): Pool {
 }
 
 function getStateStore(): ReturnType<typeof createPostgresStateStore> {
-  if (!stateStore) stateStore = createPostgresStateStore(getPool());
+  if (!stateStore) stateStore = createPostgresStateStore(getPostgresPool());
   return stateStore;
 }
 
@@ -419,7 +419,7 @@ export async function writeBackupFile(
   payload: Buffer
 ): Promise<void> {
   await ensurePostgresSchema();
-  await getPool().query(
+  await getPostgresPool().query(
     `INSERT INTO zero_backup_files (id, filename, content_type, payload)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (id) DO UPDATE SET filename = EXCLUDED.filename,
