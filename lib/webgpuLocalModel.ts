@@ -62,6 +62,27 @@ function persistWebGPUModelIds(): void {
   }
 }
 
+async function resetWebGPURuntime(activeEngine: MLCEngineInterface | null = engine): Promise<void> {
+  engine = null;
+  loadedModelIds.clear();
+  loadedModelId = null;
+  persistWebGPUModelIds();
+  try {
+    await activeEngine?.unload();
+  } catch {
+    // A lost WebGPU device may make unload fail; the worker still must be released.
+  } finally {
+    modelWorker?.terminate();
+    modelWorker = null;
+  }
+}
+
+function enqueueRuntimeOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const task = operationQueue.then(operation);
+  operationQueue = task.then(() => undefined, () => undefined);
+  return task;
+}
+
 export function getPersistedWebGPULocalModelIds(): WebGPULocalModelId[] {
   return readPersistedWebGPUModelIds();
 }
@@ -188,31 +209,36 @@ async function loadModelInternal(
       persistWebGPUModelIds();
       loadedModelId = requestedModelId;
     } catch (error) {
-      modelWorker?.terminate();
-      modelWorker = null;
-      engine = null;
+      await resetWebGPURuntime();
       throw error;
     }
     return;
   }
 
-  // WebLLM supports multiple model IDs in one engine. Its artifact cache also
-  // avoids downloading weights again when a model has already been cached.
+  // reload() replaces the engine's complete model set. Keep the persisted
+  // residency list unchanged until every requested model has loaded.
+  const nextModelIds = [...loadedModelIds, requestedModelId];
   onProgress?.({ progress: 0, text: 'Weiteres Modell in dieselbe WebLLM-Engine laden…' });
-  await engine.reload([...loadedModelIds, requestedModelId]);
-  onProgress?.({ progress: 1, text: 'Modell im gemeinsamen GPU-Runtime geladen.' });
-  loadedModelIds.add(requestedModelId);
+  try {
+    await engine.reload(nextModelIds);
+  } catch (error) {
+    // reload() unloads the old set before loading the new one. If it fails,
+    // the previous in-memory residency list is no longer trustworthy.
+    await resetWebGPURuntime();
+    throw error;
+  }
+  loadedModelIds.clear();
+  nextModelIds.forEach((id) => loadedModelIds.add(id));
   persistWebGPUModelIds();
   loadedModelId = requestedModelId;
+  onProgress?.({ progress: 1, text: 'Modell im gemeinsamen GPU-Runtime geladen.' });
 }
 
 export function loadWebGPULocalModel(
   onProgress?: (progress: WebGPULocalModelProgress) => void,
   requestedModelId: WebGPULocalModelId = WEBGPU_LOCAL_MODEL_ID
 ): Promise<void> {
-  const task = operationQueue.then(() => loadModelInternal(onProgress, requestedModelId));
-  operationQueue = task.catch(() => undefined);
-  return task;
+  return enqueueRuntimeOperation(() => loadModelInternal(onProgress, requestedModelId));
 }
 
 export function isWebGPULocalModelLoaded(modelId?: WebGPULocalModelId): boolean {
@@ -258,28 +284,28 @@ export async function generateWebGPULocalChat(
   return answer.trim();
 }
 
-export async function unloadWebGPULocalModel(modelId?: WebGPULocalModelId): Promise<void> {
-  const activeEngine = engine;
-  if (!activeEngine || loadedModelIds.size === 0) return;
+export function unloadWebGPULocalModel(modelId?: WebGPULocalModelId): Promise<void> {
+  return enqueueRuntimeOperation(async () => {
+    const activeEngine = engine;
+    if (!activeEngine || loadedModelIds.size === 0) return;
 
-  await operationQueue;
-  if (modelId && loadedModelIds.size > 1) {
-    const remaining = [...loadedModelIds].filter((id) => id !== modelId);
-    await activeEngine.reload(remaining);
-    loadedModelIds.delete(modelId);
-    persistWebGPUModelIds();
-    if (loadedModelId === modelId) loadedModelId = remaining[0] ?? null;
-    return;
-  }
+    if (modelId && !loadedModelIds.has(modelId)) return;
 
-  engine = null;
-  loadedModelIds.clear();
-  persistWebGPUModelIds();
-  loadedModelId = null;
-  try {
-    await activeEngine.unload();
-  } finally {
-    modelWorker?.terminate();
-    modelWorker = null;
-  }
+    if (modelId && loadedModelIds.size > 1) {
+      const remaining = [...loadedModelIds].filter((id) => id !== modelId);
+      try {
+        await activeEngine.reload(remaining);
+      } catch (error) {
+        await resetWebGPURuntime(activeEngine);
+        throw error;
+      }
+      loadedModelIds.clear();
+      remaining.forEach((id) => loadedModelIds.add(id));
+      persistWebGPUModelIds();
+      if (loadedModelId === modelId) loadedModelId = remaining[0] ?? null;
+      return;
+    }
+
+    await resetWebGPURuntime(activeEngine);
+  });
 }
