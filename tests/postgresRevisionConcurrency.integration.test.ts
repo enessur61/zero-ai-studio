@@ -10,6 +10,7 @@ import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
   MAX_ZIP_ARCHIVE_BYTES,
+  MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES,
   verifyZipBuffer,
 } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
@@ -847,6 +848,31 @@ try {
   );
   assert.equal(corruptBlobSafetyBackupCalls, 0, 'corrupted persisted bytes must be rejected before safety backup');
   assert.deepEqual(await storeA.read(), stateBeforeCorruptRestore, 'corrupt ZIP restore must not alter live PostgreSQL state');
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    originalSourceBlob,
+  ]);
+
+  // A compression-bomb declaration in a persisted PostgreSQL blob must be
+  // rejected by the production restore orchestrator before any safety backup.
+  const oversizedEntryBlob = Buffer.from(originalSourceBlob);
+  const oversizedCentral = oversizedEntryBlob.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  assert.notEqual(oversizedCentral, -1);
+  const oversizedLocalOffset = oversizedEntryBlob.readUInt32LE(oversizedCentral + 42);
+  const forgedExpandedSize = MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1;
+  oversizedEntryBlob.writeUInt32LE(forgedExpandedSize, oversizedCentral + 24);
+  oversizedEntryBlob.writeUInt32LE(forgedExpandedSize, oversizedLocalOffset + 22);
+  await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
+    versionChain[0].id,
+    oversizedEntryBlob,
+  ]);
+  await assert.rejects(
+    () => corruptBlobRestore(versionChain[0].id),
+    /ZIP beschädigt oder unvollständig/,
+    'the production restore service must reject a persisted decompression bomb before inflation'
+  );
+  assert.equal(corruptBlobSafetyBackupCalls, 0, 'decompression bomb rejection must happen before safety backup');
+  assert.deepEqual(await storeA.read(), stateBeforeCorruptRestore, 'decompression bomb restore must not mutate live PostgreSQL state');
   await poolB.query('UPDATE zero_backup_files SET payload = $2 WHERE id = $1', [
     versionChain[0].id,
     originalSourceBlob,
