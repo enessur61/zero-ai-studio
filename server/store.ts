@@ -17,6 +17,7 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
+import { createVerifiedZipRestoreService } from './verifiedZipRestore.ts';
 import { acquirePersistentAutoBackupLease, deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
@@ -708,7 +709,7 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
   return meta;
 }
 
-function assertRestorableDatabase(value: unknown): asserts value is ZeroDatabase {
+export function assertRestorableDatabase(value: unknown): asserts value is ZeroDatabase {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Die Datenbankstruktur ist ungültig.');
   }
@@ -958,69 +959,17 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
 }
 
-export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
-  restoredVersion: string;
-  safetyBackup: ZipBackupVersion;
-  db: ZeroDatabase;
-}> {
-  const { record, buffer: zipBuf } = await getZipBackupFilePath(zipId);
-  const verification = verifyZipBuffer(zipBuf);
-
-  if (!verification.result.valid) {
-    throw new Error(
-      `Wiederherstellung abgebrochen — ZIP beschädigt oder unvollständig: ${verification.result.errors.join('; ')}`
-    );
-  }
-
-  const dbEntry = verification.extractedFiles.get('data/zero-studio-db.json');
-  if (!dbEntry) {
-    throw new Error('Wiederherstellung abgebrochen — data/zero-studio-db.json fehlt im ZIP.');
-  }
-
-  let parsedRestoredDb: ZeroDatabase;
-  try {
-    const parsed: unknown = JSON.parse(dbEntry.toString('utf8'));
-    assertRestorableDatabase(parsed);
-    parsedRestoredDb = parsed;
-  } catch (err) {
-    throw new Error(
-      `Wiederherstellung abgebrochen — JSON im Backup ungültig: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  // Mandatory safety backup BEFORE restoring!
-  const safetyBackup = await createVersionedZipBackup({
+export const restoreFromVerifiedZipBackup = createVerifiedZipRestoreService({
+  getZipBackupFilePath,
+  verifyZipBuffer,
+  assertRestorableDatabase,
+  createSafetyBackup: (record) => createVersionedZipBackup({
     changelog: `Sicherheitsbackup vor Wiederherstellung von v${record.version}`,
     trigger: 'pre_restore',
     bumpVersion: true,
-  });
-
-  const currentDb = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getZipBackupRevision(safetyBackup) : undefined;
-  const preservedBackupConfig = currentDb.backupConfig;
-  const preservedJsonBackups = currentDb.backups;
-
-  parsedRestoredDb.backupConfig = {
-    ...preservedBackupConfig,
-    changelogHistory: [
-      {
-        version: preservedBackupConfig.currentVersion,
-        date: new Date().toISOString(),
-        summary: `Projektzustand aus verifiziertem Backup v${record.version} wiederhergestellt (Sicherheitsbackup v${safetyBackup.version} erstellt).`,
-      },
-      ...preservedBackupConfig.changelogHistory,
-    ].slice(0, 40),
-  };
-  parsedRestoredDb.backups = preservedJsonBackups;
-  parsedRestoredDb.settings = { ...parsedRestoredDb.settings, maxVideoDurationSec: 60 };
-  parsedRestoredDb.models = parsedRestoredDb.models.map(enrichModelMetadata);
-
-  // A concurrent normal write after the safety snapshot advances the revision;
-  // the restore then aborts with 409 instead of replacing that newer state.
-  await saveDb(parsedRestoredDb, { expectedRevision });
-  return {
-    restoredVersion: record.version,
-    safetyBackup,
-    db: parsedRestoredDb,
-  };
-}
+  }),
+  loadDb,
+  getZipBackupRevision,
+  saveDb,
+  enrichModelMetadata,
+});
