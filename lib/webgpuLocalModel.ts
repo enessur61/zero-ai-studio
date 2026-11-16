@@ -124,6 +124,10 @@ export function isWebGPULocalModelLoaded(): boolean {
   return engine !== null;
 }
 
+export function getLoadedWebGPULocalModelId(): WebGPULocalModelId | null {
+  return loadedModelId as WebGPULocalModelId | null;
+}
+
 export async function generateWebGPULocalChat(
   messages: WebGPULocalChatMessage[],
   onToken?: (token: string) => void
