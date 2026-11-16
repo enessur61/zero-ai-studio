@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
+import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
@@ -36,6 +37,7 @@ import {
   DEVELOPMENT_ROADMAP,
   getZipBackupFilePath,
   IST_ZUSTAND_REPORT,
+  inspectZipBackupConsistency,
   loadDb,
   maybeAutoCreateZipBackup,
   recordBudgetAudit,
@@ -429,6 +431,21 @@ app.get('/api/system/export-zip', asyncRoute(async (_req, res) => {
 }));
 
 // === VERSIONED ZIP BACKUP & RESTORE SYSTEM ===
+app.get('/api/system/zip-backups/reconciliation', asyncRoute(async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(409).json({
+      error: 'Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.',
+    });
+  }
+  const result = await inspectZipBackupConsistency();
+  res.json({
+    ok: true,
+    orphanedBlobIds: result.orphanedBlobIds,
+    missingBlobIds: result.missingBlobIds,
+    orphanedCount: result.orphanedBlobIds.length,
+    missingCount: result.missingBlobIds.length,
+  });
+}));
 app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const totalStorageBytes = db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0);
@@ -457,6 +474,17 @@ app.post('/api/system/zip-backups', asyncRoute(async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      const db = await loadDb();
+      return res.status(202).json({
+        ok: true,
+        backup: err.backup,
+        backupConfig: db.backupConfig,
+        totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Backup fehlgeschlagen' });
   }
 }));
@@ -498,6 +526,14 @@ app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      return res.status(202).json({
+        ok: true,
+        deleted: true,
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(400).json({ error: err instanceof Error ? err.message : 'Löschen blockiert' });
   }
 }));
