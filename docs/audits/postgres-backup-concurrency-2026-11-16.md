@@ -201,3 +201,31 @@ The lease implementation checks the boolean result of `pg_advisory_unlock`, not 
 The full CI run also passed secret scanning, Gemini free-only billing guard, lint, npm tests, PostgreSQL revision/concurrency integration, production build, production server smoke test, all post-job hooks, and container cleanup. The log's PostgreSQL `NOT NULL` violations and `injected ZIP publication failure` are expected negative-test fixtures. Non-blocking warnings included Node.js 20 action deprecation, absent `go.sum` for the Go cache, `punycode`/dependency deprecations, and local PostgreSQL test-container trust authentication. No actionable CI failure was found.
 
 PR #84 remains open and Draft. No merge or deployment was performed.
+
+
+## ZIP backup retention cleanup and operational reconciliation — CI #751
+
+**Validated code head:** `50686d8ca7b1d46819645abc5dfa99ad3d4d655d`  
+**Workflow run:** [CI #751](https://github.com/enessur61/zero-ai-studio/actions/runs/43975616542) — run `43975616542`, job `133678685930` (`verify`)  
+**Result:** `completed / success`; all 19 job steps passed, including post-job hooks and PostgreSQL container cleanup. The complete job log was retrieved and reviewed (1,020 lines / 94,227 characters).
+
+### Findings and implemented corrections
+
+- The PostgreSQL consistency inspector previously existed only as an internal persistence helper; no production route called it. Added authenticated, read-only `GET /api/system/zip-backups/reconciliation`, returning orphaned blob IDs, missing blob IDs, and counts. It does not delete or repair data.
+- The inspector previously read state metadata and blob IDs with separate pool queries. Those statements could observe different commits and produce a transient false orphan/missing report. It now checks both through one checked-out connection inside `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, then commits or rolls back and always releases the connection.
+- ZIP retention previously used `Promise.all` after the metadata+new-blob publication had already committed. A deletion rejection could make the caller see a generic backup failure even though the new backup was durable, while other cleanup tasks could still be running. Cleanup now awaits every attempt with `Promise.allSettled` and throws a typed `BackupCleanupError` containing the committed backup and exact IDs whose old blobs remain.
+- Manual ZIP creation and explicit deletion return HTTP 202 with `cleanupPending` and the affected IDs when publication/metadata removal succeeded but blob cleanup failed. Automatic backup creation logs the pending cleanup and returns the already-committed backup rather than misreporting it as unpublished. The read-only reconciliation endpoint provides the follow-up diagnostic.
+- ZIP deletion retains metadata-first ordering: if blob deletion fails, the backup is no longer offered as downloadable metadata, and the orphan can be identified without leaving a live entry that points to missing bytes.
+
+### Regression coverage
+
+- A focused fake-pool assertion verifies reconciliation starts a read-only repeatable-read transaction, uses one checked-out client, commits, and releases it.
+- PostgreSQL integration coverage seeds old unprotected ZIP metadata and blobs, injects one deletion failure during retention, and verifies the new backup and metadata remain committed, successful deletions complete, the exact failed blob is reported as an orphan, and the report returns clean after the test removes that fixture blob.
+- The production server smoke test authenticates and calls the new reconciliation endpoint after JSON/ZIP backup and restore; it asserts both orphan and missing counts are zero.
+- The integration tests run against isolated local PostgreSQL schemas and two independent pools. They do not inspect or modify production customer data.
+
+### CI evidence and remaining boundaries
+
+CI #751 passed secret scanning, dependency installation, Gemini free-only billing guard, TypeScript lint, npm tests, PostgreSQL revision/restore-race/backup cleanup integration, production build, authenticated production smoke test including reconciliation, post-job hooks, and container cleanup. The PostgreSQL `NOT NULL` violations and `injected ZIP publication failure` in the service logs are intentional negative-test fixtures. Non-blocking warnings included Node.js 20 action deprecation, absent `go.sum` for the Go cache, dependency/`punycode` deprecations, and local PostgreSQL trust authentication. No actionable CI failure remained.
+
+The reconciliation endpoint is intentionally read-only; no automatic orphan deletion or missing-blob repair was added. A future destructive maintenance operation would require a separate reviewed workflow and explicit safeguards. PR #84 remains open and Draft. No merge or deployment was performed.
