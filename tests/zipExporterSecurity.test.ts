@@ -91,7 +91,7 @@ try {
   unsupportedMethod.writeUInt16LE(99, firstEntry.localOffset + 8);
   assert.equal(verifyZipBuffer(unsupportedMethod).result.valid, false, 'unknown compression methods must be rejected');
 
-  const duplicateCentralEntry = Buffer.from(archive.buffer);
+  let duplicateCentralEntry = Buffer.from(archive.buffer);
   const eocdAt = duplicateCentralEntry.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   const totalEntries = duplicateCentralEntry.readUInt16LE(eocdAt + 10);
   duplicateCentralEntry.writeUInt16LE(totalEntries + 1, eocdAt + 8);
