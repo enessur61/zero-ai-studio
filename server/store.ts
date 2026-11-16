@@ -440,6 +440,8 @@ function createDefaultDatabase(): ZeroDatabase {
 
 let dbCache: ZeroDatabase | null = null;
 const dbRevisions = new WeakMap<ZeroDatabase, number>();
+const systemBackupRevisions = new WeakMap<SystemBackupMeta, number>();
+const zipBackupRevisions = new WeakMap<ZipBackupVersion, number>();
 let persistenceSaveQueue: Promise<void> = Promise.resolve();
 
 export async function loadDb(): Promise<ZeroDatabase> {
@@ -595,6 +597,18 @@ export function getDbRevision(db: ZeroDatabase): number {
   return revision;
 }
 
+export function getSystemBackupRevision(backup: SystemBackupMeta): number {
+  const revision = systemBackupRevisions.get(backup);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
+export function getZipBackupRevision(backup: ZipBackupVersion): number {
+  const revision = zipBackupRevisions.get(backup);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
 export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
   if (process.env.DATABASE_URL) {
     // All writers share the PostgreSQL advisory transaction lock and revision check.
@@ -645,10 +659,12 @@ export function recordBudgetAudit(
 }
 
 export async function createSystemBackup(note: string): Promise<SystemBackupMeta> {
-  const db = await loadDb();
+  const current = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
+  const nextDb = JSON.parse(JSON.stringify(current)) as ZeroDatabase;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `zero-backup-${stamp}.json`;
-  const payload = JSON.stringify(db, null, 2);
+  const payload = JSON.stringify(nextDb, null, 2);
   const bytes = Buffer.from(payload, 'utf8');
   const meta: SystemBackupMeta = {
     id: `bkp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -657,18 +673,22 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
     note,
     sizeBytes: bytes.length,
   };
-  db.backups.unshift(meta);
-  const removedBackups = db.backups.length > 20 ? db.backups.slice(20) : [];
-  if (removedBackups.length) db.backups = db.backups.slice(0, 20);
+  nextDb.backups.unshift(meta);
+  const removedBackups = nextDb.backups.length > 20 ? nextDb.backups.slice(20) : [];
+  if (removedBackups.length) nextDb.backups = nextDb.backups.slice(0, 20);
 
   if (process.env.DATABASE_URL) {
-    await saveDb(db, { backupFile: { id: meta.id, filename, contentType: 'application/json', payload: bytes } });
+    await saveDb(nextDb, {
+      expectedRevision,
+      backupFile: { id: meta.id, filename, contentType: 'application/json', payload: bytes },
+    });
+    systemBackupRevisions.set(meta, getDbRevision(nextDb));
   } else {
     await fs.mkdir(BACKUP_DIR, { recursive: true });
     const backupPath = path.join(BACKUP_DIR, filename);
     await fs.writeFile(backupPath, payload, 'utf8');
     try {
-      await saveDb(db);
+      await saveDb(nextDb);
     } catch (error) {
       await fs.rm(backupPath, { force: true });
       throw error;
@@ -748,7 +768,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   // normal write that lands between the safety backup and the restore replacement.
   await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
   const current = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
+  const expectedRevision = process.env.DATABASE_URL ? getSystemBackupRevision(safetyBackup) : undefined;
   restored.backups = current.backups;
   restored.backupConfig = current.backupConfig;
   restored.settings = { ...restored.settings, maxVideoDurationSec: 60 };
@@ -768,8 +788,10 @@ export async function createVersionedZipBackup(params: {
   trigger: 'manual' | 'auto' | 'pre_restore';
   bumpVersion?: boolean;
 }): Promise<ZipBackupVersion> {
-  const db = await loadDb();
-  const backupSnapshot = JSON.parse(JSON.stringify(db)) as ZeroDatabase;
+  const current = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
+  const db = JSON.parse(JSON.stringify(current)) as ZeroDatabase;
+  const backupSnapshot = db;
   const nextVersion =
     params.bumpVersion === false
       ? backupSnapshot.backupConfig.currentVersion
@@ -835,8 +857,10 @@ export async function createVersionedZipBackup(params: {
   const removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
   if (process.env.DATABASE_URL) {
     await saveDb(db, {
+      expectedRevision,
       backupFile: { id: record.id, filename, contentType: 'application/zip', payload: zipRes.buffer },
     });
+    zipBackupRevisions.set(record, getDbRevision(db));
   } else {
     await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
     await fs.writeFile(targetPath, zipRes.buffer);
@@ -951,7 +975,7 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
   });
 
   const currentDb = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(currentDb) : undefined;
+  const expectedRevision = process.env.DATABASE_URL ? getZipBackupRevision(safetyBackup) : undefined;
   const preservedBackupConfig = currentDb.backupConfig;
   const preservedJsonBackups = currentDb.backups;
 
