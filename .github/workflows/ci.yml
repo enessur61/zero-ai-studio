@@ -183,7 +183,7 @@ jobs:
             method: 'PUT',
             body: JSON.stringify({
               title: 'CI edited project',
-              scenes: durationProject.scenes.slice(0, 1),
+              scenes: durationProject.scenes.slice(0, 1).map((scene) => ({ ...scene, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' })),
               snapshotNote: 'CI snapshot restore test',
               id: 'attacker-controlled-id',
               createdAt: '2000-01-01T00:00:00.000Z',
@@ -204,9 +204,23 @@ jobs:
               editedProject.status !== durationProject.status ||
               editedProject.assets.length !== durationProject.assets.length ||
               editedProject.snapshots.length === 0 ||
-              editedProject.updatedAt === '2000-01-01T00:00:00.000Z') {
-            throw new Error('Project update accepted client-controlled server fields (mass-assignment regression)');
+              editedProject.updatedAt === '2000-01-01T00:00:00.000Z' ||
+              editedProject.scenes[0]?.imageUrl !== undefined ||
+              editedProject.scenes[0]?.audioDataUrl !== undefined) {
+            throw new Error('Project update accepted client-controlled server fields or unsafe scene media URLs');
           }
+          const unsafeJavascriptAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'javascript:alert(1)' })
+          });
+          if (unsafeJavascriptAsset.status !== 400) throw new Error('javascript: project asset URL was not rejected');
+          const unsafeHtmlAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'data:text/html;base64,PHNjcmlwdD4=' })
+          });
+          if (unsafeHtmlAsset.status !== 400) throw new Error('HTML data URL was not rejected as an image asset');
+          const safeImageAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'data:image/png;base64,AAAA' })
+          });
+          if (!safeImageAsset.ok) throw new Error('Valid PNG data URL was rejected as a project asset');
           const snapshotToRestore = editedProject.snapshots.find((snapshot) => snapshot.state);
           if (!snapshotToRestore) throw new Error('Project edit did not create a restorable snapshot');
           const restoreResponse = await authFetch(
