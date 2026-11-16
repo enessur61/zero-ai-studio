@@ -83,7 +83,7 @@ struct ZEROWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
 
-        let bridge = ZeroWKWebViewBridge(webView: webView)
+        let bridge = ZeroWKWebViewBridge(webView: webView, trustedHost: Coordinator.appHost)
         context.coordinator.bridge = bridge
         contentController.add(bridge, name: "zeroCoreML")
         context.coordinator.load(webView)
@@ -121,14 +121,28 @@ struct ZEROWebView: UIViewRepresentable {
             self.onLoadSuccess = onLoadSuccess
         }
 
+        static var appURL: URL? {
+            guard let value = Bundle.main.object(forInfoDictionaryKey: "ZERO_APP_URL") as? String,
+                  let url = URL(string: value),
+                  url.scheme == "https",
+                  let host = url.host, !host.isEmpty,
+                  url.user == nil, url.password == nil
+            else { return nil }
+            return url
+        }
+
+        static var appHost: String { appURL?.host ?? "" }
+
         func load(_ webView: WKWebView) {
-            var request = URLRequest(url: Self.appURL)
+            guard let appURL = Self.appURL else {
+                onLoadError("Die ZERO-Serveradresse ist ungültig. Prüfe ZERO_APP_URL in der iOS-Build-Konfiguration.")
+                return
+            }
+            var request = URLRequest(url: appURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.timeoutInterval = 45
             webView.load(request)
         }
-
-        private static let appURL = URL(string: "https://zero-ai-studio.onrender.com")!
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             onLoadSuccess()
@@ -174,7 +188,10 @@ struct ZEROWebView: UIViewRepresentable {
                 return
             }
 
-            if url.scheme == "https", url.host == "zero-ai-studio.onrender.com" {
+            if let appURL = Self.appURL,
+               url.scheme == "https",
+               url.host == appURL.host,
+               (url.port ?? 443) == (appURL.port ?? 443) {
                 decisionHandler(.allow)
                 return
             }
