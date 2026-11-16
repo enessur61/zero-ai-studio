@@ -8,9 +8,10 @@ import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sa
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { checkPostgresConnection, PersistentStateConflictError } from './server/persistence.ts';
+import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
+import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -81,10 +82,22 @@ const AUTH_COOKIE_NAME = 'zero_session';
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const activeSessions = new Map<string, number>();
+const postgresAuthStore = process.env.DATABASE_URL ? createPostgresAuthStore(getPostgresPool()) : null;
 
-function hasValidSession(req: express.Request): boolean {
+function authStore() {
+  if (!postgresAuthStore) throw new Error('PostgreSQL ist für die gemeinsame Produktionsanmeldung erforderlich.');
+  return postgresAuthStore;
+}
+
+function tokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function loginKeyDigest(address: string): string {
+  return createHmac('sha256', ZERO_SESSION_SECRET).update(address).digest('hex');
+}
+
+async function hasValidSession(req: express.Request): Promise<boolean> {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
@@ -92,17 +105,16 @@ function hasValidSession(req: express.Request): boolean {
   if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
-  return activeSessions.get(token) === Number(expiresAt);
+  return authStore().hasSession(tokenDigest(token));
 }
 
-function createSessionCookie(): string {
+async function createSessionCookie(): Promise<string> {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
   const nonce = randomBytes(24).toString('hex');
   const payload = expiresAt + '.' + nonce;
   const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(payload).digest('hex');
   const token = payload + '.' + signature;
-  for (const [session, expiry] of activeSessions) if (expiry <= Date.now()) activeSessions.delete(session);
-  activeSessions.set(token, Number(expiresAt));
+  await authStore().createSession(tokenDigest(token), new Date(Number(expiresAt)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
 }
@@ -134,46 +146,38 @@ app.use('/api', (req, res, next) => {
       error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
     });
   }
-  if (!hasValidSession(req)) {
-    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  }
-  return next();
+  void hasValidSession(req).then((valid) => {
+    if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    return next();
+  }).catch(next);
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
 
-app.get('/api/auth/status', (_req, res) => {
+app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
     !IS_PRODUCTION ||
     (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
   res.json({
     required: IS_PRODUCTION,
     configured,
-    authenticated: !IS_PRODUCTION || (configured && hasValidSession(_req)),
+    authenticated: !IS_PRODUCTION || (configured && await hasValidSession(_req)),
   });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (!IS_PRODUCTION) return res.json({ ok: true, authenticated: true });
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
     return res.status(503).json({ error: 'Serveranmeldung ist noch nicht konfiguriert.' });
   }
 
-  const now = Date.now();
-  for (const [address, entry] of loginAttempts) {
-    if (entry.resetAt <= now) loginAttempts.delete(address);
-  }
-  const ip = req.ip || 'unknown';
-  const attempt = loginAttempts.get(ip);
-  const current = !attempt || attempt.resetAt <= now
-    ? { count: 0, resetAt: now + LOGIN_WINDOW_MS }
-    : attempt;
-  if (current.count >= MAX_LOGIN_ATTEMPTS) {
+  const ipKey = loginKeyDigest(req.ip || 'unknown');
+  const attempt = await authStore().consumeLoginAttempt(ipKey, new Date(), LOGIN_WINDOW_MS, MAX_LOGIN_ATTEMPTS);
+  if (!attempt.allowed) {
+    res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
     return res.status(429).json({ error: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.' });
   }
-  current.count += 1;
-  loginAttempts.set(ip, current);
 
   const supplied = Buffer.from(String(req.body?.password ?? ''));
   const expected = Buffer.from(ZERO_ADMIN_PASSWORD);
@@ -182,19 +186,19 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Passwort ist nicht korrekt.' });
   }
 
-  loginAttempts.delete(ip);
-  res.setHeader('Set-Cookie', createSessionCookie());
+  await authStore().clearLoginAttempts(ipKey);
+  res.setHeader('Set-Cookie', await createSessionCookie());
   return res.json({ ok: true, authenticated: true });
 });
 
 app.post('/api/auth/logout', (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token) activeSessions.delete(decodeURIComponent(token));
+  if (token) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
-});
+}));
 
 
 function cosineSimilarity(a: number[], b: number[]): number {
