@@ -24,11 +24,30 @@ export async function runMemoryEmbedding(params: {
 }): Promise<MemoryEmbeddingResult> {
   const { budgetGuard, action, contents, recordAudit, embed, persistExhausted } = params;
 
-  // The guard writes its own audit entry. Keep it outside the provider-error
-  // handler to avoid double-auditing an already blocked request.
+  // The guard may already audit a blocked request. Track that so malformed
+  // metadata is audited here without duplicating the guard's own audit event.
+  let guardAudited = false;
   try {
-    assertZeroBudgetModelAllowed(MEMORY_EMBEDDING_MODEL_ID, action, budgetGuard, recordAudit);
+    assertZeroBudgetModelAllowed(
+      MEMORY_EMBEDDING_MODEL_ID,
+      action,
+      budgetGuard,
+      (entry) => {
+        guardAudited = true;
+        recordAudit(entry);
+      },
+    );
   } catch (err) {
+    if (!guardAudited) {
+      recordAudit({
+        adapterId: 'gemini-quota-guard',
+        modelId: MEMORY_EMBEDDING_MODEL_ID,
+        action,
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: `Kontingentprüfung fehlgeschlagen; Aufruf sicher blockiert: ${formatGermanApiError(err)}`,
+        costEur: 0,
+      });
+    }
     return { notice: formatGermanApiError(err) };
   }
 
