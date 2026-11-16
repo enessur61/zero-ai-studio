@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
+import { createRestoreHandlers } from './server/restoreHandlers.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
@@ -378,23 +379,12 @@ app.post('/api/system/backup', asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/system/restore', asyncRoute(async (req, res) => {
-  try {
-    const backupId = String(req.body?.backupId ?? '');
-    const restored = await restoreSystemBackup(backupId);
-    res.json({ ok: true, restoredProjects: restored.projects.length, restoredMemories: restored.memories.length });
-  } catch (err) {
-    const status = err instanceof PersistentStateConflictError ? 409 : 400;
-    res.status(status).json({
-      error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen',
-      ...(err instanceof PersistentStateConflictError ? {
-        code: 'PERSISTENCE_REVISION_CONFLICT',
-        expectedRevision: err.expectedRevision,
-        actualRevision: err.actualRevision,
-      } : {}),
-    });
-  }
-}));
+const restoreHandlers = createRestoreHandlers({
+  restoreSystemBackup,
+  restoreZipBackup: restoreFromVerifiedZipBackup,
+});
+
+app.post('/api/system/restore', restoreHandlers.json);
 
 app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
   try {
@@ -512,27 +502,7 @@ app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/system/zip-backups/:id/restore', asyncRoute(async (req, res) => {
-  try {
-    const restored = await restoreFromVerifiedZipBackup(req.params.id);
-    res.json({
-      ok: true,
-      restoredVersion: restored.restoredVersion,
-      safetyBackup: restored.safetyBackup,
-      backupConfig: restored.db.backupConfig,
-    });
-  } catch (err) {
-    const status = err instanceof PersistentStateConflictError ? 409 : 400;
-    res.status(status).json({
-      error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen',
-      ...(err instanceof PersistentStateConflictError ? {
-        code: 'PERSISTENCE_REVISION_CONFLICT',
-        expectedRevision: err.expectedRevision,
-        actualRevision: err.actualRevision,
-      } : {}),
-    });
-  }
-}));
+app.post('/api/system/zip-backups/:id/restore', restoreHandlers.zip);
 
 // === ZERO MODEL HUB ===
 app.get('/api/models', asyncRoute(async (_req, res) => {
