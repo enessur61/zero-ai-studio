@@ -27,6 +27,13 @@ assert.throws(
   /Kontingentdatensatz/,
 );
 
+const emptyResetDate = base();
+emptyResetDate.freeQuotaUsage['gemini-3.8-flash'].lastResetDate = '';
+assert.throws(
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', emptyResetDate, () => {}),
+  /Reset-Datum/,
+);
+
 const malformed = base();
 malformed.freeQuotaUsage['gemini-3.8-flash'].lastResetDate = '2026-02-30';
 assert.throws(
