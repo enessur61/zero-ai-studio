@@ -38,6 +38,8 @@ const schema = `zero_revision_test_${randomUUID().replaceAll('-', '')}`;
 const adminPool = new Pool({ connectionString, max: 1 });
 const poolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const poolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
+const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
+const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
 
 try {
   await adminPool.query(`CREATE SCHEMA "${schema}"`);
@@ -91,8 +93,8 @@ try {
   assert.equal(exhaustedQuota.requestsToday, 8);
 
   // Production ZIP middleware must enforce one shared limit across two pools.
-  const gateA = createPostgresConcurrencyGate(poolA, 2, 5);
-  const gateB = createPostgresConcurrencyGate(poolB, 2, 5);
+  const gateA = createPostgresConcurrencyGate(gatePoolA, 2, 5);
+  const gateB = createPostgresConcurrencyGate(gatePoolB, 2, 5);
   let heldRequests = 0;
   let releaseHeld!: () => void;
   const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
@@ -137,6 +139,10 @@ try {
     releaseHeld();
     assert.equal((await (await first).json()).id, 'one');
     assert.equal((await (await second).json()).id, 'two');
+    for (let attempt = 0; attempt < 100 && gateA.activeCount() + gateB.activeCount() > 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(gateA.activeCount() + gateB.activeCount(), 0, 'both shared ZIP leases must be released after response completion');
     const afterRelease = await fetch(baseB + '/held/after-release');
     assert.equal(afterRelease.status, 200, 'a completed ZIP handler must release a global slot');
 
@@ -146,11 +152,14 @@ try {
     abort.abort();
     await disconnectedRequest;
     const occupy = fetch(baseB + '/held/occupied');
-    while (heldRequests < 3) await new Promise((resolve) => setImmediate(resolve));
+    while (heldRequests < 4) await new Promise((resolve) => setImmediate(resolve));
     const stillHeld = await fetch(baseA + '/held/blocked-after-disconnect');
     assert.equal(stillHeld.status, 429, 'client disconnect must not release a slot while async work is still running');
     releaseDisconnected();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let attempt = 0; attempt < 100 && gateA.activeCount() > 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(gateA.activeCount(), 0, 'disconnected handler must release after its async work settles');
     const afterDisconnectWork = await fetch(baseA + '/held/after-disconnect-work');
     assert.equal(afterDisconnectWork.status, 200, 'slot must release once disconnected handler work settles');
     releaseOccupied();
@@ -1345,7 +1354,7 @@ try {
   assert.equal(failedAcquireRelease, true, 'an uncertain compensating unlock must destroy the connection');
   console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
 } finally {
-  await Promise.all([poolA.end(), poolB.end()]);
+  await Promise.all([poolA.end(), poolB.end(), gatePoolA.end(), gatePoolB.end()]);
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   await adminPool.end();
 }
