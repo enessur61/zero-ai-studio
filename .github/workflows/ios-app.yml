@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Keep only the latest native build for each PR/ref; stale simulator/device
+# builds must not accumulate behind newer commits.
+concurrency:
+  group: zero-native-ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ios-app:
     runs-on: macos-latest
