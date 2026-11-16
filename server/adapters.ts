@@ -211,10 +211,12 @@ export async function runLiveModelTest(
       'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
     ].includes(model.id)) {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -237,10 +239,12 @@ export async function runLiveModelTest(
         ? `Live-Probe erfolgreich (${text.slice(0, 32)}).`
         : 'Leere Antwort vom Endpunkt.';
     } else if (model.id === 'gemini-3.8-flash-lite-tts' || model.id === 'gemini-3.8-flash-tts') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -381,10 +385,21 @@ export async function runLiveModelTest(
       model.status = 'VORÜBERGEHEND AUSGELASTET';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
-    } else if (kind === 'auth') {
+    } else if (
+      kind === 'auth' ||
+      cleanMsg.includes('ZERO_GEMINI_FREE_TIER_ONLY')
+    ) {
       model.testPassed = false;
       model.status = 'INSTALLATION ERFORDERLICH';
       model.lastTestMessage = cleanMsg;
+      recordBudgetAudit(db, {
+        adapterId: 'gemini-budget-guard',
+        modelId: model.id,
+        action: 'MODEL_HEALTH_TEST',
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: 'Gemini-Modelltest vor jedem Provider-Aufruf blockiert: Free-only-Abrechnungsschutz ist nicht ausdrücklich bestätigt.',
+        costEur: 0,
+      });
     } else {
       model.testPassed = false;
       model.status = 'ADAPTER FEHLT';
