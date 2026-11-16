@@ -1,3 +1,11 @@
 // Production entry point: auth is enabled unless explicitly running development/test.
 process.env.NODE_ENV = 'production';
-await import('./server.ts');
+
+console.info('[ZERO BOOT] Production entry point loaded; importing server module.');
+
+try {
+  await import('./server.ts');
+} catch (error) {
+  console.error('[ZERO BOOT] Server module import failed:', error);
+  process.exitCode = 1;
+}

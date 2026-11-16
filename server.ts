@@ -2056,4 +2056,7 @@ async function startServer() {
   });
 }
 
-startServer();
+void startServer().catch((error) => {
+  console.error('[ZERO STARTUP] Server initialization failed:', error);
+  process.exitCode = 1;
+});
