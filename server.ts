@@ -233,8 +233,8 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       );
     }
 
-    const quota = db.budgetGuard.freeQuotaUsage[modelId];
-    if (quota) quota.requestsToday += 1;
+    // assertZeroBudgetModelAllowed already records this successful request
+    // through recordBudgetAudit, which increments requestsToday exactly once.
     await saveDb(db);
 
     return res.json({
