@@ -155,7 +155,8 @@ try {
   const autoLeaseB = await storeB.acquireAutoBackupLease();
   assert.equal(autoLeaseB, null, 'second pool must not acquire the active automatic backup lease');
 
-  const beforeAutoBackup = await storeA.read();
+  // Pool A's only connection is held by the session-level lease; read via independent pool B.
+  const beforeAutoBackup = await storeB.read();
   assert.ok(beforeAutoBackup);
   await assert.rejects(
     () => storeB.writeWithBackup(
