@@ -1179,15 +1179,24 @@ app.post('/api/audio/transcribe', async (req, res) => {
             ],
           },
         ],
+        config: {
+          audioTranscriptionConfig: {
+            wordTimestamp: true,
+          },
+        },
       })
     );
 
+    type TimedWord = { word?: string; startOffset?: string; endOffset?: string };
     const parts = (response.candidates?.[0]?.content?.parts ?? []) as Array<{
       text?: string;
-      audioTranscription?: { text?: string };
+      audioTranscription?: { text?: string; words?: TimedWord[] };
     }>;
+    const transcriptionParts = parts
+      .map((part) => part.audioTranscription)
+      .filter((part): part is NonNullable<typeof part> => Boolean(part));
     const partsText = parts
-      .map((p) => p.audioTranscription?.text ?? (typeof p.text === 'string' ? p.text : ''))
+      .map((part) => part.audioTranscription?.text ?? (typeof part.text === 'string' ? part.text : ''))
       .filter(Boolean)
       .join('\n')
       .trim();
@@ -1197,12 +1206,59 @@ app.post('/api/audio/transcribe', async (req, res) => {
       throw new Error('Transkription lieferte kein erkanntes Sprachsignal.');
     }
 
-    // Return only the recognized words. Without word-level timestamps or the
-    // source audio duration, inventing a fixed five-second SRT cue would be misleading.
+    const parseOffsetMs = (offset?: string): number | null => {
+      if (!offset) return null;
+      const seconds = Number.parseFloat(offset.replace(/s$/i, ''));
+      return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 1000)) : null;
+    };
+    const formatSrtTime = (milliseconds: number): string => {
+      const ms = Math.max(0, Math.round(milliseconds));
+      const hours = Math.floor(ms / 3_600_000);
+      const minutes = Math.floor((ms % 3_600_000) / 60_000);
+      const seconds = Math.floor((ms % 60_000) / 1000);
+      const remainder = ms % 1000;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(remainder).padStart(3, '0')}`;
+    };
+    const timedWords = transcriptionParts.flatMap((part) =>
+      (part.words ?? []).flatMap((word) => {
+        const text = String(word.word ?? '').trim();
+        const startMs = parseOffsetMs(word.startOffset);
+        const endMs = parseOffsetMs(word.endOffset);
+        return text && startMs !== null && endMs !== null && endMs > startMs
+          ? [{ text, startMs, endMs }]
+          : [];
+      })
+    );
+    const subtitleCues: Array<{ startMs: number; endMs: number; text: string }> = [];
+    let cueWords: typeof timedWords = [];
+    const flushCue = () => {
+      if (!cueWords.length) return;
+      subtitleCues.push({
+        startMs: cueWords[0].startMs,
+        endMs: cueWords[cueWords.length - 1].endMs,
+        text: cueWords.map((word) => word.text).join(' '),
+      });
+      cueWords = [];
+    };
+    for (const word of timedWords) {
+      const first = cueWords[0];
+      const durationExceeded = first ? word.endMs - first.startMs > 3_500 : false;
+      if (first && (cueWords.length >= 7 || durationExceeded)) flushCue();
+      cueWords.push(word);
+      if (/[.!?]$/.test(word.text)) flushCue();
+    }
+    flushCue();
+    const srt = subtitleCues
+      .map((cue, index) => `${index + 1}\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\n${cue.text}`)
+      .join('\n\n');
+
     await saveDb(database);
     res.json({
       transcript: rawTranscript,
       rawText: rawTranscript,
+      srt: srt || null,
+      subtitleCueCount: subtitleCues.length,
+      timestampsAvailable: subtitleCues.length > 0,
       modelUsed: selectedTranscriptionModel,
       costEur: 0,
     });
