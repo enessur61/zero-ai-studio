@@ -27,6 +27,21 @@ assert.throws(
   /Kontingentdatensatz/,
 );
 
+// Every allowed provider attempt reserves one local request slot before execution.
+const reserved = base();
+assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {});
+assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 1);
+for (let i = 1; i < 10; i += 1) {
+  assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {});
+}
+assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 10);
+assert.throws(
+  () => assertZeroBudgetModelAllowed('gemini-3.8-flash', 'test', reserved, () => {}),
+  /ausgeschöpft/,
+  'the local request budget must stop further provider calls at its configured limit',
+);
+assert.equal(reserved.freeQuotaUsage['gemini-3.8-flash'].requestsToday, 10);
+
 const emptyResetDate = base();
 emptyResetDate.freeQuotaUsage['gemini-3.8-flash'].lastResetDate = '';
 assert.throws(
