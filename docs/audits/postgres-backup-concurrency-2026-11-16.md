@@ -330,3 +330,16 @@ The reconciliation endpoint is intentionally read-only; no automatic orphan dele
 **CI warnings:** Missing go.sum cache pattern and GitHub Actions Node.js 20 deprecation warnings are non-blocking. PostgreSQL NOT NULL errors and injected ZIP publication failure are deliberate negative-test fixtures.
 
 PR #84 remains Open and Draft. No merge and no deployment.
+
+
+## CI #777 — bounded concurrent ZIP downloads and restores
+
+- Production routes `GET /api/system/zip-backups/:id/download` and `POST /api/system/zip-backups/:id/restore` now share a process-local concurrency gate with a maximum of **2 simultaneous ZIP operations**.
+- A third simultaneous request is rejected with HTTP 429, `Retry-After: 5`, and code `ZIP_CONCURRENCY_LIMIT`; it never enters the download/restore handler.
+- Slots are released on response `finish` or `close`, guarded against double release. This bounds the number of concurrent operations retaining archive/decompression buffers within one Node.js process. It is not a distributed/global limit across multiple server instances.
+- Added a real Express HTTP test that holds one request open, proves the concurrent request is rejected, then releases the first and proves a later request is admitted. The test exercises the same middleware mounted on the production routes.
+- CI #777: https://github.com/enessur61/zero-ai-studio/actions/runs/43980913650 — all 19 job steps succeeded. Full job log reviewed: 1,022 lines / 94,575 characters.
+- Log confirms `ZIP concurrent request gate tests passed.`, existing ZIP decompression-bomb/resource-limit tests, PostgreSQL restore/concurrency integration tests, build, and production smoke test.
+- CI #776 initially failed in the first version of the new concurrency test due to a race in the test's slot-reuse assertion. The test was simplified to a deterministic single-slot HTTP scenario; CI #777 then passed. No production failure was observed.
+- Non-blocking warnings: missing `go.sum` cache key, Node.js 20 action deprecation notices, `punycode` deprecation, and existing Vite chunk-size warning. PostgreSQL NOT NULL and injected ZIP publication errors are intentional negative-test fixtures.
+- Scope: tests use CI's isolated PostgreSQL database and a local Express HTTP server. No production database restart, live deployment, or production data mutation was performed.
