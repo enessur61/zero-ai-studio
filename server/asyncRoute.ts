@@ -10,7 +10,7 @@ export function asyncRoute(handler: RequestHandler): RequestHandler {
     void Promise.resolve(handler(req, res, next))
       .catch(next)
       .finally(async () => {
-        const settle = res.locals.zeroConcurrencyHandlerSettled;
+        const settle = res.locals?.zeroConcurrencyHandlerSettled;
         if (typeof settle === 'function') {
           try {
             await settle();
