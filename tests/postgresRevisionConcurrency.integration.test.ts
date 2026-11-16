@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import express from 'express';
+import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { createRestoreHandlers } from '../server/restoreHandlers.ts';
 import { Pool } from 'pg';
 import {
   createPostgresStateStore,
@@ -223,7 +226,67 @@ try {
     revision: restoreSnapshot.revision + 1,
   });
 
-  console.log('PostgreSQL revision, restore-race, and atomic-backup tests passed using two independent pools.');
+  // Exercise the real HTTP restore handler while two independent PostgreSQL pools
+  // deterministically interleave a restore snapshot and a newer normal write.
+  let announceRestorePaused!: () => void;
+  const restorePaused = new Promise<void>((resolve) => { announceRestorePaused = resolve; });
+  let releaseRestore!: () => void;
+  const restoreGate = new Promise<void>((resolve) => { releaseRestore = resolve; });
+  const restoreHandlers = createRestoreHandlers({
+    restoreSystemBackup: async () => ({ projects: [], memories: [] }),
+    restoreZipBackup: async (backupId) => {
+      assert.equal(backupId, 'http-race-backup');
+      const snapshot = await storeA.read();
+      assert.ok(snapshot);
+      announceRestorePaused();
+      await restoreGate;
+      await storeA.write({ value: 'stale-http-restore' }, snapshot.revision);
+      return {
+        restoredVersion: '1.0.0',
+        safetyBackup: {},
+        db: { backupConfig: {} },
+      };
+    },
+  });
+  const routeApp = express();
+  routeApp.use(express.json());
+  routeApp.post('/api/system/zip-backups/:id/restore', restoreHandlers.zip);
+  const httpServer = routeApp.listen(0, '127.0.0.1');
+  await once(httpServer, 'listening');
+  const address = httpServer.address();
+  assert.ok(address && typeof address !== 'string');
+  const httpRestore = fetch(`http://127.0.0.1:${address.port}/api/system/zip-backups/http-race-backup/restore`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  try {
+    await restorePaused;
+    const beforeWrite = await storeB.read();
+    assert.ok(beforeWrite);
+    const winningHttpWriteRevision = await storeB.write(
+      { value: 'newer-http-normal-write' },
+      beforeWrite.revision
+    );
+    assert.equal(winningHttpWriteRevision, beforeWrite.revision + 1);
+    releaseRestore();
+    const response = await httpRestore;
+    assert.equal(response.status, 409, 'HTTP restore must expose a revision conflict');
+    const responseBody = await response.json() as { code?: string; expectedRevision?: number; actualRevision?: number };
+    assert.equal(responseBody.code, 'PERSISTENCE_REVISION_CONFLICT');
+    assert.equal(responseBody.expectedRevision, beforeWrite.revision);
+    assert.equal(responseBody.actualRevision, winningHttpWriteRevision);
+    assert.deepEqual(await storeA.read(), {
+      payload: { value: 'newer-http-normal-write' },
+      revision: winningHttpWriteRevision,
+    }, 'the newer normal write must survive the rejected HTTP restore');
+  } finally {
+    releaseRestore();
+    httpServer.close();
+    await once(httpServer, 'close');
+  }
+
+  console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
 } finally {
   await Promise.all([poolA.end(), poolB.end()]);
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
