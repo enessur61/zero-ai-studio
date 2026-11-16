@@ -169,7 +169,17 @@ export function assertZeroBudgetModelAllowed(
       );
     }
   } else {
-    quota.lastResetDate = today;
+    recordAudit({
+      adapterId: 'gemini-quota-guard',
+      modelId,
+      action,
+      decision: 'BLOCKIERT_BUDGET_GUARD',
+      reason: 'Reset-Datum des Free-Tier-Kontingents fehlt. Aufruf aus Sicherheitsgründen blockiert; ein fehlender Zeitstempel ist kein Nachweis für ein frisches Provider-Kontingent.',
+      costEur: 0,
+    });
+    throw new Error(
+      `Reset-Datum des Free-Tier-Kontingents für "${modelId}" fehlt. Sicher gestoppt (kein kostenpflichtiger Fallback).`
+    );
   }
 
   if (quota.exhausted || quota.requestsToday >= quota.dailySoftLimit) {
