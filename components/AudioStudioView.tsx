@@ -164,6 +164,9 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
 
     setTranscribeError(null);
     try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        throw new Error('Mikrofonaufnahme wird von diesem Browser nicht unterstützt. Bitte eine Audiodatei auswählen.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
       chunksRef.current = [];
@@ -173,6 +176,14 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
       mr.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' });
+        if (blob.size > 18 * 1024 * 1024) {
+          setTranscribeError('Die Aufnahme ist größer als 18 MB. Bitte kürzer aufnehmen oder komprimieren.');
+          return;
+        }
+        if (!blob.size) {
+          setTranscribeError('Die Aufnahme enthält keine Audiodaten. Bitte erneut aufnehmen.');
+          return;
+        }
         const reader = new FileReader();
         reader.onloadend = () => {
           void sendAudioForTranscription(String(reader.result));
@@ -192,6 +203,16 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   function handleAudioUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 18 * 1024 * 1024) {
+      setTranscribeError('Die Audiodatei ist größer als 18 MB. Bitte eine kleinere Datei auswählen.');
+      e.target.value = '';
+      return;
+    }
+    if (!file.type.startsWith('audio/')) {
+      setTranscribeError('Bitte eine gültige Audiodatei auswählen.');
+      e.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onloadend = () => {
       void sendAudioForTranscription(String(reader.result));
