@@ -523,6 +523,7 @@ export default function App() {
               onProjectDeleted={(id) =>
                 setProjects((prev) => prev.filter((item) => item.id !== id))
               }
+              onProjectUpdated={handleProjectUpdated}
               onCharacterCreated={(c) => setCharacters((prev) => [c, ...prev])}
               onOpenDirector={() => navigateTo('director')}
             />
