@@ -286,10 +286,10 @@ export function ModelHubView({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <p className="text-xs font-mono text-sky-300">ZERO LOCAL RUNTIME · WEBGPU</p>
-            <h2 className="text-base font-semibold text-white">Llama 3.2 1B · direkt auf diesem iPhone</h2>
+            <h2 className="text-base font-semibold text-white">Lokale Open-Source-Modelle · direkt auf diesem Gerät</h2>
             <label className="block text-xs text-slate-300 mt-2">
               Lokales Modell auswählen
-              <select value={selectedWebGpuModelId} onChange={(event) => { setSelectedWebGpuModelId(event.target.value); setWebGpuLoaded(false); }} disabled={webGpuLoading || webGpuLoaded} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
+              <select value={selectedWebGpuModelId} onChange={(event) => { const nextId = event.target.value; void unloadWebGPULocalModel().finally(() => { setSelectedWebGpuModelId(nextId); setWebGpuLoaded(false); setWebGpuProgress(0); }); }} disabled={webGpuLoading} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
                 {WEBGPU_LOCAL_MODELS.map((item) => <option key={item.modelId} value={item.modelId}>{item.name} · ca. {item.vramMB} MB GPU</option>)}
               </select>
             </label>
