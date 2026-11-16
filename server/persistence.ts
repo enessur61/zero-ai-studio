@@ -82,7 +82,8 @@ export function createPostgresStateStore(database: Pool) {
   async function write<T>(
     payload: T,
     expectedRevision: number,
-    backupFile?: { id: string; filename: string; contentType: string; payload: Buffer }
+    backupFile?: { id: string; filename: string; contentType: string; payload: Buffer },
+    recordAutoBackupSuccess = false
   ): Promise<number> {
     await ensureSchema();
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
@@ -156,6 +157,16 @@ export function createPostgresStateStore(database: Pool) {
         );
       }
 
+      // The successful-auto-backup marker commits with the exact state and ZIP blob.
+      if (recordAutoBackupSuccess) {
+        if (!backupFile) throw new Error('Auto-Backup-Erfolg benötigt eine atomare ZIP-Datei.');
+        await client.query(
+          `INSERT INTO zero_backup_auto_state (id, last_success_at)
+           VALUES ('zip-auto', NOW())
+           ON CONFLICT (id) DO UPDATE SET last_success_at = EXCLUDED.last_success_at`
+        );
+      }
+
       await client.query('COMMIT');
       transactionStarted = false;
       return nextRevision;
@@ -197,18 +208,10 @@ export function createPostgresStateStore(database: Pool) {
         return null;
       }
       let finished = false;
-      const finish = async (success: boolean) => {
+      const finish = async () => {
         if (finished) return;
         finished = true;
         try {
-          if (success) {
-            await client.query(`
-              INSERT INTO zero_backup_auto_state (id, last_success_at)
-              VALUES ('zip-auto', NOW())
-              ON CONFLICT (id) DO UPDATE SET last_success_at = EXCLUDED.last_success_at
-            `);
-          }
-        } finally {
           if (lockAcquired) {
             await client.query('SELECT pg_advisory_unlock(1514480207, 2)').catch(() => undefined);
             lockAcquired = false;
@@ -217,8 +220,10 @@ export function createPostgresStateStore(database: Pool) {
         }
       };
       return {
-        complete: () => finish(true),
-        release: () => finish(false),
+        // The success timestamp is written by the backup publication transaction,
+        // never by this lease-release operation.
+        complete: () => finish(),
+        release: () => finish(),
       };
     } catch (error) {
       if (lockAcquired) {
@@ -262,8 +267,9 @@ export function createPostgresStateStore(database: Pool) {
     writeWithBackup: <T>(
       payload: T,
       expectedRevision: number,
-      backupFile: { id: string; filename: string; contentType: string; payload: Buffer }
-    ) => write(payload, expectedRevision, backupFile),
+      backupFile: { id: string; filename: string; contentType: string; payload: Buffer },
+      recordAutoBackupSuccess = false
+    ) => write(payload, expectedRevision, backupFile, recordAutoBackupSuccess),
   };
 }
 
@@ -307,9 +313,10 @@ export async function writePersistentState<T>(payload: T, expectedRevision: numb
 export async function writePersistentStateWithBackupFile<T>(
   payload: T,
   expectedRevision: number,
-  backupFile: { id: string; filename: string; contentType: string; payload: Buffer }
+  backupFile: { id: string; filename: string; contentType: string; payload: Buffer },
+  recordAutoBackupSuccess = false
 ): Promise<number> {
-  return getStateStore().write(payload, expectedRevision, backupFile);
+  return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess);
 }
 
 export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: number): Promise<{
