@@ -229,3 +229,27 @@ PR #84 remains open and Draft. No merge or deployment was performed.
 CI #751 passed secret scanning, dependency installation, Gemini free-only billing guard, TypeScript lint, npm tests, PostgreSQL revision/restore-race/backup cleanup integration, production build, authenticated production smoke test including reconciliation, post-job hooks, and container cleanup. The PostgreSQL `NOT NULL` violations and `injected ZIP publication failure` in the service logs are intentional negative-test fixtures. Non-blocking warnings included Node.js 20 action deprecation, absent `go.sum` for the Go cache, dependency/`punycode` deprecations, and local PostgreSQL trust authentication. No actionable CI failure remained.
 
 The reconciliation endpoint is intentionally read-only; no automatic orphan deletion or missing-blob repair was added. A future destructive maintenance operation would require a separate reviewed workflow and explicit safeguards. PR #84 remains open and Draft. No merge or deployment was performed.
+
+
+## Multi-version ZIP chain and restore-order audit — CI #755
+
+**Validated code head:** `124f1261717580bb2b792b76e4675931b847ca4d`  
+**Workflow run:** [CI #755](https://github.com/enessur61/zero-ai-studio/actions/runs/43976914776) — run `43976914776`, job `133683134182` (`verify`)  
+**Result:** `completed / success`; all 19 job steps passed, including PostgreSQL integration, production build, authenticated production smoke test, post-job hooks, and PostgreSQL container cleanup. The complete job log was retrieved and reviewed (1,020 lines / 94,227 characters).
+
+### Findings and implemented correction
+
+- `bumpPatchVersion` previously fell back to `1.1.1` for malformed stored versions. That could silently move a backup history backwards. It now accepts only a three-part numeric MAJOR.MINOR.PATCH value with safe integer components and rejects malformed or overflowing values before ZIP generation or persistence.
+- The PostgreSQL integration test now invokes the shared production `createVersionedZipBackupService` repeatedly against isolated PostgreSQL pools. It creates three consecutive versions (`1.2.1`, `1.2.2`, `1.2.3`) from distinct persisted project states.
+- Each version's committed PostgreSQL blob is read back, checked with the production ZIP verifier, and its embedded `data/zero-studio-db.json` is parsed. The test verifies the archive's embedded current version and the expected project snapshot.
+- The same production `createVerifiedZipRestoreService` is then exercised in non-creation order: restore `1.2.2`, then `1.2.3`. Each restore creates its safety archive through the shared production versioned-backup service; the test verifies the safety record is `pre_restore`, protected, and the stored safety ZIP passes the production verifier.
+- The retention failure fixture now includes an older protected manual backup. The test verifies both its metadata and blob survive pruning, while the injected failed deletion remains identifiable as an orphan and all other cleanup attempts finish.
+- After the two restores, PostgreSQL reconciliation must report no missing or orphaned backup blobs.
+
+### Intermediate CI failures and correction
+
+- CI #753 (run `43976710113`, head `ca72ecf64cd053a373044388e593780153b1e7f3`) and CI #754 (run `43976843812`, head `96a365bb787176dd37799ac459f2b5e715cd2e2e`) both reached the PostgreSQL integration step and failed because the newly introduced version regex was over-escaped and rejected the valid existing version `1.2.0`. Their full job logs were retrieved (651 lines each). The regex was corrected to match literal dots and numeric components; no database or production data was involved.
+- CI #755 validates the corrected code head and the complete new integration sequence. Secret scanning, dependency installation, Gemini free-only billing guard, lint, all npm tests, PostgreSQL integration, production build, authenticated production smoke test, post-job hooks, and container cleanup all passed.
+- Expected PostgreSQL `NOT NULL` violations and the injected `injected ZIP publication failure` are negative-test fixtures proving rollback behavior, not CI failures. Non-blocking warnings: Go cache cannot find `go.sum`; GitHub Actions reports Node.js 20 action deprecation. No actionable warning or failure remained on CI #755.
+
+**Coverage boundary:** tests use isolated local PostgreSQL schemas and independent pools, plus the production ZIP builder/verifier and shared backup/restore orchestration. They do not inspect or modify production rows, production backup blobs, or a live deployed service. PR #84 remains open and Draft. No merge or deployment was performed.
