@@ -37,9 +37,15 @@ export interface VersionedZipBackupDependencies {
 }
 
 function bumpPatchVersion(version: string): string {
-  const parts = version.split('.').map((n) => Number(n));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return '1.1.1';
-  return `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+  const match = /^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$/.exec(version);
+  if (!match) {
+    throw new Error(`Ungültige ZIP-Backup-Version "${version}"; erwartet wird MAJOR.MINOR.PATCH.`);
+  }
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (![major, minor, patch].every(Number.isSafeInteger) || patch === Number.MAX_SAFE_INTEGER) {
+    throw new Error(`ZIP-Backup-Version "${version}" liegt außerhalb des sicher unterstützten Zahlenbereichs.`);
+  }
+  return `${major}.${minor}.${patch + 1}`;
 }
 
 /**
