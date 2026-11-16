@@ -233,9 +233,9 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   await authStore().clearLoginAttempts(ipKey);
   res.setHeader('Set-Cookie', await createSessionCookie());
   return res.json({ ok: true, authenticated: true });
-});
+}));
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
