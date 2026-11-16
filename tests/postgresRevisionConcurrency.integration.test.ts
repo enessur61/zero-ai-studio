@@ -1360,6 +1360,36 @@ try {
     /injected lease-state query failure/
   );
   assert.equal(failedAcquireRelease, true, 'an uncertain compensating unlock must destroy the connection');
+  // Project video media is stored in the PostgreSQL JSONB state, not only in
+  // browser IndexedDB. Verify a second independent pool can recover the exact
+  // data URL that the versioned ZIP backup service snapshots into its DB JSON.
+  const beforeMediaWrite = await storeA.read();
+  assert.ok(beforeMediaWrite);
+  const mediaDataUrl = `data:video/mp4;base64,${Buffer.from('ZERO durable media fixture').toString('base64')}`;
+  const mediaPayload = {
+    projects: [{
+      id: 'durable-media-project',
+      scenes: [],
+      assets: [{
+        id: 'durable-media-asset',
+        type: 'video',
+        title: 'Durable scene clip',
+        url: mediaDataUrl,
+        modelId: 'zero-scene-video:durable-media-scene',
+        durationSec: 5,
+        createdAt: new Date().toISOString(),
+      }],
+    }],
+  };
+  const mediaRevision = await storeA.write(mediaPayload, beforeMediaWrite.revision);
+  const recoveredMediaState = await storeB.read<typeof mediaPayload>();
+  assert.equal(recoveredMediaState?.revision, mediaRevision);
+  assert.equal(
+    recoveredMediaState?.payload.projects[0].assets[0].url,
+    mediaDataUrl,
+    'server-persisted scene media must survive independent-pool reloads and be present in the JSON snapshot used by backups'
+  );
+
   console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
 } finally {
   await Promise.all([poolA.end(), poolB.end(), gatePoolA.end(), gatePoolB.end()]);
