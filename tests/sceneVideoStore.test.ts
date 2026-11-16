@@ -34,6 +34,6 @@ const browserError = await requestSceneVideoStoragePersistence({
   persist: async () => true,
   estimate: async () => { throw new Error('estimate unavailable'); },
 } as unknown as StorageManager);
-assert.deepEqual(browserError, { persistent: null, usageBytes: null, quotaBytes: null });
+assert.deepEqual(browserError, { persistent: null, usageBytes: null, quotaBytes: null, localSaved: false, serverPersisted: null });
 
 console.log('Scene video storage tests passed: persistent grant, denial, unsupported API, and browser errors.');
