@@ -126,13 +126,29 @@ export function ImageStudioView({
   }
 
   function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const input = e.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
+    input.value = '';
+    if (!file.type.startsWith('image/')) {
+      setError('Bitte wähle eine gültige Bilddatei aus.');
+      return;
+    }
+    // Base64 increases payload size by roughly one third. Keep iPhone memory
+    // usage and the 25 MB JSON request ceiling safely bounded.
+    if (file.size > 8 * 1024 * 1024) {
+      setError('Das Bild ist größer als 8 MB. Bitte wähle eine kleinere Datei.');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
+      if (typeof reader.result !== 'string' || !reader.result.startsWith('data:image/')) {
+        setError('Das Bild konnte nicht gelesen werden. Bitte versuche es erneut.');
+        return;
+      }
       const item: GeneratedImageItem = {
         id: `img-up-${Date.now()}`,
-        url: String(reader.result),
+        url: reader.result,
         prompt: file.name,
         engine: 'Lokaler Upload (Img2Img)',
         aspectRatio: 'Upload',
@@ -140,7 +156,10 @@ export function ImageStudioView({
       };
       setGallery((prev) => [item, ...prev]);
       setActiveImage(item);
+      setAnalysisText(null);
+      setError(null);
     };
+    reader.onerror = () => setError('Das Bild konnte nicht gelesen werden. Bitte versuche es erneut.');
     reader.readAsDataURL(file);
   }
 
@@ -297,12 +316,18 @@ export function ImageStudioView({
                               type: 'image',
                               title: activeImage.prompt.slice(0, 64),
                               url: activeImage.url,
-                              modelId: model === 'sana' ? 'sana-free' : model === 'turbo' ? 'sd-turbo-free' : 'flux-1-schnell-free',
+                              modelId: activeImage.engine.startsWith('ZERO Local Canvas')
+                                ? 'zero-local-canvas'
+                                : activeImage.engine.startsWith('Lokaler Upload')
+                                  ? 'zero-local-upload'
+                                  : 'zero-studio-reference',
                             }),
                           }
                         );
                         onProjectUpdated(res.project);
                         setSavedNotice(`In Projekt "${res.project.title}" gespeichert.`);
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : 'Bild konnte nicht im Projekt gespeichert werden.');
                       } finally {
                         setSavingToProject(false);
                       }
