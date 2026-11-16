@@ -22,6 +22,11 @@ export function crc32(buf: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+export const MAX_ZIP_ARCHIVE_BYTES = 160 * 1024 * 1024;
+export const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
+export const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
+export const MAX_ZIP_ENTRIES = 10_000;
+
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', 'exports', 'build', 'coverage']);
 
 export const EXCLUDED_SECRETS_DOC = [
@@ -99,6 +104,12 @@ export async function buildFullProjectZip(
   const centralRecords: Buffer[] = [];
   let offset = 0;
 
+  if (files.length > MAX_ZIP_ENTRIES) {
+    throw new Error(`ZIP enthält zu viele Dateien (Limit: ${MAX_ZIP_ENTRIES}).`);
+  }
+
+  let totalUncompressedBytes = 0;
+  let estimatedArchiveBytes = 22;
   const now = new Date();
   const dosTime =
     ((now.getHours() & 0x1f) << 11) |
@@ -111,7 +122,19 @@ export async function buildFullProjectZip(
 
   for (const relPath of files) {
     const fullPath = path.join(rootDir, relPath);
-    const raw = extraFiles[relPath] ?? await fs.readFile(fullPath);
+    const extra = extraFiles[relPath];
+    const sourceSize = extra ? extra.length : (await fs.stat(fullPath)).size;
+    if (!Number.isSafeInteger(sourceSize) || sourceSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP-Datei "${relPath}" überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
+    }
+    totalUncompressedBytes += sourceSize;
+    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
+    }
+    const raw = extra ?? await fs.readFile(fullPath);
+    if (raw.length !== sourceSize) {
+      throw new Error(`ZIP-Datei "${relPath}" hat sich während des Lesens in der Größe geändert.`);
+    }
     const compressed = zlib.deflateRawSync(raw, { level: 6 });
     const nameBuf = Buffer.from(relPath, 'utf8');
     const crc = crc32(raw);
@@ -130,6 +153,10 @@ export async function buildFullProjectZip(
     localHeader.writeUInt16LE(0, 28);
     nameBuf.copy(localHeader, 30);
 
+    estimatedArchiveBytes += localHeader.length + compressed.length + 46 + nameBuf.length;
+    if (estimatedArchiveBytes > MAX_ZIP_ARCHIVE_BYTES) {
+      throw new Error(`ZIP überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+    }
     localChunks.push(localHeader, compressed);
 
     const central = Buffer.alloc(46 + nameBuf.length);
@@ -199,6 +226,9 @@ export function verifyZipBuffer(zipBuf: Buffer): {
     extractedFiles,
   });
 
+  if (zipBuf.length > MAX_ZIP_ARCHIVE_BYTES) {
+    return invalid(`ZIP überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+  }
   if (zipBuf.length < 22) return invalid('ZIP-Datei ist zu klein oder leer.');
 
   // A valid EOCD must be the final structure, including its declared comment.
@@ -222,6 +252,9 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   const centralOffset = zipBuf.readUInt32LE(eocdOffset + 16);
   const centralEnd = centralOffset + centralSize;
 
+  if (totalEntries > MAX_ZIP_ENTRIES) {
+    return invalid(`ZIP enthält zu viele Dateien (Limit: ${MAX_ZIP_ENTRIES}).`);
+  }
   if (diskNumber !== 0 || centralDisk !== 0 || entriesOnDisk !== totalEntries) {
     return invalid('Mehrteilige ZIP-Archive werden nicht unterstützt.');
   }
@@ -241,6 +274,7 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   }
 
   let ptr = centralOffset;
+  let totalUncompressedBytes = 0;
   const seenNames = new Set<string>();
   for (let i = 0; i < totalEntries; i++) {
     if (ptr + 46 > centralEnd || zipBuf.readUInt32LE(ptr) !== 0x02014b50) {
@@ -253,6 +287,15 @@ export function verifyZipBuffer(zipBuf: Buffer): {
     const expectedCrc = zipBuf.readUInt32LE(ptr + 16);
     const compressedSize = zipBuf.readUInt32LE(ptr + 20);
     const uncompressedSize = zipBuf.readUInt32LE(ptr + 24);
+    if (uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      errors.push(`ZIP-Datei überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
+      break;
+    }
+    totalUncompressedBytes += uncompressedSize;
+    if (!Number.isSafeInteger(totalUncompressedBytes) || totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      errors.push(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
+      break;
+    }
     const nameLen = zipBuf.readUInt16LE(ptr + 28);
     const extraLen = zipBuf.readUInt16LE(ptr + 30);
     const commentLen = zipBuf.readUInt16LE(ptr + 32);
