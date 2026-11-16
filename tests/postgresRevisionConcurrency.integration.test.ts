@@ -75,6 +75,10 @@ try {
   assert.equal(blockedLogin.attempts, 9);
   await authA.clearLoginAttempts(loginKeyHash);
   assert.equal((await authB.consumeLoginAttempt(loginKeyHash, loginNow, 15 * 60 * 1000, 8)).allowed, true);
+  const expiredWindow = await authB.consumeLoginAttempt(
+    loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
+  );
+  assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
@@ -91,6 +95,10 @@ try {
   const exhaustedQuota = await authB.reserveGeminiQuota(quotaParams);
   assert.equal(exhaustedQuota.allowed, false, 'ninth Gemini reservation must fail across independent pools');
   assert.equal(exhaustedQuota.requestsToday, 8);
+  await authA.markGeminiQuotaExhausted(quotaParams.modelId, quotaParams.resetDate);
+  assert.equal((await authB.reserveGeminiQuota(quotaParams)).allowed, false, 'provider quota exhaustion must block all instances');
+  await authA.clearGeminiQuota(quotaParams.modelId);
+  assert.equal((await authB.reserveGeminiQuota(quotaParams)).allowed, true, 'an explicitly confirmed reset must allow a new reservation');
 
   // Production ZIP middleware must enforce one shared limit across two pools.
   const gateA = createPostgresConcurrencyGate(gatePoolA, 2, 5);
