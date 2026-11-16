@@ -98,6 +98,8 @@ try {
   let heldRequests = 0;
   let releaseHeld!: () => void;
   const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
+  let releaseOccupied!: () => void;
+  const occupiedWork = new Promise<void>((resolve) => { releaseOccupied = resolve; });
   let releaseDisconnected!: () => void;
   const disconnectedWork = new Promise<void>((resolve) => { releaseDisconnected = resolve; });
   let disconnectedEntered = false;
@@ -106,6 +108,7 @@ try {
     app.get('/held/:id', gate.middleware, asyncRoute(async (req, res) => {
       heldRequests++;
       if (heldRequests <= 2) await held;
+      if (req.params.id === 'occupied') await occupiedWork;
       res.json({ id: req.params.id });
     }));
     app.get('/disconnect', gate.middleware, asyncRoute(async (_req, res) => {
@@ -152,9 +155,11 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const afterDisconnectWork = await fetch(baseA + '/held/after-disconnect-work');
     assert.equal(afterDisconnectWork.status, 200, 'slot must release once disconnected handler work settles');
+    releaseOccupied();
     await (await occupy).json();
   } finally {
     releaseHeld();
+    releaseOccupied();
     releaseDisconnected();
     serverA.close();
     serverB.close();
