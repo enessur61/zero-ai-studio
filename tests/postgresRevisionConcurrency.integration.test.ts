@@ -4,13 +4,15 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { createRestoreHandlers } from '../server/restoreHandlers.ts';
 import { createVerifiedZipRestoreService } from '../server/verifiedZipRestore.ts';
-import { assertRestorableDatabase, type ZeroDatabase } from '../server/store.ts';
-import { buildFullProjectZip, verifyZipBuffer } from '../server/zipExporter.ts';
+import { assertRestorableDatabase, type ZeroDatabase, type SaveDbOptions } from '../server/store.ts';
+import { createVersionedZipBackupService } from '../server/versionedZipBackup.ts';
+import { buildFullProjectZip, EXCLUDED_SECRETS_DOC, verifyZipBuffer } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
+  withPersistentAutoBackupLease,
 } from '../server/persistence.ts';
 
 const connectionString = process.env.DATABASE_URL;
@@ -531,6 +533,180 @@ try {
   );
   assert.deepEqual(await storeA.read(), beforeSafetyFailure, 'failed safety backup must leave live state untouched');
 
+
+  // The exact production ZIP-backup service is run against this isolated schema.
+  // Its build and verification use the production ZIP builder/verifier; its save
+  // dependency uses the same atomic PostgreSQL state+blob transaction as production.
+  const makeBackupDb = makeRestoreDb('production-auto-backup-source');
+  makeBackupDb.backupConfig.autoZipOnChange = true;
+  const beforeProductionBackup = await storeA.read();
+  assert.ok(beforeProductionBackup);
+  await storeA.write(makeBackupDb, beforeProductionBackup.revision);
+
+  const backupRevisions = new WeakMap<ZeroDatabase, number>();
+  const productionZipBackup = createVersionedZipBackupService({
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      backupRevisions.set(state.payload as ZeroDatabase, state.revision);
+      return state.payload as ZeroDatabase;
+    },
+    getDbRevision: (db) => {
+      const revision = backupRevisions.get(db);
+      if (revision === undefined) throw new Error('Production backup fixture revision missing');
+      return revision;
+    },
+    saveDb: async (db, options: SaveDbOptions = {}) => {
+      assert.notEqual(options.expectedRevision, undefined);
+      assert.ok(options.backupFile, 'ZIP publication must provide the archive blob');
+      const revision = await storeA.writeWithBackup(
+        db,
+        options.expectedRevision!,
+        options.backupFile,
+        options.recordAutoBackupSuccess ?? false
+      );
+      backupRevisions.set(db, revision);
+    },
+    deleteBackupFile: async (id) => {
+      await poolA.query('DELETE FROM zero_backup_files WHERE id = $1', [id]);
+    },
+    buildFullProjectZip,
+    verifyZipBuffer,
+    excludedSecrets: EXCLUDED_SECRETS_DOC,
+    isPersistent: () => true,
+    rootDir: () => process.cwd(),
+    zipBackupDir: '/tmp/zero-test-zips',
+  });
+
+  const successfulProductionBackup = await withPersistentAutoBackupLease(
+    () => storeB.acquireAutoBackupLease(0),
+    () => productionZipBackup({
+      changelog: 'Production ZIP service success-path integration',
+      trigger: 'auto',
+      recordAutoBackupSuccess: true,
+    })
+  );
+  assert.ok(successfulProductionBackup, 'production ZIP backup must be created under the shared lease wrapper');
+  const successfulBackupBlob = await poolB.query<{ payload: Buffer }>(
+    'SELECT payload FROM zero_backup_files WHERE id = $1',
+    [successfulProductionBackup.id]
+  );
+  assert.equal(successfulBackupBlob.rowCount, 1, 'production ZIP service must atomically publish archive bytes');
+  assert.equal(verifyZipBuffer(successfulBackupBlob.rows[0].payload).result.valid, true);
+  const afterProductionBackup = await storeA.read();
+  assert.ok(afterProductionBackup);
+  assert.ok(
+    (afterProductionBackup.payload as ZeroDatabase).backupConfig.zipBackups.some(
+      (backup) => backup.id === successfulProductionBackup.id
+    ),
+    'production ZIP service must publish matching backup metadata'
+  );
+  const autoMarkerBeforeFailure = await poolB.query<{ last_success_at: Date }>(
+    "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
+  );
+  assert.equal(autoMarkerBeforeFailure.rowCount, 1);
+
+  // Inject a PostgreSQL publication failure at the backup-blob INSERT. This is
+  // after the real ZIP has been built and verified, inside the real atomic write.
+  await poolB.query(`
+    CREATE FUNCTION reject_zip_backup_publication() RETURNS trigger
+    LANGUAGE plpgsql AS $
+    BEGIN
+      RAISE EXCEPTION 'injected ZIP publication failure' USING ERRCODE = 'P0001';
+    END;
+    $;
+    CREATE TRIGGER reject_zip_backup_publication
+    BEFORE INSERT ON zero_backup_files
+    FOR EACH ROW EXECUTE FUNCTION reject_zip_backup_publication();
+  `);
+  const beforeFailedProductionBackup = await storeA.read();
+  assert.ok(beforeFailedProductionBackup);
+  await assert.rejects(
+    () => withPersistentAutoBackupLease(
+      () => storeB.acquireAutoBackupLease(0),
+      () => productionZipBackup({
+        changelog: 'Injected failure during production ZIP publication',
+        trigger: 'auto',
+        recordAutoBackupSuccess: true,
+      })
+    ),
+    /injected ZIP publication failure/,
+    'the real production ZIP service must surface a failed PostgreSQL blob publication'
+  );
+  const afterFailedProductionBackup = await storeA.read();
+  assert.deepEqual(
+    afterFailedProductionBackup,
+    beforeFailedProductionBackup,
+    'failed production ZIP publication must roll back metadata and revision'
+  );
+  const markerAfterFailure = await poolB.query<{ last_success_at: Date }>(
+    "SELECT last_success_at FROM zero_backup_auto_state WHERE id = 'zip-auto'"
+  );
+  assert.equal(markerAfterFailure.rowCount, 1);
+  assert.equal(
+    markerAfterFailure.rows[0].last_success_at.getTime(),
+    autoMarkerBeforeFailure.rows[0].last_success_at.getTime(),
+    'failed publication must not advance the automatic-backup success marker'
+  );
+  await poolB.query('DROP TRIGGER reject_zip_backup_publication ON zero_backup_files');
+  await poolB.query('DROP FUNCTION reject_zip_backup_publication()');
+
+  // A second independent pool must acquire the same lease immediately after the
+  // failed publication path, proving the production wrapper released the lock.
+  const leaseAfterPublicationFailure = await storeB.acquireAutoBackupLease(0);
+  assert.ok(leaseAfterPublicationFailure, 'failed ZIP publication must not strand the session-level advisory lock');
+  await leaseAfterPublicationFailure.release();
+  const leaseAfterRelease = await storeA.acquireAutoBackupLease(0);
+  assert.ok(leaseAfterRelease, 'the lock must be reusable by the other independent pool');
+  await leaseAfterRelease.release();
+
+  // If the explicit unlock query itself fails, the pool client must be destroyed,
+  // not returned to the pool with a session-level advisory lock still held.
+  let failedUnlockRelease: Error | boolean | undefined;
+  const failingUnlockClient = {
+    query: async (sql: string) => {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ locked: true }] };
+      if (sql.includes('pg_advisory_unlock')) throw new Error('injected advisory unlock transport failure');
+      if (sql.includes('last_success_at')) return { rows: [] };
+      return { rows: [] };
+    },
+    release: (error?: Error | boolean) => { failedUnlockRelease = error; },
+  };
+  const failingUnlockPool = {
+    query: async () => ({ rows: [] }),
+    connect: async () => failingUnlockClient,
+  } as unknown as Pool;
+  const failingUnlockStore = createPostgresStateStore(failingUnlockPool);
+  const failingUnlockLease = await failingUnlockStore.acquireAutoBackupLease(0);
+  assert.ok(failingUnlockLease);
+  await assert.rejects(
+    () => failingUnlockLease.release(),
+    /injected advisory unlock transport failure/
+  );
+  assert.equal(failedUnlockRelease, true, 'an uncertain unlock must destroy the physical pooled connection');
+
+  // Failure while inspecting throttle state after acquiring the lock must also
+  // destroy the session if its compensating unlock cannot be confirmed.
+  let failedAcquireRelease: Error | boolean | undefined;
+  const failingAcquireClient = {
+    query: async (sql: string) => {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ locked: true }] };
+      if (sql.includes('last_success_at')) throw new Error('injected lease-state query failure');
+      if (sql.includes('pg_advisory_unlock')) throw new Error('injected compensating unlock failure');
+      return { rows: [] };
+    },
+    release: (error?: Error | boolean) => { failedAcquireRelease = error; },
+  };
+  const failingAcquirePool = {
+    query: async () => ({ rows: [] }),
+    connect: async () => failingAcquireClient,
+  } as unknown as Pool;
+  const failingAcquireStore = createPostgresStateStore(failingAcquirePool);
+  await assert.rejects(
+    () => failingAcquireStore.acquireAutoBackupLease(0),
+    /injected lease-state query failure/
+  );
+  assert.equal(failedAcquireRelease, true, 'an uncertain compensating unlock must destroy the connection');
   console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
 } finally {
   await Promise.all([poolA.end(), poolB.end()]);
