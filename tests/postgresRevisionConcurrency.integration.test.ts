@@ -579,6 +579,7 @@ try {
   await storeA.write(makeBackupDb, beforeProductionBackup.revision);
 
   const backupRevisions = new WeakMap<ZeroDatabase, number>();
+  const backupRecordRevisions = new WeakMap<ZipBackupVersion, number>();
   const productionZipBackup = createVersionedZipBackupService({
     loadDb: async () => {
       const state = await storeA.read();
@@ -611,7 +612,35 @@ try {
     isPersistent: () => true,
     rootDir: () => process.cwd(),
     zipBackupDir: '/tmp/zero-test-zips',
+    rememberBackupRevision: (record, revision) => backupRecordRevisions.set(record, revision),
   });
+
+  // A malformed persisted version must stop before archive construction or publication;
+  // silently resetting to 1.1.1 would break the long-term version chain.
+  let malformedVersionBuildCalls = 0;
+  const malformedVersionDb = makeRestoreDb('malformed-version-fixture');
+  malformedVersionDb.backupConfig.currentVersion = '1.2';
+  const malformedVersionService = createVersionedZipBackupService({
+    loadDb: async () => malformedVersionDb,
+    getDbRevision: () => 0,
+    saveDb: async () => { throw new Error('Malformed version must not be persisted'); },
+    deleteBackupFile: async () => undefined,
+    buildFullProjectZip: async () => {
+      malformedVersionBuildCalls += 1;
+      throw new Error('Malformed version must fail before ZIP build');
+    },
+    verifyZipBuffer,
+    excludedSecrets: EXCLUDED_SECRETS_DOC,
+    isPersistent: () => true,
+    rootDir: () => process.cwd(),
+    zipBackupDir: '/tmp/zero-test-zips',
+  });
+  await assert.rejects(
+    () => malformedVersionService({ changelog: 'Malformed version must be rejected', trigger: 'manual' }),
+    /Ungültige ZIP-Backup-Version/,
+    'malformed stored versions must not reset the sequence to 1.1.1'
+  );
+  assert.equal(malformedVersionBuildCalls, 0, 'version validation must happen before archive construction');
 
   const successfulProductionBackup = await withPersistentAutoBackupLease(
     () => storeB.acquireAutoBackupLease(0),
@@ -636,6 +665,103 @@ try {
     ),
     'production ZIP service must publish matching backup metadata'
   );
+
+  // Build two more consecutive production versions from distinct persisted states.
+  // Read each committed blob back, verify the archive, and inspect its embedded DB snapshot.
+  const versionChain: ZipBackupVersion[] = [successfulProductionBackup];
+  for (const title of ['chain-snapshot-A', 'chain-snapshot-B']) {
+    const beforeVersion = await storeA.read();
+    assert.ok(beforeVersion);
+    const nextDb = beforeVersion.payload as ZeroDatabase;
+    nextDb.projects[0].title = title;
+    await storeA.write(nextDb, beforeVersion.revision);
+    const backup = await productionZipBackup({
+      changelog: `Version chain snapshot ${title}`,
+      trigger: 'manual',
+      bumpVersion: true,
+    });
+    versionChain.push(backup);
+  }
+  assert.deepEqual(
+    versionChain.map((backup) => backup.version),
+    ['1.2.1', '1.2.2', '1.2.3'],
+    'successive production backups must advance monotonically without resetting or duplicating versions'
+  );
+  for (const [index, backup] of versionChain.entries()) {
+    const blob = await poolB.query<{ payload: Buffer }>(
+      'SELECT payload FROM zero_backup_files WHERE id = $1',
+      [backup.id]
+    );
+    assert.equal(blob.rowCount, 1, `version ${backup.version} must retain its ZIP bytes`);
+    const verified = verifyZipBuffer(blob.rows[0].payload);
+    assert.equal(verified.result.valid, true, `version ${backup.version} must remain independently verifiable`);
+    const snapshotBytes = verified.extractedFiles.get('data/zero-studio-db.json');
+    assert.ok(snapshotBytes, `version ${backup.version} must contain its database snapshot`);
+    const snapshot = JSON.parse(snapshotBytes.toString('utf8')) as ZeroDatabase;
+    assert.equal(snapshot.backupConfig.currentVersion, backup.version);
+    if (index > 0) {
+      assert.equal(snapshot.projects[0].title, index === 1 ? 'chain-snapshot-A' : 'chain-snapshot-B');
+    }
+  }
+
+  // Restore in a deliberately non-creation order (A, then B). Each restore must
+  // first publish a protected, verified safety ZIP through the production backup service.
+  const orderedRestore = createVerifiedZipRestoreService({
+    getZipBackupFilePath: async (zipId) => {
+      const state = await storeA.read();
+      assert.ok(state);
+      const record = (state.payload as ZeroDatabase).backupConfig.zipBackups.find((item) => item.id === zipId);
+      if (!record) throw new Error(`ZIP metadata missing for ${zipId}`);
+      const blob = await poolB.query<{ payload: Buffer }>(
+        'SELECT payload FROM zero_backup_files WHERE id = $1',
+        [zipId]
+      );
+      if (!blob.rows[0]) throw new Error(`ZIP bytes missing for ${zipId}`);
+      return { record, buffer: blob.rows[0].payload };
+    },
+    verifyZipBuffer,
+    assertRestorableDatabase,
+    createSafetyBackup: async (source) => productionZipBackup({
+      changelog: `Safety before restoring ${source.version}`,
+      trigger: 'pre_restore',
+      bumpVersion: true,
+    }),
+    loadDb: async () => {
+      const state = await storeA.read();
+      assert.ok(state);
+      return state.payload as ZeroDatabase;
+    },
+    getZipBackupRevision: (record) => {
+      const revision = backupRecordRevisions.get(record);
+      if (revision === undefined) throw new Error('Safety backup revision missing from version-chain test');
+      return revision;
+    },
+    saveDb: async (db, options) => {
+      assert.notEqual(options.expectedRevision, undefined);
+      await storeA.write(db, options.expectedRevision!);
+    },
+    enrichModelMetadata: (model) => model,
+  });
+  const restoredA = await orderedRestore(versionChain[1].id);
+  assert.equal(restoredA.restoredVersion, '1.2.2');
+  assert.equal(restoredA.db.projects[0].title, 'chain-snapshot-A');
+  assert.equal(restoredA.safetyBackup.trigger, 'pre_restore');
+  assert.equal(restoredA.safetyBackup.protected, true);
+  assert.equal(verifyZipBuffer((await poolB.query<{ payload: Buffer }>(
+    'SELECT payload FROM zero_backup_files WHERE id = $1',
+    [restoredA.safetyBackup.id]
+  )).rows[0].payload).result.valid, true, 'first restore safety ZIP must remain verifiable');
+
+  const restoredB = await orderedRestore(versionChain[2].id);
+  assert.equal(restoredB.restoredVersion, '1.2.3');
+  assert.equal(restoredB.db.projects[0].title, 'chain-snapshot-B');
+  assert.equal(restoredB.safetyBackup.trigger, 'pre_restore');
+  assert.equal(restoredB.safetyBackup.protected, true);
+  assert.deepEqual(await storeA.inspectBackupConsistency(), {
+    orphanedBlobIds: [],
+    missingBlobIds: [],
+  }, 'sequential restores must leave every retained metadata record paired with ZIP bytes');
+
   // Retention commits the new metadata/blob before deleting expired blobs.
   // An injected delete failure must be reported as cleanup-pending, not as if
   // publication had failed; every other deletion must still be awaited.
