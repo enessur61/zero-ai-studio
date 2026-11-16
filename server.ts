@@ -5,6 +5,7 @@ import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { checkPostgresConnection } from './server/persistence.ts';
 import {
   assertZeroBudgetModelAllowed,
   formatGermanApiError,
@@ -191,6 +192,9 @@ app.get('/api/health', async (_req, res) => {
 
   try {
     await loadDb();
+    if (!(await checkPostgresConnection())) {
+      throw new Error('PostgreSQL-Verbindung ist nicht verfügbar.');
+    }
     return res.json({
       ok: true,
       app: 'ZERO AI STUDIO',
