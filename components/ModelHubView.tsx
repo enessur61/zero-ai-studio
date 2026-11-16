@@ -18,11 +18,12 @@ import {
   checkWebGPULocalModelSupport,
   generateWebGPULocalChat,
   getLoadedWebGPULocalModelId,
+  getLoadedWebGPULocalModelIds,
+  getWebGPULocalMemoryUsageMB,
   isWebGPULocalModelLoaded,
   loadWebGPULocalModel,
   WEBGPU_LOCAL_MODEL_ID,
   WEBGPU_LOCAL_MODELS,
-  unloadWebGPULocalModel,
 } from '../lib/webgpuLocalModel.ts';
 import { IPhoneRuntimePanel } from './IPhoneRuntimePanel.tsx';
 import { runLocalModelTypeSuite } from '../lib/localModelTypeSuite.ts';
@@ -63,29 +64,33 @@ export function ModelHubView({
   const [webGpuLoading, setWebGpuLoading] = useState(false);
   const [webGpuProgress, setWebGpuProgress] = useState(0);
   const [webGpuProgressText, setWebGpuProgressText] = useState('');
-  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded());
   const [selectedWebGpuModelId, setSelectedWebGpuModelId] = useState<string>(getLoadedWebGPULocalModelId() ?? WEBGPU_LOCAL_MODEL_ID);
+  const [webGpuLoaded, setWebGpuLoaded] = useState(isWebGPULocalModelLoaded(getLoadedWebGPULocalModelId() ?? WEBGPU_LOCAL_MODEL_ID));
+  const [residentModelIds, setResidentModelIds] = useState<string[]>(getLoadedWebGPULocalModelIds());
+  const [residentMemoryMB, setResidentMemoryMB] = useState(getWebGPULocalMemoryUsageMB());
   const webGpuProbeRef = useRef(false);
   const nativeBridgeActive = isNativeIOSCoreMLAvailable();
 
-  async function verifyAndActivateLoadedWebGpuModel() {
+  async function verifyAndActivateLoadedWebGpuModel(modelId: typeof WEBGPU_LOCAL_MODELS[number]['modelId'] = selectedWebGpuModelId as typeof WEBGPU_LOCAL_MODELS[number]['modelId']) {
     if (!isWebGPULocalModelLoaded() || webGpuProbeRef.current) return;
     webGpuProbeRef.current = true;
     try {
       const probe = await generateWebGPULocalChat([
         { role: 'user', content: 'Antworte exakt mit dem Wort BEREIT.' },
-      ]);
+      ], undefined, modelId);
       if (!probe.trim()) throw new Error('Das Modell hat auf den lokalen Inferenztest nicht geantwortet.');
       const data = await apiRequest<{ model: ModelDefinition }>('/api/models/webgpu/activate', {
         method: 'POST',
         body: JSON.stringify({
           // The server catalog uses ZERO IDs; WebLLM uses a separate runtime model ID.
-          modelId: WEBGPU_LOCAL_MODELS.find((item) => item.modelId === selectedWebGpuModelId)?.id ?? '',
+          modelId: WEBGPU_LOCAL_MODELS.find((item) => item.modelId === modelId)?.id ?? '',
           probeResponse: probe.slice(0, 1000),
         }),
       });
       onModelUpdated(data.model);
       setWebGpuLoaded(true);
+      setResidentModelIds(getLoadedWebGPULocalModelIds());
+      setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
       setWebGpuMessage('WebGPU-Modell geladen und echter lokaler Inferenztest erfolgreich. ZERO hat es automatisch aktiviert und gespeichert.');
     } catch (err) {
       setWebGpuMessage(err instanceof Error ? err.message : 'Lokaler Inferenztest fehlgeschlagen.');
@@ -188,6 +193,8 @@ export function ModelHubView({
         setWebGpuProgressText(progress.text);
       }, selectedPreset.modelId);
       setWebGpuLoaded(true);
+      setResidentModelIds(getLoadedWebGPULocalModelIds());
+      setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
       await verifyAndActivateLoadedWebGpuModel();
       setFeedback(
         webGpuProbeRef.current
@@ -197,6 +204,42 @@ export function ModelHubView({
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : 'WebGPU-Modell konnte nicht geladen werden.');
     } finally {
+      setWebGpuLoading(false);
+    }
+  }
+
+
+  async function handleLoadAllWebGpuModels() {
+    if (webGpuLoading || testingAll) return;
+    setWebGpuLoading(true);
+    setWebGpuProgress(0);
+    const results: string[] = [];
+    try {
+      const support = await checkWebGPULocalModelSupport();
+      setWebGpuSupported(support.supported);
+      if (!support.supported) throw new Error(support.message);
+      for (const preset of WEBGPU_LOCAL_MODELS) {
+        try {
+          await loadWebGPULocalModel((progress) => {
+            setWebGpuProgress(progress.progress);
+            setWebGpuProgressText(`${preset.name}: ${progress.text}`);
+          }, preset.modelId);
+          setSelectedWebGpuModelId(preset.modelId);
+          setWebGpuLoaded(true);
+          webGpuProbeRef.current = false;
+          await verifyAndActivateLoadedWebGpuModel(preset.modelId);
+          results.push(`${preset.name}: geladen und Inferenz geprüft`);
+        } catch (error) {
+          results.push(`${preset.name}: ${error instanceof Error ? error.message : 'Laden fehlgeschlagen'}`);
+        }
+        setResidentModelIds(getLoadedWebGPULocalModelIds());
+        setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
+      }
+      setFeedback(`Multi-Modell-Ladevorgang abgeschlossen. ${results.join(' · ')}`);
+    } finally {
+      setResidentModelIds(getLoadedWebGPULocalModelIds());
+      setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
+      setWebGpuLoaded(isWebGPULocalModelLoaded(selectedWebGpuModelId as typeof WEBGPU_LOCAL_MODELS[number]['modelId']));
       setWebGpuLoading(false);
     }
   }
@@ -276,6 +319,8 @@ export function ModelHubView({
           setWebGpuProgressText(progress.text);
         }, preset.modelId);
         setWebGpuLoaded(true);
+        setResidentModelIds(getLoadedWebGPULocalModelIds());
+        setResidentMemoryMB(getWebGPULocalMemoryUsageMB());
         // The server-side full test may revoke stale browser-model activation; always re-probe here.
         webGpuProbeRef.current = false;
         await verifyAndActivateLoadedWebGpuModel();
@@ -346,8 +391,8 @@ export function ModelHubView({
             <h2 className="text-base font-semibold text-white">Lokale Open-Source-Modelle · direkt auf diesem Gerät</h2>
             <label className="block text-xs text-slate-300 mt-2">
               Lokales Modell auswählen
-              <select value={selectedWebGpuModelId} onChange={(event) => { const nextId = event.target.value; void unloadWebGPULocalModel().finally(() => { webGpuProbeRef.current = false; setSelectedWebGpuModelId(nextId); setWebGpuLoaded(false); setWebGpuProgress(0); }); }} disabled={webGpuLoading} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
-                {WEBGPU_LOCAL_MODELS.map((item) => <option key={item.modelId} value={item.modelId}>{item.name} · ca. {item.vramMB} MB GPU</option>)}
+              <select value={selectedWebGpuModelId} onChange={(event) => { const nextId = event.target.value; webGpuProbeRef.current = false; setSelectedWebGpuModelId(nextId); setWebGpuLoaded(isWebGPULocalModelLoaded(nextId as typeof WEBGPU_LOCAL_MODELS[number]['modelId'])); setWebGpuProgress(0); }} disabled={webGpuLoading} className="mt-1 block w-full min-h-[40px] rounded-lg bg-[#090B10] border border-white/10 px-3 text-white">
+                {WEBGPU_LOCAL_MODELS.map((item) => <option key={item.modelId} value={item.modelId}>{item.name} · ca. {item.vramMB} MB GPU{residentModelIds.includes(item.modelId) ? ' · geladen' : ''}</option>)}
               </select>
             </label>
             <p className="text-xs text-slate-400">Modell-ID: {selectedWebGpuModelId}</p>
@@ -358,6 +403,7 @@ export function ModelHubView({
           </span>
         </div>
         <p className="text-xs text-slate-300">{webGpuMessage}</p>
+        <p className="text-xs text-sky-200">GPU-Modelle im Speicher: {residentModelIds.length ? residentModelIds.map((id) => WEBGPU_LOCAL_MODELS.find((item) => item.modelId === id)?.name ?? id).join(' · ') : 'keines'} · geschätzt {residentMemoryMB} MB belegt / 1.600 MB ZERO-Budget</p>
         {webGpuLoading && (
           <div className="space-y-1.5">
             <div className="h-2 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-sky-400 transition-all" style={{ width: `${Math.round(webGpuProgress * 100)}%` }} /></div>
@@ -367,6 +413,7 @@ export function ModelHubView({
         <button type="button" onClick={() => void handleLoadWebGpuModel()} disabled={webGpuLoading || webGpuLoaded} className="min-h-[44px] px-4 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sm font-medium text-sky-200 disabled:opacity-50">
           {webGpuLoading ? 'Modell wird heruntergeladen…' : webGpuLoaded ? 'Modell ist geladen' : 'Kostenloses lokales Modell herunterladen & laden'}
         </button>
+        <button type="button" onClick={() => void handleLoadAllWebGpuModels()} disabled={webGpuLoading || testingAll || residentModelIds.length === WEBGPU_LOCAL_MODELS.length} className="min-h-[44px] px-4 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-sm font-medium text-emerald-200 disabled:opacity-50">Alle kompatiblen Textmodelle im GPU-Speicher laden</button>
         <p className="text-[11px] text-amber-200/80">Hinweis: Der Download benötigt eine stabile WLAN-Verbindung und ausreichend freien Gerätespeicher. Safari kann große GPU-Modelle je nach iOS-Speicherverwaltung abbrechen; ein erfolgreicher Download allein gilt noch nicht als Inferenztest.</p>
       </section>
 
