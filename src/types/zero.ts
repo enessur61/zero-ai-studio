@@ -150,6 +150,20 @@ export interface ProjectAsset {
   createdAt: string;
 }
 
+export interface ProjectSnapshotState {
+  title: string;
+  logline: string;
+  genre: string;
+  targetDurationSec: number;
+  concept: string;
+  story: string;
+  screenplay: string;
+  characterIds: string[];
+  scenes: FilmScene[];
+  assets: ProjectAsset[];
+  status: StudioProject['status'];
+}
+
 export interface ProjectSnapshot {
   id: string;
   version: number;
@@ -157,6 +171,7 @@ export interface ProjectSnapshot {
   createdAt: string;
   sceneCount: number;
   totalDurationSec: number;
+  state?: ProjectSnapshotState;
 }
 
 export interface StudioProject {
