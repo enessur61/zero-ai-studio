@@ -44,6 +44,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcript, setTranscript] = useState<string | null>(null);
+  const [transcriptSrt, setTranscriptSrt] = useState<string | null>(null);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
@@ -126,6 +127,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         combined += ev.results[i][0].transcript + ' ';
       }
       setTranscript(combined.trim());
+      setTranscriptSrt(null);
     };
     rec.onerror = (ev) => {
       setTranscribeError(`Browser-Diktat: ${ev.error}`);
@@ -143,11 +145,12 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     setTranscribing(true);
     setTranscribeError(null);
     try {
-      const data = await apiRequest<{ transcript: string }>('/api/audio/transcribe', {
+      const data = await apiRequest<{ transcript: string; srt?: string | null }>('/api/audio/transcribe', {
         method: 'POST',
         body: JSON.stringify({ audioDataUrl: dataUrl }),
       });
       setTranscript(data.transcript);
+      setTranscriptSrt(data.srt ?? null);
     } catch (err) {
       setTranscribeError(err instanceof Error ? err.message : 'Transkription fehlgeschlagen');
     } finally {
@@ -462,6 +465,30 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
           <div className="p-4 rounded-xl bg-[#090B10] border border-white/[0.08] min-h-[180px] text-xs text-slate-200 whitespace-pre-wrap leading-relaxed">
             {transcript || 'Noch keine Transkription vorhanden.'}
           </div>
+          {transcriptSrt && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-3">
+              <p className="text-xs text-emerald-300">Echte Wort-Zeitstempel erkannt · {transcriptSrt.split(/\n\n/).length} Untertitelblöcke</p>
+              <button
+                type="button"
+                onClick={() => {
+                  const blob = new Blob([transcriptSrt], { type: 'application/x-subrip;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const anchor = document.createElement('a');
+                  anchor.href = url;
+                  anchor.download = 'zero-transkript.srt';
+                  anchor.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="min-h-[40px] rounded-xl bg-[#2563EB] px-3.5 text-xs font-medium text-white inline-flex items-center gap-2"
+              >
+                <Download className="h-3.5 w-3.5" />
+                SRT herunterladen
+              </button>
+            </div>
+          )}
+          {transcript && !transcriptSrt && !dictating && !transcribing && (
+            <p className="text-[11px] text-slate-500">Für dieses Transkript wurden keine verlässlichen Wort-Zeitstempel geliefert; daher wird keine SRT-Datei erfunden.</p>
+          )}
         </div>
       </div>
     </div>
