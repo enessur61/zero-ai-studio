@@ -268,10 +268,10 @@ jobs:
               throw new Error('Untrusted browser probe was not safely downgraded: ' + path + ' (' + response.status + ') ' + await response.text());
             }
             const result = await response.json();
-            if (result.verified !== false || result.model?.enabled !== false ||
+            if (result.verified !== false || result.model?.enabled !== true ||
                 result.model?.testPassed !== false || result.model?.hasRealAdapter !== false ||
                 result.model?.status !== 'BROWSER TEST ERFORDERLICH') {
-              throw new Error('Forged browser probe activated or verified a model: ' + path);
+              throw new Error('Client-reported local availability must not be mistaken for trusted verification: ' + path);
             }
           }
           for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
