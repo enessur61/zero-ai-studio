@@ -191,7 +191,7 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
   const modelId = 'gemini-3.8-flash';
 
   if (!apiKeyConfigured || !freeTierGuardEnabled) {
-    return res.status(503).json({
+    return res.json({
       ok: false,
       apiKeyConfigured,
       freeTierGuardEnabled,
@@ -244,7 +244,7 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
     if (db) {
       await saveDb(db).catch(() => undefined);
     }
-    return res.status(502).json({
+    return res.json({
       ok: false,
       apiKeyConfigured: true,
       freeTierGuardEnabled: true,
