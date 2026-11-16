@@ -97,6 +97,11 @@ jobs:
           NODE
       - run: npm run lint
       - run: npm test
+      - name: Run PostgreSQL revision and concurrency integration tests
+        env:
+          DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
+          ZERO_POSTGRES_TESTS: 'true'
+        run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
       - run: npm run build
       - name: Production server smoke test
         shell: bash
