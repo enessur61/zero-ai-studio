@@ -35,7 +35,8 @@ type NavigatorWithGPU = Navigator & {
 
 let engine: MLCEngineInterface | null = null;
 let enginePromise: Promise<MLCEngineInterface> | null = null;
-let modelWorker: Worker | null = null;\nlet loadedModelId: string | null = null;
+let modelWorker: Worker | null = null;
+let loadedModelId: string | null = null;
 
 export async function checkWebGPULocalModelSupport(): Promise<{
   supported: boolean;
@@ -105,7 +106,8 @@ export async function loadWebGPULocalModel(
   }
 
   try {
-    engine = await enginePromise;\n    loadedModelId = requestedModelId;
+    engine = await enginePromise;
+    loadedModelId = requestedModelId;
   } catch (error) {
     modelWorker?.terminate();
     modelWorker = null;
