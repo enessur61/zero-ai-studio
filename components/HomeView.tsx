@@ -65,7 +65,7 @@ export function HomeView({
     {
       tab: 'image',
       title: 'Image Studio',
-      desc: 'FLUX.1 Free Cloud, Charakterkonsistenz & 2x Upscaling.',
+      desc: 'Bild-Upload, lokale Bearbeitung & 2x Upscaling; KI-Neugenerierung derzeit pausiert.',
       icon: ImageIcon,
     },
     {
