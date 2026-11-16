@@ -155,3 +155,24 @@ The integration test is wired as a dedicated CI step and passed on PR #84 head `
 - The PostgreSQL integration test now checks lease exclusion across two pools, the 15-minute throttle after success, a clean backup consistency report, and detection of both orphaned bytes and missing blobs.
 
 **Atomic throttle marker:** for PostgreSQL-backed automatic ZIP backups, the `last_success_at` success marker is written in the same transaction as the primary state/revision and backup bytes. A failed publication rolls back the marker as well, so there is no post-commit crash window between publishing the backup and recording throttle success. Filesystem-only development still uses a process-local throttle and does not provide multi-process coordination.
+
+
+## Verified production ZIP restore race coverage — CI #733
+
+**Validated head:** `22d7d6851d572c28005e9c201b6357d1f534a670`  
+**Workflow run:** [CI #733](https://github.com/enessur61/zero-ai-studio/actions/runs/43972823709) — run `43972823709`, job `133669126987` (`verify`)  
+**Result:** `completed / success`; all 19 executed job steps passed. The complete job log was retrieved and reviewed (1,006 lines / 92,580 characters).
+
+The production ZIP restore orchestration is factored into `server/verifiedZipRestore.ts`; `server/store.ts` wires the production dependencies into that same service. The PostgreSQL integration test invokes the shared orchestration through the ZIP restore HTTP handler and verifies:
+
+- A real ZIP is built with the production ZIP builder and accepted by the production ZIP verifier before any safety backup is attempted.
+- The safety-backup dependency creates a ZIP snapshot, verifies it, and persists its bytes plus metadata through the PostgreSQL atomic backup write path before restore proceeds.
+- A normal write through the independent second PostgreSQL pool advances the revision after the safety snapshot. The resumed restore is rejected with HTTP 409 / `PERSISTENCE_REVISION_CONFLICT`; the newer write remains intact.
+- The persisted safety ZIP remains verifiable and its metadata/blob relationship remains consistent after the conflict.
+- A corrupt ZIP is rejected before safety-backup creation; a safety-backup publication failure aborts before restore persistence.
+
+**Coverage boundary:** the test exercises the production restore orchestration, real ZIP builder/verifier, HTTP handler, PostgreSQL atomic backup persistence, and final revision fence. The safety-backup creation function itself is supplied as an injected test dependency; its ZIP and PostgreSQL persistence effects are tested, while the production wiring uses `createVersionedZipBackup`. This is not a full production deployment or a test against production data.
+
+CI #733 also passed secret scanning, Gemini free-only billing guard, lint, all npm tests, PostgreSQL integration, production build, production server smoke test, all post-job hooks, and container cleanup. The complete log contained only known non-blocking warnings (Node.js 20 action deprecation, Go cache without `go.sum`, and `punycode` deprecation) plus intentional PostgreSQL `NOT NULL` violations used by rollback-negative tests. No actionable failure was found.
+
+PR #84 remains Draft and open. No merge or deployment was performed.
