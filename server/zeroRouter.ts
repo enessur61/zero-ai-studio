@@ -101,7 +101,10 @@ function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: str
   // A stale local date is not proof that the provider reset its quota.
   // Match assertZeroBudgetModelAllowed(): fail closed until a verified reset exists.
   if (quota.lastResetDate !== today) return false;
-  return quota.exhausted !== true &&
+  // Match the server-side budget guard: malformed exhaustion flags or counters
+  // must never be interpreted as an available free-tier quota.
+  return typeof quota.exhausted === 'boolean' &&
+    quota.exhausted === false &&
     Number.isSafeInteger(quota.requestsToday) &&
     quota.requestsToday >= 0 &&
     Number.isSafeInteger(quota.dailySoftLimit) &&
