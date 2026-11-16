@@ -13,7 +13,7 @@ permissions:
 # the full native iOS build is handled by its own workflow.
 concurrency:
   group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:
