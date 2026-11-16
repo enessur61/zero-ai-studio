@@ -17,7 +17,7 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
-import { deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writeBackupFile, writePersistentState } from './persistence.ts';
+import { deleteBackupFile, PersistentStateConflictError, readBackupFile, readPersistentState, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -584,20 +584,34 @@ export async function loadDb(): Promise<ZeroDatabase> {
   }
 }
 
-export async function saveDb(db: ZeroDatabase): Promise<void> {
+export interface SaveDbOptions {
+  expectedRevision?: number;
+  backupFile?: { id: string; filename: string; contentType: string; payload: Buffer };
+}
+
+export function getDbRevision(db: ZeroDatabase): number {
+  const revision = dbRevisions.get(db);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
+export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
   if (process.env.DATABASE_URL) {
-    // Serialize writes inside this process; PostgreSQL CAS protects across instances.
+    // All writers share the PostgreSQL advisory transaction lock and revision check.
     const operation = persistenceSaveQueue.then(async () => {
-      const expectedRevision = dbRevisions.get(db);
+      const expectedRevision = options.expectedRevision ?? dbRevisions.get(db);
       if (expectedRevision === undefined) {
         throw new PersistentStateConflictError(-1, null);
       }
       try {
-        const nextRevision = await writePersistentState(db, expectedRevision);
+        const nextRevision = options.backupFile
+          ? await writePersistentStateWithBackupFile(db, expectedRevision, options.backupFile)
+          : await writePersistentState(db, expectedRevision);
         dbRevisions.set(db, nextRevision);
+        dbCache = db;
       } catch (error) {
-        // Never let a stale in-memory object silently become the active cache again.
-        if (error instanceof PersistentStateConflictError && dbCache === db) dbCache = null;
+        // A conflict means the process cache can no longer be trusted.
+        if (error instanceof PersistentStateConflictError) dbCache = null;
         throw error;
       }
     });
@@ -635,23 +649,32 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `zero-backup-${stamp}.json`;
   const payload = JSON.stringify(db, null, 2);
+  const bytes = Buffer.from(payload, 'utf8');
   const meta: SystemBackupMeta = {
-    id: `bkp-${Date.now()}`,
+    id: `bkp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     filename,
     createdAt: new Date().toISOString(),
     note,
-    sizeBytes: Buffer.byteLength(payload, 'utf8'),
+    sizeBytes: bytes.length,
   };
-  if (process.env.DATABASE_URL) {
-    await writeBackupFile(meta.id, filename, 'application/json', Buffer.from(payload, 'utf8'));
-  } else {
-    await fs.mkdir(BACKUP_DIR, { recursive: true });
-    await fs.writeFile(path.join(BACKUP_DIR, filename), payload, 'utf8');
-  }
   db.backups.unshift(meta);
   const removedBackups = db.backups.length > 20 ? db.backups.slice(20) : [];
   if (removedBackups.length) db.backups = db.backups.slice(0, 20);
-  await saveDb(db);
+
+  if (process.env.DATABASE_URL) {
+    await saveDb(db, { backupFile: { id: meta.id, filename, contentType: 'application/json', payload: bytes } });
+  } else {
+    await fs.mkdir(BACKUP_DIR, { recursive: true });
+    const backupPath = path.join(BACKUP_DIR, filename);
+    await fs.writeFile(backupPath, payload, 'utf8');
+    try {
+      await saveDb(db);
+    } catch (error) {
+      await fs.rm(backupPath, { force: true });
+      throw error;
+    }
+  }
+
   if (process.env.DATABASE_URL) {
     await Promise.all(removedBackups.map((backup) => deleteBackupFile(backup.id)));
   } else {
@@ -721,14 +744,16 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Create and persist a recoverable copy of the current state before replacing anything.
+  // Persist a safety backup first. The final revision check below fences off any
+  // normal write that lands between the safety backup and the restore replacement.
   await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
   const current = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
   restored.backups = current.backups;
   restored.backupConfig = current.backupConfig;
   restored.settings = { ...restored.settings, maxVideoDurationSec: 60 };
   restored.models = restored.models.map(enrichModelMetadata);
-  await saveDb(restored);
+  await saveDb(restored, { expectedRevision });
   return restored;
 }
 
@@ -744,30 +769,30 @@ export async function createVersionedZipBackup(params: {
   bumpVersion?: boolean;
 }): Promise<ZipBackupVersion> {
   const db = await loadDb();
+  const backupSnapshot = JSON.parse(JSON.stringify(db)) as ZeroDatabase;
   const nextVersion =
     params.bumpVersion === false
-      ? db.backupConfig.currentVersion
-      : bumpPatchVersion(db.backupConfig.currentVersion);
+      ? backupSnapshot.backupConfig.currentVersion
+      : bumpPatchVersion(backupSnapshot.backupConfig.currentVersion);
 
   const now = new Date().toISOString();
   const datePart = now.slice(0, 19).replace(/[:T]/g, '-');
   const filename = `ZERO_AI_STUDIO_v${nextVersion}_${datePart}.zip`;
   const targetPath = path.join(ZIP_BACKUP_DIR, filename);
 
-  // Persist pending version/changelog before zipping so the archive itself contains exact state
-  db.backupConfig.currentVersion = nextVersion;
-  db.backupConfig.changelogHistory.unshift({
+  // Build from a detached snapshot; do not publish a version until the archive is verified.
+  backupSnapshot.backupConfig.currentVersion = nextVersion;
+  backupSnapshot.backupConfig.changelogHistory.unshift({
     version: nextVersion,
     date: now,
     summary: params.changelog,
   });
-  if (db.backupConfig.changelogHistory.length > 40) {
-    db.backupConfig.changelogHistory = db.backupConfig.changelogHistory.slice(0, 40);
+  if (backupSnapshot.backupConfig.changelogHistory.length > 40) {
+    backupSnapshot.backupConfig.changelogHistory = backupSnapshot.backupConfig.changelogHistory.slice(0, 40);
   }
-  await saveDb(db);
 
   const zipRes = await buildFullProjectZip(process.cwd(), {
-    'data/zero-studio-db.json': Buffer.from(JSON.stringify(await loadDb(), null, 2), 'utf8'),
+    'data/zero-studio-db.json': Buffer.from(JSON.stringify(backupSnapshot, null, 2), 'utf8'),
   });
   const verification = verifyZipBuffer(zipRes.buffer);
   if (!verification.result.valid) {
@@ -794,12 +819,8 @@ export async function createVersionedZipBackup(params: {
     excludedSecrets: EXCLUDED_SECRETS_DOC,
   };
 
-  if (process.env.DATABASE_URL) {
-    await writeBackupFile(record.id, filename, 'application/zip', zipRes.buffer);
-  } else {
-    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
-    await fs.writeFile(targetPath, zipRes.buffer);
-  }
+  db.backupConfig.currentVersion = nextVersion;
+  db.backupConfig.changelogHistory = backupSnapshot.backupConfig.changelogHistory;
   db.backupConfig.lastVerifiedAt = now;
   db.backupConfig.zipBackups.unshift(record);
   // Keep every explicitly protected backup, but cap automatic/unprotected history
@@ -812,7 +833,20 @@ export async function createVersionedZipBackup(params: {
   );
   const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
   const removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
-  await saveDb(db);
+  if (process.env.DATABASE_URL) {
+    await saveDb(db, {
+      backupFile: { id: record.id, filename, contentType: 'application/zip', payload: zipRes.buffer },
+    });
+  } else {
+    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+    await fs.writeFile(targetPath, zipRes.buffer);
+    try {
+      await saveDb(db);
+    } catch (error) {
+      await fs.rm(targetPath, { force: true });
+      throw error;
+    }
+  }
   if (process.env.DATABASE_URL) {
     await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
   } else {
@@ -917,6 +951,7 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
   });
 
   const currentDb = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(currentDb) : undefined;
   const preservedBackupConfig = currentDb.backupConfig;
   const preservedJsonBackups = currentDb.backups;
 
@@ -935,7 +970,9 @@ export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
   parsedRestoredDb.settings = { ...parsedRestoredDb.settings, maxVideoDurationSec: 60 };
   parsedRestoredDb.models = parsedRestoredDb.models.map(enrichModelMetadata);
 
-  await saveDb(parsedRestoredDb);
+  // A concurrent normal write after the safety snapshot advances the revision;
+  // the restore then aborts with 409 instead of replacing that newer state.
+  await saveDb(parsedRestoredDb, { expectedRevision });
   return {
     restoredVersion: record.version,
     safetyBackup,
