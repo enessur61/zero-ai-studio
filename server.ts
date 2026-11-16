@@ -2053,7 +2053,13 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   }
   db.projects = db.projects.filter((p) => p.id !== req.params.id);
   await saveDb(db);
-  res.json({ ok: true, projects: db.projects });
+  const projects = db.projects.map((project) => ({
+    ...project,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
+    snapshots: sanitizeProjectSnapshots(project.snapshots),
+  }));
+  res.json({ ok: true, projects });
 }));
 
 // === ZERO CHARACTER ENGINE ===
