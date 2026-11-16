@@ -1,0 +1,96 @@
+name: OpenHands ZERO task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Aufgabe für OpenHands"
+        required: true
+        type: string
+      confirm_cloud_execution:
+        description: "Ich bestätige den Start eines OpenHands-Cloud-Agenten (mögliche Kosten)"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openhands-zero-task
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    name: Start OpenHands task
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require explicit cloud execution approval
+        if: ${{ inputs.confirm_cloud_execution != true }}
+        run: |
+          echo "::error::Cloud execution was not approved. No OpenHands task was started."
+          exit 1
+
+      - name: Validate task input
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TASK//[[:space:]]/}" ]]; then
+            echo "::error::Task description must not be empty."
+            exit 1
+          fi
+
+      - name: Start OpenHands Cloud conversation
+        id: start
+        shell: bash
+        env:
+          OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+          TASK: ${{ inputs.task }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENHANDS_CLOUD_API_KEY}" ]]; then
+            echo "::error::GitHub secret OPENHANDS_CLOUD_API_KEY is missing."
+            exit 1
+          fi
+
+          payload="$(python3 -c 'import json,os; print(json.dumps({
+            "initial_message":{"content":[{"type":"text","text":os.environ["TASK"]}]},
+            "selected_repository":"enessur61/zero-ai-studio",
+            "selected_branch":"main",
+            "title":"ZERO development task"
+          }))')"
+
+          response="$(curl --silent --show-error --fail-with-body \
+            --connect-timeout 10 --max-time 90 \
+            --request POST \
+            --url 'https://app.all-hands.dev/api/v1/app-conversations' \
+            --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" \
+            --header 'Content-Type: application/json' \
+            --data "${payload}")"
+
+          start_task_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("id",""))' <<<"${response}")"
+          conversation_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("app_conversation_id",""))' <<<"${response}")"
+          status="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status","UNKNOWN"))' <<<"${response}")"
+
+          if [[ -z "${start_task_id}" && -z "${conversation_id}" ]]; then
+            echo "::error::OpenHands returned no recognizable task or conversation ID."
+            exit 1
+          fi
+
+          echo "start_task_id=${start_task_id}" >> "${GITHUB_OUTPUT}"
+          echo "conversation_id=${conversation_id}" >> "${GITHUB_OUTPUT}"
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          echo "OpenHands accepted the task. Startup status: ${status}"
+          if [[ -n "${conversation_id}" ]]; then
+            echo "Conversation: https://app.all-hands.dev/conversations/${conversation_id}"
+          else
+            echo "Start task ID: ${start_task_id}"
+          fi
+
+      - name: Explain asynchronous startup
+        if: steps.start.outcome == 'success'
+        run: |
+          echo "OpenHands startup is asynchronous. Check the run logs for the start-task ID and status."
+          echo "No claim is made here that the agent has completed the requested work."
