@@ -98,8 +98,9 @@ function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: str
     return false;
   }
   // A future reset date is corrupt metadata, not evidence of a fresh quota.
-  if (quota.lastResetDate > today) return false;
-  if (quota.lastResetDate < today) return true;
+  // A stale local date is not proof that the provider reset its quota.
+  // Match assertZeroBudgetModelAllowed(): fail closed until a verified reset exists.
+  if (quota.lastResetDate !== today) return false;
   return quota.exhausted !== true &&
     Number.isSafeInteger(quota.requestsToday) &&
     quota.requestsToday >= 0 &&
