@@ -53,8 +53,7 @@ try {
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
   const authB = createPostgresAuthStore(poolB);
-  await authA.ensureSchema();
-  await authB.ensureSchema();
+  await Promise.all([authA.ensureSchema(), authB.ensureSchema()]);
   const sessionHash = 'a'.repeat(64);
   await authA.createSession(sessionHash, new Date(Date.now() + 60_000));
   assert.equal(await authB.hasSession(sessionHash), true, 'a session created on pool A must validate on pool B');
