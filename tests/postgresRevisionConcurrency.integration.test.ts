@@ -210,7 +210,7 @@ try {
     { value: 'newer-normal-write' },
     restoreSnapshot.revision
   );
-  assert.equal(concurrentWriteRevision, 6);
+  assert.equal(concurrentWriteRevision, restoreSnapshot.revision + 1);
   await assert.rejects(
     () => storeA.write({ value: 'stale-restored-state' }, restoreSnapshot.revision),
     (error: unknown) => error instanceof PersistentStateConflictError,
@@ -219,7 +219,7 @@ try {
   const afterRestoreRace = await storeA.read();
   assert.deepEqual(afterRestoreRace, {
     payload: { value: 'newer-normal-write' },
-    revision: 6,
+    revision: restoreSnapshot.revision + 1,
   });
 
   console.log('PostgreSQL revision, restore-race, and atomic-backup tests passed using two independent pools.');
