@@ -119,7 +119,7 @@ export function createPostgresAuthStore(database: Pool) {
     dailyLimit: number;
   }): Promise<{ allowed: boolean; requestsToday: number }> {
     const { modelId, resetDate, currentRequests, dailyLimit } = params;
-    if (!modelId || !/^\\d{4}-\\d{2}-\\d{2}$/.test(resetDate) ||
+    if (!modelId || !/^\d{4}-\d{2}-\d{2}$/.test(resetDate) ||
         !Number.isSafeInteger(currentRequests) || currentRequests < 0 ||
         !Number.isSafeInteger(dailyLimit) || dailyLimit < 1) {
       throw new Error('Invalid Gemini quota reservation metadata.');
