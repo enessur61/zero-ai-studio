@@ -708,12 +708,26 @@ app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
       error: '0 € Budget-Schutz: Kostenpflichtige oder nicht bereitgestellte Hardware-Modelle können nicht aktiviert werden.',
     });
   }
-  if (!model.hasRealAdapter) {
+  const clientLocalRuntimeIds = new Set([
+    'zero-canvas-img2img',
+    'zero-timeline-video-60s',
+    'zero-webaudio-synth',
+    'webgpu-llama-3.2-1b',
+    'apple-foundation-model',
+  ]);
+  const isUnverifiedClientLocalRuntime =
+    model.executionMode === 'LOCAL ON-DEVICE' &&
+    clientLocalRuntimeIds.has(model.id) &&
+    model.status === 'BROWSER TEST ERFORDERLICH' &&
+    !model.hasRealAdapter &&
+    !model.testPassed;
+
+  if (!isUnverifiedClientLocalRuntime && !model.hasRealAdapter) {
     return res.status(400).json({
-      error: `Modell "${model.name}" besitzt noch keinen lauffähigen Adapter (${model.status}).`,
+      error: `Modell "${model.name}" besitzt noch keinen verifizierten Adapter (${model.status}).`,
     });
   }
-  if (!model.testPassed || !['FUNKTIONIERT', 'LOKAL INSTALLIERT'].includes(model.status)) {
+  if (!isUnverifiedClientLocalRuntime && (!model.testPassed || !['FUNKTIONIERT', 'LOKAL INSTALLIERT'].includes(model.status))) {
     return res.status(409).json({
       error: `Modell "${model.name}" muss zuerst einen erfolgreichen echten Laufzeittest bestehen. Aktueller Status: ${model.status}.`,
     });
