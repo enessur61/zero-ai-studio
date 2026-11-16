@@ -46,9 +46,9 @@ function readPersistedWebGPUModelIds(): WebGPULocalModelId[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((id): id is WebGPULocalModelId =>
+    return [...new Set(parsed.filter((id): id is WebGPULocalModelId =>
       WEBGPU_LOCAL_MODELS.some((preset) => preset.modelId === id)
-    );
+    ))];
   } catch {
     return [];
   }
