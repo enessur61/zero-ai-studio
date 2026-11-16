@@ -109,14 +109,14 @@ export const IST_ZUSTAND_REPORT: IstZustandItem[] = [
   {
     area: 'Kostenlose Cloud-KI-Modelle (0 €)',
     status: 'neu_implementiert',
-    summary: 'Echte Server-Adapter für Gemini 3.8 Flash, 3.1 Flash Lite, 3.8 TTS, 3.5 Transcribe, Embedding 2, Google Search Grounding & FLUX.1 Schnell (Pollinations).',
-    details: 'Alle aktiven Free-Cloud-Adapter kommunizieren über serverseitige Endpunkte ohne API-Schlüssel im Frontend.',
+    summary: 'Server-Adapter für Gemini-Text, TTS, Transkription, Embeddings und Google Search Grounding sind implementiert; jeder Provider bleibt bis zum erfolgreichen Live-Test unverifiziert.',
+    details: 'Die Gemini-Free-Tier-Aufrufe laufen serverseitig mit Budget-Schutz. Modellstatus werden erst nach erfolgreicher Live-Probe aktiviert; nicht verifizierte Cloud-Bild- und Open-Text-Provider sind deaktiviert.',
   },
   {
     area: 'Lokale On-Device Engines (iPhone 16 Pro Max)',
     status: 'neu_implementiert',
-    summary: 'Web Audio Thriller/Atmospheric Synthesizer (+ WAV-Export), Canvas/MediaRecorder Video-Pipeline (<= 60s), Image-to-Image/Upscaling & Apple Web Speech.',
-    details: 'Läuft direkt im Browser / iOS Safari auf dem iPhone 16 Pro Max ohne externe Serverkosten.',
+    summary: 'Web-Audio-Synthesizer mit WAV-Export, lokaler Canvas-/MediaRecorder-Video-Kompositor (<= 60s), lokale Bildbearbeitung/Upscaling und Apple Web Speech.',
+    details: 'Diese Browserfunktionen benötigen keine externen KI-Provider. Canvas-Bildbearbeitung ist keine generative Bild-KI; der Video-Kompositor erzeugt keine KI-Videos. Die tatsächliche iPhone-Laufzeit muss auf dem Gerät getestet werden.',
   },
   {
     area: 'Lokale Open-Weight Modelle (CoreML / MLX / MediaPipe / whisper.cpp / Piper / Kokoro)',
@@ -148,32 +148,32 @@ export const DEVELOPMENT_ROADMAP: DevelopmentPhase[] = [
   {
     phase: 3,
     title: 'ZERO MODEL HUB & Adapter-Integration',
-    status: 'abgeschlossen',
-    deliverables: ['26 reale Modelle mit Lizenz-, RAM- & iOS-Prüfung', 'Live-Testrunner für jeden Adapter', 'Ein/Aus-Schalter'],
+    status: 'aktiv',
+    deliverables: ['26 katalogisierte Modelle mit Lizenz-, RAM- & iOS-Metadaten', 'Live-Testrunner; Modellfreigabe nur nach erfolgreichem Laufzeittest', 'Nicht verfügbare Provider bleiben deaktiviert'], 
   },
   {
     phase: 4,
     title: 'ZERO AUDIO STUDIO & Sprachpipeline',
     status: 'abgeschlossen',
-    deliverables: ['Gemini 3.8 TTS WAV-Synthese', 'Apple AVSpeech / Web Speech Deutsch', 'Gemini 3.5 Transcribe & Untertitel'],
+    deliverables: ['Gemini-TTS-Adapter und lokales WAV-Rendering', 'Apple AVSpeech / Web Speech Deutsch', 'Transkription als Text; keine automatisch erzeugten SRT-Zeitstempel'], 
   },
   {
     phase: 5,
     title: 'ZERO MEMORY (Langzeitgedächtnis)',
-    status: 'abgeschlossen',
-    deliverables: ['Persistente JSON-Datenbank', 'Semantische Vektorsuche (gemini-embedding-2)', 'Projekt-Snapshots & Wiederherstellung'],
+    status: 'aktiv',
+    deliverables: ['Persistente PostgreSQL-Datenbank in Produktion', 'Semantische Vektorsuche (Gemini-Embedding) nach erfolgreichem Provider-Test', 'Backup-/Restore-Integration vorhanden; kontrollierter Produktions-Restore-Test steht aus'], 
   },
   {
     phase: 6,
     title: 'ZERO IMAGE STUDIO',
-    status: 'abgeschlossen',
-    deliverables: ['FLUX.1 Schnell & SD Turbo Free Cloud', 'Lokale Bildbearbeitung, Variationen & 2x Upscaling', 'Vision-Analyse'],
+    status: 'aktiv',
+    deliverables: ['Lokale Bildbearbeitung und 2x Upscaling', 'Vision-Analyse, sofern ein unterstütztes Modell live verfügbar ist', 'Generative Bild-KI deaktiviert: kein verifizierter dauerhaft kostenloser Provider'], 
   },
   {
     phase: 7,
     title: 'ZERO VIDEO STUDIO (<= 60s Limit)',
     status: 'abgeschlossen',
-    deliverables: ['Szenen-Kompositor mit harter 60,0s Grenze', 'Ken-Burns Kamerafahrten & Übergänge', 'Echter WebM/MP4 Export inkl. Audio & Untertitel'],
+    deliverables: ['Lokaler Szenen-Kompositor mit harter 60,0s Grenze', 'Ken-Burns Kamerafahrten & Übergänge', 'WebM/MP4 Export inkl. Audio; kein generatives KI-Video ohne externen GPU-Worker'], 
   },
   {
     phase: 8,
@@ -196,8 +196,8 @@ export const DEVELOPMENT_ROADMAP: DevelopmentPhase[] = [
   {
     phase: 11,
     title: 'ZERO AUTOMATION ENGINE & WEB INTELLIGENCE',
-    status: 'abgeschlossen',
-    deliverables: ['Mehrstufige Workflow-Automatisierung mit Freigabe-Gate', 'Google Search Grounding mit verifizierten Quellen'],
+    status: 'aktiv',
+    deliverables: ['Workflow-Automatisierung mit Freigabe-Gate; Ende-zu-Ende-Praxistest offen', 'Google Search Grounding nur nach erfolgreichem Provider-Live-Test'], 
   },
   {
     phase: 12,
