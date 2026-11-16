@@ -7,5 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py job_store.py .
 ENV PYTHONUNBUFFERED=1
 ENV WAN_OUTPUT_DIR=/data/zero-wan-jobs
+# Refuse to run in a production container without an attached persistent volume.
+ENV WAN_REQUIRE_PERSISTENT_STORAGE=true
 EXPOSE 8000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
