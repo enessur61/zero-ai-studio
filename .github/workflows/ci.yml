@@ -105,6 +105,21 @@ jobs:
           done
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:4179';
+          const headerProbe = await fetch(base + '/api/health');
+          const requiredHeaders = {
+            'x-content-type-options': 'nosniff',
+            'x-frame-options': 'DENY',
+            'referrer-policy': 'strict-origin-when-cross-origin',
+            'permissions-policy': 'camera=(self), microphone=(self), geolocation=()'
+          };
+          for (const [name, expected] of Object.entries(requiredHeaders)) {
+            if (headerProbe.headers.get(name) !== expected) {
+              throw new Error('Missing or incorrect security header ' + name);
+            }
+          }
+          if (headerProbe.headers.has('x-powered-by')) {
+            throw new Error('Express X-Powered-By header must be disabled');
+          }
           const unauthenticated = await fetch(base + '/api/projects');
           if (unauthenticated.status !== 401) throw new Error('Private API is accessible without login');
           const authStatus = await fetch(base + '/api/auth/status');

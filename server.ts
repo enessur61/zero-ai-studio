@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { configureTrustProxy, securityHeaders } from './server/securityHeaders.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
@@ -57,6 +58,9 @@ import type {
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
+configureTrustProxy(app);
+app.disable('x-powered-by');
+app.use(securityHeaders);
 
 const IS_PRODUCTION = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
 const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
