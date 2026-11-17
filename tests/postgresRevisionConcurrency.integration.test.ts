@@ -99,6 +99,28 @@ try {
   await authA.clearGeminiQuota(quotaParams.modelId);
   assert.equal((await authB.reserveGeminiQuota(quotaParams)).allowed, true, 'an explicitly confirmed reset must allow a new reservation');
 
+  // A stale application snapshot must not bypass the limit when the shared
+  // reservation row is absent (for example immediately after a manual reset).
+  await authA.clearGeminiQuota(quotaParams.modelId);
+  const staleAtLimit = await authB.reserveGeminiQuota({
+    ...quotaParams,
+    currentRequests: quotaParams.dailyLimit,
+  });
+  assert.equal(staleAtLimit.allowed, false, 'an empty reservation table must not admit a stale snapshot already at its daily limit');
+  assert.equal(staleAtLimit.requestsToday, quotaParams.dailyLimit);
+  const lastAvailableReservation = await authA.reserveGeminiQuota({
+    ...quotaParams,
+    currentRequests: quotaParams.dailyLimit - 1,
+  });
+  assert.equal(lastAvailableReservation.allowed, true, 'the last available quota slot must still be reservable');
+  assert.equal(lastAvailableReservation.requestsToday, quotaParams.dailyLimit);
+  const overLimitAfterLastSlot = await authB.reserveGeminiQuota({
+    ...quotaParams,
+    currentRequests: quotaParams.dailyLimit - 1,
+  });
+  assert.equal(overLimitAfterLastSlot.allowed, false, 'a stale snapshot must not admit a request after the final slot is reserved');
+  await authA.clearGeminiQuota(quotaParams.modelId);
+
   // Production ZIP middleware must enforce one shared limit across two pools.
   const gateA = createPostgresConcurrencyGate(gatePoolA, 2, 5);
   const gateB = createPostgresConcurrencyGate(gatePoolB, 2, 5);
