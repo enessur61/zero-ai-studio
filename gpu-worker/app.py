@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import io
 import os
 import shutil
+import urllib.request
 import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -16,7 +20,7 @@ import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
@@ -36,6 +40,16 @@ _jobs: dict[str, dict[str, Any]] = _JOB_STORE.load_all()
 _jobs_lock = Lock()
 _generation_lock = Lock()
 _pipeline: WanPipeline | None = None
+_piper_voice: Any | None = None
+_piper_lock = Lock()
+PIPER_VOICE_DIR = Path(os.environ.get("PIPER_VOICE_DIR", str(OUTPUT_DIR / "voices"))).resolve()
+PIPER_MODEL_NAME = "de_DE-thorsten-high"
+PIPER_MODEL_PATH = PIPER_VOICE_DIR / f"{PIPER_MODEL_NAME}.onnx"
+PIPER_CONFIG_PATH = PIPER_VOICE_DIR / f"{PIPER_MODEL_NAME}.onnx.json"
+PIPER_MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx"
+PIPER_CONFIG_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json"
+PIPER_MODEL_MD5 = "256505fe58fb8b9d6ed78b83f6a9d2"
+PIPER_CONFIG_MD5 = "e81686e00a9d825e2488ead660bec6fd"
 
 
 class GenerateRequest(BaseModel):
@@ -45,6 +59,11 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+
+
+class PiperTTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    speed: float = Field(default=1.0, ge=0.75, le=1.25)
 
 
 def require_auth(authorization: str | None) -> None:
@@ -67,6 +86,75 @@ def get_pipeline() -> WanPipeline:
         )
         _pipeline.enable_model_cpu_offload()
     return _pipeline
+
+
+def _file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_piper_file(url: str, path: Path, expected_md5: str, max_bytes: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.stat().st_size <= max_bytes and _file_md5(path) == expected_md5:
+        return
+    path.unlink(missing_ok=True)
+    temporary = path.with_suffix(path.suffix + ".part")
+    digest = hashlib.md5()
+    total = 0
+    request = urllib.request.Request(url, headers={"User-Agent": "ZERO-AI-STUDIO/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response, temporary.open("wb") as target:
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RuntimeError("Piper voice download exceeded its size limit")
+                digest.update(chunk)
+                target.write(chunk)
+        if digest.hexdigest() != expected_md5:
+            raise RuntimeError("Piper voice download failed its published integrity check")
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def get_piper_voice() -> Any:
+    global _piper_voice
+    with _piper_lock:
+        if _piper_voice is not None:
+            return _piper_voice
+        _download_piper_file(PIPER_MODEL_URL, PIPER_MODEL_PATH, PIPER_MODEL_MD5, 130 * 1024 * 1024)
+        _download_piper_file(PIPER_CONFIG_URL, PIPER_CONFIG_PATH, PIPER_CONFIG_MD5, 1 * 1024 * 1024)
+        try:
+            from piper import PiperVoice
+        except ImportError as exc:
+            raise RuntimeError("Piper TTS ist im Worker nicht installiert") from exc
+        _piper_voice = PiperVoice.load(str(PIPER_MODEL_PATH))
+        return _piper_voice
+
+
+def synthesize_piper_wav(text: str, speed: float = 1.0) -> bytes:
+    from piper import SynthesisConfig
+
+    voice = get_piper_voice()
+    buffer = io.BytesIO()
+    config = SynthesisConfig(
+        volume=1.0,
+        length_scale=1.0 / speed,
+        noise_scale=0.667,
+        noise_w_scale=0.8,
+        normalize_audio=True,
+    )
+    # Piper returns a real RIFF/WAVE file at the voice's native 22.05 kHz rate.
+    with wave.open(buffer, "wb") as wav_file:
+        voice.synthesize_wav(text, wav_file, syn_config=config)
+    audio = buffer.getvalue()
+    if len(audio) < 44 or not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
+        raise RuntimeError("Piper did not return a valid WAV file")
+    return audio
 
 
 def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
@@ -130,7 +218,38 @@ def health() -> dict[str, Any]:
         "cost_fallback": False,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
+        "tts_engine": "Piper ONNX",
+        "tts_voice": PIPER_MODEL_NAME,
+        "tts_voice_downloaded": PIPER_MODEL_PATH.is_file() and PIPER_CONFIG_PATH.is_file(),
+        "tts_available": True,
+        "cost_fallback": False,
     }
+
+
+@app.post("/tts")
+def create_tts(
+    request: PiperTTSRequest,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    require_auth(authorization)
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text für die Sprachausgabe fehlt")
+    try:
+        audio = synthesize_piper_wav(text, request.speed)
+    except Exception as exc:
+        # No external speech service or paid fallback is ever called.
+        raise HTTPException(status_code=503, detail=f"Piper TTS ist nicht verfügbar: {str(exc)[:240]}") from exc
+    return StreamingResponse(
+        iter([audio]),
+        media_type="audio/wav",
+        headers={
+            "Content-Length": str(len(audio)),
+            "Content-Disposition": 'attachment; filename="zero-piper-de.wav"',
+            "X-Zero-TTS-Model": PIPER_MODEL_NAME,
+            "X-Zero-TTS-Cost": "0",
+        },
+    )
 
 
 @app.post("/jobs", status_code=202)
