@@ -36,7 +36,9 @@ jobs:
           git -C "$XCODEGEN_DIR" remote add origin https://github.com/yonaskolb/XcodeGen.git
           git -C "$XCODEGEN_DIR" fetch --depth 1 origin 8445e778451c7e44237b90281bde622d764b0084
           git -C "$XCODEGEN_DIR" checkout --detach FETCH_HEAD
-          # XcodeGen\x27s Makefile uses the inherited PWD variable for its resource copy.\n          # Set it explicitly because make -C alone does not update that environment variable.\n          PWD="$XCODEGEN_DIR" make -C "$XCODEGEN_DIR" install PREFIX="$RUNNER_TEMP/xcodegen"
+          # XcodeGen's Makefile uses the inherited PWD variable for its resource copy.
+          # Set it explicitly because make -C alone does not update that environment variable.
+          PWD="$XCODEGEN_DIR" make -C "$XCODEGEN_DIR" install PREFIX="$RUNNER_TEMP/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
           test "$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)" = "2.46.0"
       - name: Generate Xcode project
