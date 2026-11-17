@@ -3,19 +3,43 @@ import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
+const originalAiEnabled = process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+const originalFreePlanConfirmed = process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
+  delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+  delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
   assert.equal(isCloudflareWorkersAiConfigured(), false);
 
   await assert.rejects(
     () => generateCloudflareText({ prompt: 'test' }),
-    /nicht konfiguriert/,
+    /gesperrt/,
   );
 
   process.env.CLOUDFLARE_ACCOUNT_ID = 'account-test';
   process.env.CLOUDFLARE_API_TOKEN = 'secret-test-token';
+  assert.equal(isCloudflareWorkersAiConfigured(), false);
+
+  let blockedProviderCalls = 0;
+  const blockedFetch = async () => {
+    blockedProviderCalls += 1;
+    return new Response('{}', { status: 200 });
+  };
+  await assert.rejects(() => generateCloudflareText({ prompt: 'blocked', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => generateCloudflareImage({ prompt: 'blocked', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => transcribeCloudflareAudio({ audioBase64: 'UklGRg==', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => analyzeCloudflareImage({
+    imageDataUrl: 'data:image/png;base64,AAAA',
+    question: 'blocked',
+    fetchImpl: blockedFetch,
+  }), /gesperrt/);
+  assert.equal(blockedProviderCalls, 0, 'all Cloudflare adapters must fail before making a network request');
+
+  process.env.ZERO_CLOUDFLARE_AI_ENABLED = 'true';
+  assert.equal(isCloudflareWorkersAiConfigured(), false);
+  process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = 'true';
   assert.equal(isCloudflareWorkersAiConfigured(), true);
 
   let requestUrl = '';
@@ -112,6 +136,20 @@ try {
   );
   assert.equal(visionRateLimitAttempts, 1);
 
+  let visionServerErrorAttempts = 0;
+  await assert.rejects(
+    () => analyzeCloudflareImage({
+      imageDataUrl: 'data:image/png;base64,AAAA',
+      question: '5xx test',
+      fetchImpl: async () => {
+        visionServerErrorAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+      },
+    }),
+    /Fehler \(500\)/,
+  );
+  assert.equal(visionServerErrorAttempts, 1, '5xx vision requests must not be retried');
+
   let transcriptionUrl = '';
   let transcriptionBody = '';
   const transcription = await transcribeCloudflareAudio({
@@ -144,18 +182,17 @@ try {
   assert.equal(transcription.segments[0]?.end, 1.25);
 
   let transcriptionTransientAttempts = 0;
-  const recoveredTranscription = await transcribeCloudflareAudio({
-    audioBase64: 'UklGRg==',
-    fetchImpl: async () => {
-      transcriptionTransientAttempts += 1;
-      if (transcriptionTransientAttempts === 1) {
+  await assert.rejects(
+    () => transcribeCloudflareAudio({
+      audioBase64: 'UklGRg==',
+      fetchImpl: async () => {
+        transcriptionTransientAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { text: 'Erholt', segments: [] }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(transcriptionTransientAttempts, 2);
-  assert.equal(recoveredTranscription.text, 'Erholt');
+      },
+    }),
+    /Fehler \(500\)/,
+  );
+  assert.equal(transcriptionTransientAttempts, 1, '5xx responses must not be retried because provider processing/billing is unknown');
 
   let transcriptionRateLimitAttempts = 0;
   await assert.rejects(
@@ -171,18 +208,17 @@ try {
   assert.equal(transcriptionRateLimitAttempts, 1);
 
   let imageTransientAttempts = 0;
-  const recoveredImage = await generateCloudflareImage({
-    prompt: 'retry test',
-    fetchImpl: async () => {
-      imageTransientAttempts += 1;
-      if (imageTransientAttempts === 1) {
+  await assert.rejects(
+    () => generateCloudflareImage({
+      prompt: 'retry test',
+      fetchImpl: async () => {
+        imageTransientAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { image: 'B'.repeat(256) }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(imageTransientAttempts, 2);
-  assert.ok(recoveredImage.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+      },
+    }),
+    /Fehler \(500\)/,
+  );
+  assert.equal(imageTransientAttempts, 1, '5xx image requests must not be retried');
 
   let imageRateLimitAttempts = 0;
   await assert.rejects(
@@ -198,25 +234,20 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
-  const recovered = await generateCloudflareText({
-    prompt: 'zweite Nachricht',
-    fetchImpl: async () => {
-      transientAttempts += 1;
-      if (transientAttempts < 3) {
+  await assert.rejects(
+    () => generateCloudflareText({
+      prompt: 'zweite Nachricht',
+      fetchImpl: async () => {
+        transientAttempts += 1;
         return new Response(JSON.stringify({
           success: false,
           errors: [{ message: 'Internal server error (test-request-id)' }],
         }), { status: 500 });
-      }
-      return new Response(JSON.stringify({
-        success: true,
-        result: { response: 'Wiederhergestellt' },
-        errors: [],
-      }), { status: 200 });
-    },
-  });
-  assert.equal(transientAttempts, 3);
-  assert.equal(recovered.text, 'Wiederhergestellt');
+      },
+    }),
+    /Fehler \(500\)/,
+  );
+  assert.equal(transientAttempts, 1, '5xx text requests must not be retried');
 
   let rateLimitAttempts = 0;
   await assert.rejects(
@@ -240,4 +271,8 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
+  if (originalAiEnabled === undefined) delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+  else process.env.ZERO_CLOUDFLARE_AI_ENABLED = originalAiEnabled;
+  if (originalFreePlanConfirmed === undefined) delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
+  else process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = originalFreePlanConfirmed;
 }
