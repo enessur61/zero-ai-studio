@@ -61,6 +61,9 @@ function baseBudget(): BudgetGuardState {
 
   const rateLimit = new Error('429 Too Many Requests: rate limit exceeded, retry after 30s');
   assert.equal(classifyProviderError(rateLimit), 'rate-limited');
+  const cloudflareRateLimit = new Error('Cloudflare Workers AI Free-Kontingent oder Rate-Limit erreicht (HTTP 429). Kein kostenpflichtiger Fallback.');
+  assert.equal(classifyProviderError(cloudflareRateLimit), 'rate-limited');
+  assert.equal(isQuotaExhaustionError(cloudflareRateLimit), false, 'Cloudflare 429 must not be assumed to mean permanent daily quota exhaustion');
   assert.equal(isQuotaExhaustionError(rateLimit), false, 'a rate limit is not durable quota exhaustion');
   assert.equal(isQuotaOrRateLimitError(rateLimit), true);
 
