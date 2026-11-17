@@ -66,10 +66,10 @@ export async function generateCloudflareText(params: {
     if (!response.ok || payload?.success === false) {
       const providerMessage = payload?.errors?.[0]?.message;
       if (response.status === 429) {
-        throw new CloudflareWorkersAiError('Cloudflare Workers AI meldet ein Rate-Limit oder das kostenlose Tageskontingent ist ausgeschöpft. ZERO startet keinen kostenpflichtigen Fallback.', 429);
+        throw new CloudflareWorkersAiError('Cloudflare Workers AI meldet HTTP 429 (Rate limit oder kostenloses Tageskontingent ausgeschöpft). ZERO startet keinen kostenpflichtigen Fallback.', 429);
       }
       if (response.status === 403) {
-        throw new CloudflareWorkersAiError('Cloudflare hat den Zugriff auf dieses Modell verweigert. Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang. Kein kostenpflichtiger Fallback.', 403);
+        throw new CloudflareWorkersAiError('Cloudflare meldet HTTP 403 und verweigert den Zugriff auf dieses Modell. Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang. Kein kostenpflichtiger Fallback.', 403);
       }
       throw new CloudflareWorkersAiError(`Cloudflare Workers AI Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
     }
