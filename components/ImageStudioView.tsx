@@ -29,6 +29,39 @@ interface GeneratedImageItem {
   createdAt: string;
 }
 
+async function cropImageToAspectRatio(dataUrl: string, aspectRatio: '16:9' | '9:16' | '1:1' | '4:3'): Promise<string> {
+  if (aspectRatio === '1:1') return dataUrl;
+  const image = new Image();
+  image.src = dataUrl;
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Das generierte Bild konnte nicht für das Zielformat geöffnet werden.'));
+  });
+
+  const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
+  const targetRatio = ratioWidth / ratioHeight;
+  const sourceRatio = image.naturalWidth / image.naturalHeight;
+  let sx = 0;
+  let sy = 0;
+  let sw = image.naturalWidth;
+  let sh = image.naturalHeight;
+  if (sourceRatio > targetRatio) {
+    sw = Math.round(sh * targetRatio);
+    sx = Math.round((image.naturalWidth - sw) / 2);
+  } else {
+    sh = Math.round(sw / targetRatio);
+    sy = Math.round((image.naturalHeight - sh) / 2);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Lokaler Bildzuschnitt ist auf diesem Gerät nicht verfügbar.');
+  context.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+  return canvas.toDataURL('image/jpeg', 0.94);
+}
+
 export function ImageStudioView({
   characters,
   projects,
@@ -87,13 +120,14 @@ export function ImageStudioView({
       ].filter(Boolean).join(', ');
       const data = await apiRequest<{ imageDataUrl: string; engine: string }>('/api/image/generate', {
         method: 'POST',
-        body: JSON.stringify({ prompt: fullPrompt, model, aspectRatio }),
+        body: JSON.stringify({ prompt: fullPrompt, model, aspectRatio: '1:1' }),
       });
+      const outputDataUrl = await cropImageToAspectRatio(data.imageDataUrl, aspectRatio);
       const item: GeneratedImageItem = {
         id: `img-${Date.now()}`,
-        url: data.imageDataUrl,
+        url: outputDataUrl,
         prompt: prompt.trim(),
-        engine: data.engine,
+        engine: aspectRatio === '1:1' ? data.engine : `${data.engine} + lokaler ${aspectRatio}-Zuschnitt`,
         aspectRatio,
         createdAt: new Date().toISOString(),
       };
