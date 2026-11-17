@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured } from '../server/cloudflareWorkersAi.ts';
+import { generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -72,6 +72,64 @@ try {
   });
   assert.equal(image.modelId, '@cf/black-forest-labs/flux-1-schnell');
   assert.ok(image.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+
+  let transcriptionUrl = '';
+  let transcriptionBody = '';
+  const transcription = await transcribeCloudflareAudio({
+    audioBase64: 'UklGRg==',
+    language: 'de',
+    task: 'transcribe',
+    fetchImpl: async (input, init) => {
+      transcriptionUrl = String(input);
+      transcriptionBody = String(init?.body);
+      return new Response(JSON.stringify({
+        success: true,
+        result: {
+          text: 'Hallo ZERO.',
+          vtt: 'WEBVTT\\n',
+          segments: [{ start: 0, end: 1.25, text: 'Hallo ZERO.' }],
+        },
+        errors: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  assert.match(transcriptionUrl, /@cf\\/openai\\/whisper-large-v3-turbo$/);
+  assert.deepEqual(JSON.parse(transcriptionBody), {
+    audio: 'UklGRg==',
+    task: 'transcribe',
+    language: 'de',
+  });
+  assert.equal(transcription.modelId, '@cf/openai/whisper-large-v3-turbo');
+  assert.equal(transcription.text, 'Hallo ZERO.');
+  assert.equal(transcription.segments[0]?.start, 0);
+  assert.equal(transcription.segments[0]?.end, 1.25);
+
+  let transcriptionTransientAttempts = 0;
+  const recoveredTranscription = await transcribeCloudflareAudio({
+    audioBase64: 'UklGRg==',
+    fetchImpl: async () => {
+      transcriptionTransientAttempts += 1;
+      if (transcriptionTransientAttempts === 1) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+      }
+      return new Response(JSON.stringify({ success: true, result: { text: 'Erholt', segments: [] }, errors: [] }), { status: 200 });
+    },
+  });
+  assert.equal(transcriptionTransientAttempts, 2);
+  assert.equal(recoveredTranscription.text, 'Erholt');
+
+  let transcriptionRateLimitAttempts = 0;
+  await assert.rejects(
+    () => transcribeCloudflareAudio({
+      audioBase64: 'UklGRg==',
+      fetchImpl: async () => {
+        transcriptionRateLimitAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
+      },
+    }),
+    /kein kostenpflichtiger Fallback/i,
+  );
+  assert.equal(transcriptionRateLimitAttempts, 1);
 
   let imageTransientAttempts = 0;
   const recoveredImage = await generateCloudflareImage({
