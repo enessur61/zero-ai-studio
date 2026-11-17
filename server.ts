@@ -1802,72 +1802,44 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db);
+    requireActiveCloudflareTextModel(db);
 
-    const char = characterId ? db.characters.find((c) => c.id === characterId) : db.characters[0];
-    const charContext = char
-      ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
-      : 'Entwickle eine konsistente Hauptfigur.';
-
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Erstelle eine komplette Kurzfilm-Produktion auf Deutsch (Ausnahme: imagePrompt und videoPrompt auf Englisch für FLUX).
+    const modelResponse = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
+      prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
 Genre: ${genre}
-Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden (NIEMALS über 60 Sekunden!).
+Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
 ${charContext}
-Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetDurationSec} Sekunden ergibt.`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              logline: { type: Type.STRING },
-              concept: { type: Type.STRING },
-              story: { type: Type.STRING },
-              screenplay: { type: Type.STRING },
-              scenes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    location: { type: Type.STRING },
-                    timeOfDay: { type: Type.STRING },
-                    durationSec: { type: Type.INTEGER },
-                    cameraMovement: { type: Type.STRING },
-                    narrationText: { type: Type.STRING },
-                    subtitleText: { type: Type.STRING },
-                    soundCue: { type: Type.STRING },
-                    imagePrompt: { type: Type.STRING },
-                    videoPrompt: { type: Type.STRING },
-                  },
-                  required: [
-                    'title',
-                    'location',
-                    'timeOfDay',
-                    'durationSec',
-                    'cameraMovement',
-                    'narrationText',
-                    'subtitleText',
-                    'soundCue',
-                    'imagePrompt',
-                    'videoPrompt',
-                  ],
-                },
-              },
-            },
-            required: ['title', 'logline', 'concept', 'story', 'screenplay', 'scenes'],
-          },
-        },
-      })
-    );
+Erstelle exakt 4 Szenen, deren Dauer zusammen exakt ${targetDurationSec} Sekunden ergibt. Jede Szene muss mindestens 5 Sekunden haben. Halte die Felder kompakt, aber konkret.
 
-    const parsed = JSON.parse((response.text ?? '{}').trim()) as {
+Gib ausschließlich dieses JSON-Schema zurück:
+{
+  "title": "Kurzer Filmtitel",
+  "logline": "Ein-Satz-Prämisse",
+  "concept": "Visuelles und dramaturgisches Konzept",
+  "story": "Zusammenhängende Inhaltsangabe",
+  "screenplay": "Kurzes Drehbuch mit Dialog und Handlung",
+  "scenes": [
+    {
+      "title": "Szenentitel",
+      "location": "Drehort",
+      "timeOfDay": "Tageszeit",
+      "durationSec": 14,
+      "cameraMovement": "Statisch",
+      "narrationText": "Deutsche Sprecherzeile",
+      "subtitleText": "Deutscher Untertitel/Dialog",
+      "soundCue": "Musik- und Geräuschhinweis",
+      "imagePrompt": "English cinematic still-image prompt with consistent character appearance",
+      "videoPrompt": "English cinematic motion prompt"
+    }
+  ]
+}
+cameraMovement muss einer dieser Werte sein: Statisch, Langsamer Zoom-In, Sanfter Zoom-Out, Schwenk Links, Schwenk Rechts, Vertikaler Tilt.
+Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
+      maxTokens: 1200,
+    });
+    const parsed = parseCloudflareJsonObject(modelResponse.text) as {
       title: string;
       logline: string;
       concept: string;
@@ -1886,6 +1858,9 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
         videoPrompt: string;
       }>;
     };
+    if (!Array.isArray(parsed.scenes) || parsed.scenes.length < 4) {
+      throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
+    }
 
     const validMoves: FilmScene['cameraMovement'][] = [
       'Statisch',
