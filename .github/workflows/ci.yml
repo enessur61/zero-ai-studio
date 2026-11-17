@@ -187,6 +187,7 @@ jobs:
           for (const header of ['x-content-type-options', 'referrer-policy', 'x-frame-options', 'permissions-policy', 'content-security-policy-report-only', 'strict-transport-security']) {
             if (!securityHeaders.headers.get(header)) throw new Error('Missing security header: ' + header);
           }
+          if (securityHeaders.headers.has('x-powered-by')) throw new Error('Express X-Powered-By header must be disabled');
           const unknownApi = await authFetch('/api/this-route-does-not-exist');
           if (unknownApi.status !== 404 ||
               !(unknownApi.headers.get('content-type') ?? '').includes('application/json') ||
