@@ -712,10 +712,10 @@ app.post('/api/models/native/activate', asyncRoute(async (req, res) => {
   // Enabled means the user has a client-reported local runtime available.
   // It does not certify the adapter or count as a trusted test.
   model.enabled = true;
-  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.status = 'INSTALLATION ERFORDERLICH';
   model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
+  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Signierte iOS-Installation und echte Geräte-Inferenz bleiben erforderlich.';
   await saveDb(db);
   res.status(202).json({ model, verified: false });
 }));
@@ -836,8 +836,13 @@ app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
   ]);
   const isUnverifiedClientLocalRuntime =
     model.executionMode === 'LOCAL ON-DEVICE' &&
-    (clientLocalRuntimeIds.has(model.id) || model.adapterId === 'webllm') &&
-    model.status === 'BROWSER TEST ERFORDERLICH' &&
+    (
+      (
+        (clientLocalRuntimeIds.has(model.id) || model.adapterId === 'webllm') &&
+        model.status === 'BROWSER TEST ERFORDERLICH'
+      ) ||
+      (model.id === 'apple-foundation-model' && model.status === 'INSTALLATION ERFORDERLICH')
+    ) &&
     !model.hasRealAdapter &&
     !model.testPassed;
 
