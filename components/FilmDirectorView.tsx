@@ -63,6 +63,8 @@ export function FilmDirectorView({
   const [continuityLoading, setContinuityLoading] = useState(false);
   const [dramaturgyAiLoading, setDramaturgyAiLoading] = useState(false);
   const [dramaturgyAiError, setDramaturgyAiError] = useState('');
+  const [dramaturgyVersions, setDramaturgyVersions] = useState<Array<any>>([]);
+  const [dramaturgyDecisions, setDramaturgyDecisions] = useState<Array<any>>([]);
   const [dramaturgyAiResult, setDramaturgyAiResult] = useState<{
     overallAssessment: string;
     characterAnalyses: Array<{ characterId: string; psychologicalProfile: string; coreMotivation: string; emotionalArc: string; relationshipDynamics: string[]; contradictions: string[] }>;
@@ -88,6 +90,15 @@ export function FilmDirectorView({
     apiRequest<{ series: ContinuitySeries[] }>('/api/continuity/series').then((data) => { if (!cancelled) setContinuitySeries(data.series.filter((series) => !series.archivedAt)); }).catch((err) => { if (!cancelled) setContinuityNotice(err instanceof Error ? err.message : 'Serien konnten nicht geladen werden.'); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!selectedSeriesId) { setDramaturgyVersions([]); setDramaturgyDecisions([]); return; }
+    let cancelled = false;
+    apiRequest<{ analyses: any[]; decisions: any[] }>('/api/continuity/series/' + selectedSeriesId + '/dramaturgy-analyses')
+      .then((data) => { if (!cancelled) { setDramaturgyVersions(data.analyses.sort((a,b) => b.version-a.version)); setDramaturgyDecisions(data.decisions); } })
+      .catch(() => { if (!cancelled) { setDramaturgyVersions([]); setDramaturgyDecisions([]); } });
+    return () => { cancelled = true; };
+  }, [selectedSeriesId]);
 
   useEffect(() => {
     if (!selectedSeriesId) { setContinuityDetail(null); setSeriesBibleDraft(''); return; }
@@ -120,6 +131,17 @@ export function FilmDirectorView({
       setDramaturgyAiResult({ ...response.analysis, modelId: response.modelId, generatedAt: response.generatedAt });
     } catch (err) { setDramaturgyAiError(err instanceof Error ? err.message : 'KI-Analyse konnte nicht ausgeführt werden.'); }
     finally { setDramaturgyAiLoading(false); }
+  }
+
+  async function handleDramaturgyDecision(version: number, findingId: string, approved: boolean) {
+    if (!selectedSeriesId) return;
+    try {
+      const result = await apiRequest<{ decision: any }>(`/api/continuity/series/${selectedSeriesId}/dramaturgy-analyses/${version}/decisions`, {
+        method: 'POST', body: JSON.stringify({ findingId, approved, note: approved ? 'Manuell durch Regie freigegeben' : 'Manuell durch Regie abgelehnt' }),
+      });
+      setDramaturgyDecisions((current) => [...current, result.decision]);
+      setContinuityNotice(approved ? 'Korrekturvorschlag freigegeben. Er wird nicht automatisch angewendet.' : 'Korrekturvorschlag abgelehnt.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Entscheidung konnte nicht gespeichert werden.'); }
   }
 
   async function handleCreateSeries() {
@@ -412,6 +434,21 @@ export function FilmDirectorView({
                      {dramaturgyAiResult.storyRecommendations.map((item,i) => <p key={i} className="text-[10px] text-cyan-100">• {item}</p>)}
                    </div>}
                  </div>
+                 {dramaturgyVersions.length > 0 && <div className="space-y-2 rounded-lg border border-white/[0.08] p-3">
+                   <p className="text-[11px] font-semibold text-white">Unveränderliche Analysehistorie</p>
+                   {dramaturgyVersions.map((version) => <div key={version.id} className="space-y-2 rounded-lg bg-black/20 p-2">
+                     <div className="flex items-center justify-between gap-2"><p className="text-[11px] text-cyan-100">Version {version.version}</p><span className="text-[10px] text-slate-500">{new Date(version.createdAt).toLocaleString('de-DE')} · {version.modelId}</span></div>
+                     {version.comparison && <><p className="text-[10px] text-slate-300">{version.comparison.summary}</p>
+                       {version.comparison.changedCharacters.map((change:any) => { const prior = dramaturgyVersions.find((item:any) => item.version === version.comparison.previousVersion); const before = prior?.analysis.characterAnalyses.find((item:any) => item.characterId === change.characterId); const after = version.analysis.characterAnalyses.find((item:any) => item.characterId === change.characterId); const labels:any = {psychologicalProfile:'Psychologie',coreMotivation:'Motivation',emotionalArc:'Emotion',relationshipDynamics:'Beziehungen',contradictions:'Widersprüche'}; return <div key={change.characterId} className="rounded-md border border-white/[0.06] p-2"><p className="text-[10px] font-semibold text-cyan-100">{characters.find((c)=>c.id===change.characterId)?.name || change.characterId} · Vorher / Nachher</p>{change.changedFields.map((field:string)=><div key={field} className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2"><p className="text-[10px] text-slate-400">Vorher · {labels[field] || field}: {Array.isArray(before?.[field]) ? before[field].join(' · ') : before?.[field] || '—'}</p><p className="text-[10px] text-emerald-200">Nachher · {labels[field] || field}: {Array.isArray(after?.[field]) ? after[field].join(' · ') : after?.[field] || '—'}</p></div>)}</div>; })}
+                       {version.comparison.newContradictions.map((item:string,i:number)=><p key={'new'+i} className="text-[10px] text-amber-300">Neuer Widerspruch: {item}</p>)}
+                       {version.comparison.resolvedContradictions.map((item:string,i:number)=><p key={'resolved'+i} className="text-[10px] text-emerald-300">Nicht mehr gemeldet: {item}</p>)}
+                       {version.comparison.newSubtext.map((item:string,i:number)=><p key={'subtext'+i} className="text-[10px] text-violet-200">Neuer Subtext: {item}</p>)}
+                       {version.comparison.resolvedSubtext.map((item:string,i:number)=><p key={'subtext-resolved'+i} className="text-[10px] text-slate-400">Subtext nicht mehr gemeldet: {item}</p>)}
+                     </>}
+                     {version.analysis.findings.map((finding:any) => { const latest = [...dramaturgyDecisions].filter((d:any)=>d.analysisVersionId===version.id&&d.findingId===finding.id).sort((a:any,b:any)=>b.createdAt.localeCompare(a.createdAt))[0]; return <div key={finding.id} className="rounded-md border border-white/[0.06] p-2"><p className="text-[10px] text-slate-300">{finding.episodeTitle} / {finding.sceneTitle} · {finding.category}</p><p className="text-[10px] text-white">{finding.recommendation}</p><p className="text-[10px] text-slate-500">Status: {latest?.decision === 'approved' ? 'Freigegeben' : latest?.decision === 'rejected' ? 'Abgelehnt' : 'Offen'}</p>{!latest && <div className="flex gap-2 pt-1"><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,true)} className="min-h-[34px] rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-200">Freigeben</button><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,false)} className="min-h-[34px] rounded-md bg-rose-500/15 px-2 text-[10px] text-rose-200">Ablehnen</button></div>}</div>; })}
+                   </div>)}
+                   <p className="text-[10px] text-slate-500">Eine Freigabe allein verändert keine Szene. Die Anwendung verlangt eine konkrete manuelle Textfassung und sichert vorher den bisherigen Szenenstand.</p>
+                 </div>}
                  {continuityDetail.storySupervisor.dramaturgyInsights.length > 0 && <div className="space-y-2"><p className="text-[11px] text-slate-300">Dramaturgische Signale · regelbasiert, keine KI-Gewissheit</p>{continuityDetail.storySupervisor.dramaturgyInsights.slice(0, 12).map((insight) => <div key={insight.id} className="rounded-lg bg-black/20 p-2"><p className="text-[10px] text-cyan-200">{insight.category === 'emotion' ? 'Emotion' : insight.category === 'motivation' ? 'Motivation' : 'Möglicher Widerspruch'} · {insight.characterName} · {insight.episodeTitle}</p><p className="text-[10px] text-slate-300">{insight.evidence}</p><p className="text-[10px] text-slate-500">Prüfvorschlag: {insight.recommendation}</p></div>)}</div>}
                  {continuityDetail.storySupervisor.dataWarnings.length > 0 && <p className="text-[10px] text-amber-300">{continuityDetail.storySupervisor.dataWarnings.length} Daten-/Zeitachsenhinweis(e) prüfen.</p>}
                </div>}
