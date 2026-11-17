@@ -3,19 +3,43 @@ import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
+const originalAiEnabled = process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+const originalFreePlanConfirmed = process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
+  delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+  delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
   assert.equal(isCloudflareWorkersAiConfigured(), false);
 
   await assert.rejects(
     () => generateCloudflareText({ prompt: 'test' }),
-    /nicht konfiguriert/,
+    /gesperrt/,
   );
 
   process.env.CLOUDFLARE_ACCOUNT_ID = 'account-test';
   process.env.CLOUDFLARE_API_TOKEN = 'secret-test-token';
+  assert.equal(isCloudflareWorkersAiConfigured(), false);
+
+  let blockedProviderCalls = 0;
+  const blockedFetch = async () => {
+    blockedProviderCalls += 1;
+    return new Response('{}', { status: 200 });
+  };
+  await assert.rejects(() => generateCloudflareText({ prompt: 'blocked', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => generateCloudflareImage({ prompt: 'blocked', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => transcribeCloudflareAudio({ audioBase64: 'UklGRg==', fetchImpl: blockedFetch }), /gesperrt/);
+  await assert.rejects(() => analyzeCloudflareImage({
+    imageDataUrl: 'data:image/png;base64,AAAA',
+    question: 'blocked',
+    fetchImpl: blockedFetch,
+  }), /gesperrt/);
+  assert.equal(blockedProviderCalls, 0, 'all Cloudflare adapters must fail before making a network request');
+
+  process.env.ZERO_CLOUDFLARE_AI_ENABLED = 'true';
+  assert.equal(isCloudflareWorkersAiConfigured(), false);
+  process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = 'true';
   assert.equal(isCloudflareWorkersAiConfigured(), true);
 
   let requestUrl = '';
@@ -240,4 +264,8 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
+  if (originalAiEnabled === undefined) delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+  else process.env.ZERO_CLOUDFLARE_AI_ENABLED = originalAiEnabled;
+  if (originalFreePlanConfirmed === undefined) delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
+  else process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = originalFreePlanConfirmed;
 }
