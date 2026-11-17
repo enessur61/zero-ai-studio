@@ -17,7 +17,8 @@ On a Linux host with an NVIDIA GPU, Docker, and NVIDIA Container Toolkit install
 
 1. Create a strong random token and set it as `ZERO_VIDEO_ENGINE_TOKEN`.
 2. Build: `docker build -t zero-wan-worker gpu-worker`
-3. Run: `docker run --gpus all -p 8000:8000 --env ZERO_VIDEO_ENGINE_TOKEN='YOUR_TOKEN' zero-wan-worker`
+3. Create a persistent host directory for worker jobs and outputs.
+4. Run with that directory mounted: `docker run --gpus all -p 8000:8000 -v /your/persistent/path/zero-wan-jobs:/data/zero-wan-jobs --env WAN_REQUIRE_PERSISTENT_STORAGE=true --env ZERO_VIDEO_ENGINE_TOKEN='YOUR_TOKEN' zero-wan-worker`
 4. Put the worker behind HTTPS before connecting it to a production ZERO instance.
 
 Set these environment variables on the ZERO server:
@@ -36,7 +37,7 @@ All endpoints except `GET /health` require `Authorization: Bearer <token>`.
 - `GET /jobs/{id}` — queued/running/succeeded/failed status.
 - `GET /jobs/{id}/video` — download completed MP4.
 
-The worker serializes GPU inference, limits the in-memory job registry, validates UUIDs and prompts, and never attempts a paid fallback. Jobs and generated files are ephemeral; restarting the worker clears the queue.
+The worker serializes GPU inference, persists job metadata in SQLite, limits job history, validates UUIDs and prompts, and never attempts a paid fallback. With the required persistent volume mounted, completed job records and MP4 files survive worker restarts. Queued/running jobs are marked failed on restart because their GPU execution cannot safely be resumed. Without a persistent mount, the data remains ephemeral; set `WAN_REQUIRE_PERSISTENT_STORAGE=true` in production so startup fails closed when the configured output path is not mounted.
 
 ## Hardware and cost
 

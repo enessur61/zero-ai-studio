@@ -14,6 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
+import { generateCloudflareText } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -160,24 +161,38 @@ export async function runLiveModelTest(
     return model;
   }
 
-  if (!model.hasRealAdapter) {
+  // Apple Foundation Models require native iOS installation and cannot be
+  // verified by a server-side request.
+  if (model.id === 'apple-foundation-model') {
+    model.hasRealAdapter = false;
     model.testPassed = false;
     model.status = 'INSTALLATION ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
-    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
+    model.lastTestMessage =
+      'Apple Foundation Models können nur in der nativen ZERO-iOS-App auf einem kompatiblen iPhone geprüft werden.';
     return model;
   }
 
-  // A server-side test cannot execute browser APIs on the user's iPhone.
-  // Never mark a client-only adapter as tested without a real device-side probe.
+  // A server-side test cannot execute browser APIs or device-local runtimes.
+  // Never infer successful local inference from static catalog metadata.
   if (model.executionMode === 'LOCAL ON-DEVICE') {
+    model.hasRealAdapter = false;
     model.testPassed = false;
     model.status = 'BROWSER TEST ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
     model.lastTestMessage =
       'Quellcode ist vorhanden; die Browser-/iPhone-Laufzeit wurde vom Server nicht ausgeführt. Direkt auf dem Zielgerät prüfen.';
+    return model;
+  }
+
+  if (!model.hasRealAdapter) {
+    model.testPassed = false;
+    model.status = 'INSTALLATION ERFORDERLICH';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
     return model;
   }
 
@@ -203,9 +218,17 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // Real FREE CLOUD probes
+  // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
+  // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if ([
+    if (model.id === 'cloudflare-glm-4.7-flash') {
+      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 32 });
+      model.testPassed = result.text.length > 0;
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? `Cloudflare Workers AI Live-Probe erfolgreich (${result.modelId}).`
+        : 'Leere Antwort vom Cloudflare-Endpunkt.';
+    } else if ([
       'gemini-3.8-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash-lite',

@@ -30,11 +30,13 @@ assert.deepEqual(sanitizeProjectAssets([validAsset, legacyUnsafeAsset, { id: 'br
 const legacyScene = {
   imageUrl: 'javascript:alert(1)',
   audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=',
+  videoUrl: 'blob:https://example.com/temporary-clip',
   title: 'Legacy scene'
 };
 const cleanScenes = sanitizeProjectScenes([legacyScene as never]);
 assert.equal(cleanScenes[0].imageUrl, undefined);
 assert.equal(cleanScenes[0].audioDataUrl, undefined);
+assert.equal(cleanScenes[0].videoUrl, undefined);
 assert.equal(cleanScenes[0].title, 'Legacy scene');
 
 const legacySnapshot = {
@@ -48,6 +50,7 @@ const legacySnapshot = {
 };
 const cleanSnapshots = sanitizeProjectSnapshots([legacySnapshot as never]);
 assert.equal(cleanSnapshots[0].state?.scenes[0].imageUrl, undefined);
+assert.equal(cleanSnapshots[0].state?.scenes[0].videoUrl, undefined);
 assert.deepEqual(cleanSnapshots[0].state?.assets, []);
 
 console.log('Project asset URL validation tests passed.');
