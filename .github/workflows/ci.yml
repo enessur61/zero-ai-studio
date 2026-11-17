@@ -113,7 +113,7 @@ jobs:
           COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
           env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
           SERVER_PID_A=$!
-          trap 'kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true' EXIT
+          trap 'status=$?; if [ "$status" -ne 0 ]; then echo "--- ZERO SERVER A LOG ---"; cat /tmp/zero-server-a.log; echo "--- ZERO SERVER B LOG ---"; cat /tmp/zero-server-b.log; fi; kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true; exit "$status"' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json; then
               break
@@ -221,7 +221,7 @@ jobs:
               scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }))
             })
           });
-          if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed');
+          if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed: ' + durationResponse.status + ' ' + await durationResponse.text());
           const { project: durationProject } = await durationResponse.json();
           const totalDuration = durationProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
           if (totalDuration > 60) throw new Error('Film duration exceeded hard 60-second cap: ' + totalDuration);
