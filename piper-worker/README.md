@@ -1,6 +1,6 @@
 # ZERO German Piper TTS worker
 
-CPU-only German WAV voiceovers via Piper ONNX and the `de_DE-thorsten-medium` voice. The code is MIT; the voice is MIT-licensed. Model files are downloaded on first use and integrity-checked against their published hashes. No Gemini key, GPU, paid speech API or paid fallback is used.
+CPU-only German WAV voiceovers via Piper ONNX and the `de_DE-thorsten-medium` voice. Piper TTS is GPL-3.0; the selected voice model is MIT-licensed. Model files are downloaded on first use and integrity-checked against their published hashes. No Gemini key, GPU, paid speech API or paid fallback is used.
 
 ## Render Free deployment
 
