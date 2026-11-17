@@ -53,7 +53,6 @@ try {
   const image = await generateCloudflareImage({
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
-    seed: 17,
     fetchImpl: async (input, init) => {
       imageUrl = String(input);
       imageBody = String(init?.body);
@@ -68,7 +67,6 @@ try {
   assert.deepEqual(JSON.parse(imageBody), {
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
-    seed: 17,
   });
   assert.equal(image.modelId, '@cf/black-forest-labs/flux-1-schnell');
   assert.ok(image.imageDataUrl.startsWith('data:image/jpeg;base64,'));
