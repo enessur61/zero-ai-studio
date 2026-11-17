@@ -35,26 +35,34 @@ export async function generateCloudflareText(params: {
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
     const fetcher = params.fetchImpl ?? fetch;
-    const response = await fetcher(
-      `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+    let response: Response | undefined;
+    // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
+    // those server failures; never retry 401/403/429 or switch to a paid provider.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetcher(
+        `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: [
+              ...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt.slice(0, 8_000) }] : []),
+              { role: 'user', content: params.prompt },
+            ],
+            max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
+            temperature: 0.3,
+            ...(params.enableThinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: params.enableThinking } }),
+          }),
+          signal: controller.signal,
         },
-        body: JSON.stringify({
-          messages: [
-            ...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt.slice(0, 8_000) }] : []),
-            { role: 'user', content: params.prompt },
-          ],
-          max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
-          temperature: 0.3,
-          ...(params.enableThinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: params.enableThinking } }),
-        }),
-        signal: controller.signal,
-      },
-    );
+      );
+      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+    if (!response) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine HTTP-Antwort geliefert.');
 
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
