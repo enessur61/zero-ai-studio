@@ -226,6 +226,25 @@ try {
     assert.equal(afterDisconnectWork.status, 200, 'slot must release once disconnected handler work settles');
     releaseOccupied();
     await (await occupy).json();
+
+    // A pool connection failure must be forwarded to Express, not become an
+    // unhandled rejection from the async middleware.
+    const failingPool = {
+      connect: async () => { throw new Error('injected ZIP pool connection failure'); },
+    } as unknown as Pool;
+    const failingApp = express();
+    failingApp.get('/zip', createPostgresConcurrencyGate(failingPool, 1).middleware, (_req, res) => res.json({ ok: true }));
+    const failingServer = failingApp.listen(0, '127.0.0.1');
+    await once(failingServer, 'listening');
+    const failingAddress = failingServer.address();
+    assert.ok(failingAddress && typeof failingAddress !== 'string');
+    try {
+      const failedConnectionResponse = await fetch(`http://127.0.0.1:${failingAddress.port}/zip`);
+      assert.equal(failedConnectionResponse.status, 500, 'PostgreSQL pool failures must reach Express error handling');
+    } finally {
+      failingServer.close();
+      await once(failingServer, 'close');
+    }
   } finally {
     releaseHeld();
     releaseOccupied();
