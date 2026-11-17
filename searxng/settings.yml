@@ -1,0 +1,20 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "ZERO Private Search"
+
+search:
+  safe_search: 1
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "REPLACE_WITH_SEARXNG_SECRET"
+  limiter: false
+  image_proxy: false
+  method: "GET"
+
+# SearXNG is intentionally not published to the host. Only the authenticated
+# ZERO worker reaches this container on the private Docker network.
