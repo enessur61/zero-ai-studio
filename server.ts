@@ -1157,11 +1157,148 @@ app.post('/api/brain/clear', asyncRoute(async (_req, res) => {
 }));
 
 // === ZERO WEB INTELLIGENCE ===
+function getZeroWebSearchWorker(): { baseUrl: URL; headers: Record<string, string> } | null {
+  const rawUrl = process.env.ZERO_WEB_SEARCH_URL?.trim();
+  const token = process.env.ZERO_WEB_SEARCH_TOKEN?.trim();
+  if (!rawUrl || !token) return null;
+  try {
+    const baseUrl = new URL(rawUrl);
+    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    baseUrl.pathname = '/';
+    baseUrl.search = '';
+    baseUrl.hash = '';
+    return {
+      baseUrl,
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+    };
+  } catch {
+    return null;
+  }
+}
+
 app.post('/api/web/research', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const query = String(req.body?.query ?? '').trim();
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
+    if (query.length > 250) return res.status(400).json({ error: 'Die Suchanfrage darf maximal 250 Zeichen lang sein.' });
+
+    const hasSearchUrl = Boolean(process.env.ZERO_WEB_SEARCH_URL?.trim());
+    const hasSearchToken = Boolean(process.env.ZERO_WEB_SEARCH_TOKEN?.trim());
+    if (hasSearchUrl !== hasSearchToken) {
+      return res.status(503).json({
+        error: 'Die private ZERO-Websuche ist unvollständig konfiguriert. ZERO_WEB_SEARCH_URL und ZERO_WEB_SEARCH_TOKEN müssen gemeinsam gesetzt sein.',
+        paidFallback: false,
+      });
+    }
+
+    const searchWorker = getZeroWebSearchWorker();
+    if (hasSearchUrl && !searchWorker) {
+      return res.status(503).json({
+        error: 'Die private ZERO-Websuche benötigt eine gültige HTTPS-Adresse und ein Worker-Token. Kein kostenpflichtiger Fallback wurde aufgerufen.',
+        paidFallback: false,
+      });
+    }
+
+    if (searchWorker) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 22000);
+      try {
+        const url = new URL('/search', searchWorker.baseUrl);
+        url.searchParams.set('q', query);
+        url.searchParams.set('language', 'de');
+        url.searchParams.set('limit', '8');
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: searchWorker.headers,
+          signal: controller.signal,
+          redirect: 'error',
+        });
+        if (!response.ok) {
+          return res.status(503).json({
+            error: `ZERO SearXNG konnte die Suche nicht ausführen (HTTP ${response.status}). Bitte den privaten Search-Worker prüfen. Kein kostenpflichtiger Fallback.`,
+            paidFallback: false,
+          });
+        }
+        const payload = await response.json().catch(() => null) as {
+          results?: Array<{ title?: unknown; url?: unknown; content?: unknown; engine?: unknown }>;
+        } | null;
+        if (!payload || !Array.isArray(payload.results)) {
+          return res.status(502).json({ error: 'ZERO SearXNG lieferte keine gültige Ergebnisliste.', paidFallback: false });
+        }
+        const seenUrls = new Set<string>();
+        const sources = payload.results.flatMap((item) => {
+          if (typeof item.url !== 'string' || typeof item.title !== 'string') return [];
+          try {
+            const sourceUrl = new URL(item.url);
+            if (!['https:', 'http:'].includes(sourceUrl.protocol) || sourceUrl.username || sourceUrl.password) return [];
+            const normalizedUrl = sourceUrl.toString();
+            if (seenUrls.has(normalizedUrl)) return [];
+            seenUrls.add(normalizedUrl);
+            return [{
+              title: item.title.slice(0, 300),
+              uri: normalizedUrl,
+              snippet: typeof item.content === 'string' ? item.content.slice(0, 1200) : '',
+            }];
+          } catch {
+            return [];
+          }
+        }).slice(0, 8);
+
+        if (!sources.length) {
+          return res.status(404).json({
+            report: 'SearXNG hat keine verwertbaren Web-Treffer für diese Suchanfrage gefunden.',
+            sources: [],
+            modelUsed: 'SearXNG (self-hosted)',
+            costEur: 0,
+          });
+        }
+
+        const glm = db.models.find((model) =>
+          model.id === 'cloudflare-glm-4.7-flash' &&
+          model.enabled &&
+          model.testPassed &&
+          model.status === 'FUNKTIONIERT' &&
+          model.hasRealAdapter
+        );
+        let report: string;
+        let modelUsed = 'SearXNG (self-hosted) · rohe Web-Treffer';
+        if (glm) {
+          const groundedSources = sources.map((source, index) =>
+            `[${index + 1}] ${source.title}\nURL: ${source.uri}\nAuszug: ${source.snippet}`
+          ).join('\n\n');
+          const ai = await generateCloudflareText({
+            systemPrompt: 'Du bist ZERO WEB INTELLIGENCE. Fasse ausschließlich die bereitgestellten Suchtreffer auf Deutsch zusammen. Trenne belegte Fakten, Unsicherheiten und offene Punkte. Erfinde keine Fakten und keine Quellen. Verweise bei Aussagen auf die Nummern [1], [2] usw.',
+            prompt: `Suchanfrage: ${query}\n\nWeb-Suchergebnisse:\n${groundedSources}\n\nErstelle eine strukturierte Recherche mit Kurzfazit, wichtigsten Erkenntnissen, Widersprüchen/Unsicherheiten und einer kurzen Bewertung der Quellenlage.`,
+            maxTokens: 1100,
+          });
+          report = ai.text.trim();
+          modelUsed = 'SearXNG (self-hosted) + GLM-4.7-Flash';
+        } else {
+          report = [
+            'ZERO hat Web-Treffer über die private SearXNG-Instanz gefunden.',
+            'Für eine KI-Zusammenfassung aktiviere GLM-4.7-Flash nach einem erfolgreichen Live-Test im Model Hub.',
+            '',
+            ...sources.map((source, index) => `[${index + 1}] ${source.title}\n${source.snippet}`),
+          ].join('\n\n');
+        }
+        return res.json({
+          report,
+          sources: sources.map(({ title, uri }) => ({ title, uri })),
+          modelUsed,
+          costEur: 0,
+          paidFallback: false,
+        });
+      } catch (error) {
+        const message = error instanceof Error && error.name === 'AbortError'
+          ? 'Die private ZERO-Websuche hat das 22-Sekunden-Limit überschritten.'
+          : 'Die private ZERO-Websuche ist nicht erreichbar. Prüfe Tunnel, Worker und SearXNG.';
+        console.error('[ZERO WEB] private SearXNG request failed:', error instanceof Error ? error.message : 'unknown error');
+        return res.status(503).json({ error: message, paidFallback: false });
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
 
     await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
