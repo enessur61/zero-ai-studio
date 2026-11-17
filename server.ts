@@ -1536,53 +1536,66 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
 app.post('/api/music/compose', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
-    const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
+    const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim().slice(0, 1200);
     const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
+    requireActiveCloudflareTextModel(db);
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db);
+    const response = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO MUSIC DIRECTOR, ein Filmkomponist und Sounddesigner. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext. Werte und Tonhöhen müssen innerhalb der angegebenen Grenzen liegen.',
+      prompt: `Entwirf musikalische Synthese-Parameter für einen lokalen WebAudio DSP-Synthesizer.
+Stimmung und Einsatz: ${prompt}
+Dauer: ${durationSec} Sekunden.
 
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Entwirf musikalische Synthese-Parameter für ein prozedurales Web-Audio-Synthesizer-Stück zu: "${prompt}" (Dauer: ${durationSec} Sekunden).`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              mood: { type: Type.STRING },
-              bpm: { type: Type.INTEGER },
-              rootMidi: { type: Type.INTEGER, description: 'MIDI root note between 33 and 57' },
-              scaleIntervals: {
-                type: Type.ARRAY,
-                items: { type: Type.INTEGER },
-              },
-              padBrightness: { type: Type.NUMBER, description: '0.1 to 1.0' },
-              pulseIntensity: { type: Type.NUMBER, description: '0.0 to 1.0' },
-              subBassLevel: { type: Type.NUMBER, description: '0.2 to 1.0' },
-              arrangementNotes: { type: Type.STRING },
-            },
-            required: ['title', 'mood', 'bpm', 'rootMidi', 'scaleIntervals', 'padBrightness', 'pulseIntensity', 'subBassLevel', 'arrangementNotes'],
-          },
-        },
-      })
-    );
+Gib ausschließlich dieses JSON-Objekt zurück:
+{
+  "title": "Kurzer Tracktitel",
+  "mood": "Atmosphäre in wenigen Worten",
+  "bpm": 84,
+  "rootMidi": 40,
+  "scaleIntervals": [0, 2, 3, 7, 8, 10],
+  "padBrightness": 0.4,
+  "pulseIntensity": 0.6,
+  "subBassLevel": 0.7,
+  "arrangementNotes": "Kurze Hinweise zum musikalischen Verlauf"
+}
+Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11, padBrightness 0.1-1.0, pulseIntensity 0.0-1.0, subBassLevel 0.2-1.0.`,
+      maxTokens: 500,
+    });
 
-    const composition = JSON.parse((response.text ?? '{}').trim());
+    const raw = parseCloudflareJsonObject(response.text);
+    const bounded = (value: unknown, fallback: number, min: number, max: number) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+    };
+    const scaleIntervals = Array.isArray(raw.scaleIntervals)
+      ? raw.scaleIntervals.map(Number).filter((value) => Number.isInteger(value) && value >= 0 && value <= 11).slice(0, 8)
+      : [];
+    const composition = {
+      title: String(raw.title || 'ZERO Original Soundtrack').slice(0, 120),
+      mood: String(raw.mood || prompt).slice(0, 240),
+      bpm: Math.round(bounded(raw.bpm, 84, 55, 160)),
+      rootMidi: Math.round(bounded(raw.rootMidi, 40, 33, 57)),
+      scaleIntervals: scaleIntervals.length >= 5 ? scaleIntervals : [0, 2, 3, 7, 8, 10],
+      padBrightness: bounded(raw.padBrightness, 0.4, 0.1, 1),
+      pulseIntensity: bounded(raw.pulseIntensity, 0.6, 0, 1),
+      subBassLevel: bounded(raw.subBassLevel, 0.7, 0.2, 1),
+      arrangementNotes: String(raw.arrangementNotes || 'Langsamer Aufbau, tiefer Bass und atmosphärischer Ausklang.').slice(0, 1200),
+    };
     await saveDb(db);
     res.json({
       composition: {
         ...composition,
         durationSec,
-        engine: 'Gemini 3.8 Flash Komposition + ZERO WebAudio DSP',
+        engine: 'GLM-4.7-Flash + ZERO WebAudio DSP',
         costEur: 0,
       },
     });
   } catch (err) {
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(503).json({
+      error: formatGermanApiError(err),
+      costEur: 0,
+      paidFallback: false,
+    });
   }
 }));
 
