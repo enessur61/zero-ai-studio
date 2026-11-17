@@ -64,7 +64,7 @@ try {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
   });
-  assert.match(imageUrl, /@cf\\/black-forest-labs\\/flux-1-schnell$/);
+  assert.match(imageUrl, /@cf\/black-forest-labs\/flux-1-schnell$/);
   assert.deepEqual(JSON.parse(imageBody), {
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
