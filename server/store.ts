@@ -510,6 +510,15 @@ export async function loadDb(): Promise<ZeroDatabase> {
         !hasStaleRawError &&
         prev.adapterId === def.adapterId &&
         prev.hasRealAdapter === def.hasRealAdapter;
+      // Runtime verification must be repeated on every process/device, but
+      // the user's availability toggle is still durable configuration. Keep
+      // only that preference for these unverified adapters; never carry over
+      // client-reported testPassed/status metadata.
+      const preserveAvailabilityToggle =
+        prev &&
+        (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
+        prev.adapterId === def.adapterId &&
+        prev.hasRealAdapter === def.hasRealAdapter;
       const merged = shouldKeepPrevState
         ? {
             ...def,
@@ -520,7 +529,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
             testPassed: prev.testPassed,
             status: def.requiresPaidKey ? 'GESPERRT' : prev.status,
           }
-        : def;
+        : preserveAvailabilityToggle
+          ? { ...def, enabled: def.requiresPaidKey ? false : prev.enabled }
+          : def;
       return enrichModelMetadata(merged);
     });
     // Remove persisted quota counters for Gemini aliases retired from the catalog.
