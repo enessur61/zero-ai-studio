@@ -87,7 +87,7 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
   } else if (['cloudflare-glm-4.7-flash', 'flux-1-schnell-free', 'cloudflare-whisper-large-v3-turbo', 'cloudflare-moondream-3.1-9b-a2b'].includes(def.id)) {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
-    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem ZERO-Server. Cloudflare Workers AI Free stellt 10.000 Neurons pro Tag für alle Modelle gemeinsam bereit; kein kostenpflichtiger Fallback.';
+    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN und beide ZERO-CLOUDFLARE-Freigaben nach manueller Prüfung des Workers-Free-Tarifs. Workers Free umfasst 10.000 Neurons pro Tag gemeinsam für alle Modelle; bei Workers Paid kann Nutzung oberhalb der Freizuteilung kostenpflichtig werden. ZERO bleibt standardmäßig gesperrt und nutzt keinen kostenpflichtigen Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';

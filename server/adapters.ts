@@ -14,6 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
+import { CloudflareWorkersAiGateError } from './cloudflareBudgetGate.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
@@ -424,7 +425,20 @@ export async function runLiveModelTest(
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
     const kind = classifyProviderError(err);
-    if (kind === 'quota-exhausted') {
+    if (err instanceof CloudflareWorkersAiGateError) {
+      model.enabled = false;
+      model.testPassed = false;
+      model.status = 'INSTALLATION ERFORDERLICH';
+      model.lastTestMessage = err.message;
+      recordBudgetAudit(db, {
+        adapterId: 'cloudflare-budget-guard',
+        modelId: model.id,
+        action: 'MODEL_HEALTH_TEST',
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: 'Cloudflare-Modelltest vor jedem Provider-Aufruf blockiert: Workers-Free-Tarif und Ausschluss kostenpflichtiger Nutzung sind nicht bestätigt.',
+        costEur: 0,
+      });
+    } else if (kind === 'quota-exhausted') {
       // Genuine, provider-confirmed quota exhaustion: persist a durable lock.
       if (db.budgetGuard.freeQuotaUsage[model.id]) {
         db.budgetGuard.freeQuotaUsage[model.id].exhausted = true;
