@@ -7,7 +7,7 @@ const ROUTABLE_GEMINI_TEXT_MODELS = [
   'gemini-3.1-flash-lite',
 ] as const;
 
-const ROUTABLE_MODEL_SET = new Set<string>(ROUTABLE_GEMINI_TEXT_MODELS);
+const ROUTABLE_MODEL_SET = new Set<string>([...ROUTABLE_GEMINI_TEXT_MODELS, 'cloudflare-glm-4.7-flash']);
 
 export interface ZeroRouteDecision {
   modelId: string;
@@ -16,8 +16,8 @@ export interface ZeroRouteDecision {
 }
 
 /**
- * Select only a Gemini text model that has passed a real adapter test and is
- * enabled, free-key, zero-cost, and still within its locally tracked quota.
+ * Select only a verified free-cloud text model. Gemini uses ZERO's local quota
+ * guard; Cloudflare uses its own provider-side daily Neuron limit.
  * Local models are deliberately excluded: this server route cannot execute
  * browser/iOS-local inference.
  */
@@ -35,6 +35,7 @@ export function chooseZeroChatModel(
     if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.requiresPaidKey || model.requiresExternalGpu || model.costEur !== 0) return false;
     if (model.status !== 'FUNKTIONIERT') return false;
+    if (model.id === 'cloudflare-glm-4.7-flash') return true; // Cloudflare enforces its own daily Neuron cap; no paid fallback.
     return hasAvailableQuota(budget, model.id, today);
   });
 
@@ -98,9 +99,13 @@ function hasAvailableQuota(budget: BudgetGuardState, modelId: string, today: str
     return false;
   }
   // A future reset date is corrupt metadata, not evidence of a fresh quota.
-  if (quota.lastResetDate > today) return false;
-  if (quota.lastResetDate < today) return true;
-  return quota.exhausted !== true &&
+  // A stale local date is not proof that the provider reset its quota.
+  // Match assertZeroBudgetModelAllowed(): fail closed until a verified reset exists.
+  if (quota.lastResetDate !== today) return false;
+  // Match the server-side budget guard: malformed exhaustion flags or counters
+  // must never be interpreted as an available free-tier quota.
+  return typeof quota.exhausted === 'boolean' &&
+    quota.exhausted === false &&
     Number.isSafeInteger(quota.requestsToday) &&
     quota.requestsToday >= 0 &&
     Number.isSafeInteger(quota.dailySoftLimit) &&
@@ -126,15 +131,22 @@ export function chooseZeroMediaModel(
   const today = now.toISOString().slice(0, 10);
   const eligible = models.filter((model) => {
     if (model.category !== spec.category) return false;
-    if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.requiresPaidKey || model.requiresExternalGpu || model.costEur !== 0) return false;
+
+    if (spec.localModelIds.includes(model.id)) {
+      // Local work is executed by the browser/iOS host, not by this server.
+      // A client-reported runtime may be routed locally, but it must never be
+      // promoted to a server-verified adapter/test or used for cloud fallback.
+      return model.executionMode === 'LOCAL ON-DEVICE' &&
+        model.enabled &&
+        availableLocalRuntimeModelIds.includes(model.id);
+    }
+
+    if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.status !== 'FUNKTIONIERT' && model.status !== 'LOKAL INSTALLIERT') return false;
 
     if (spec.cloudModelIds.includes(model.id)) {
       return model.executionMode === 'FREE CLOUD' && hasAvailableQuota(budget, model.id, today);
-    }
-    if (spec.localModelIds.includes(model.id)) {
-      return model.executionMode === 'LOCAL ON-DEVICE' && availableLocalRuntimeModelIds.includes(model.id);
     }
     return false;
   });
@@ -145,7 +157,7 @@ export function chooseZeroMediaModel(
     modelId: selected.id,
     consideredModelIds: eligible.map((model) => model.id),
     reason: selected.executionMode === 'LOCAL ON-DEVICE'
-      ? 'Lokales Modell hat einen echten Gerätetest bestanden und wurde vom Client als verfügbar gemeldet.'
+      ? 'Lokale Ausführung wird an einen vom Client gemeldeten Geräte-Runtime weitergereicht; der Server zertifiziert weder Adapter noch Inferenztest.'
       : 'Cloud-Modell hat einen echten Adaptertest bestanden und verfügt über ein verfügbares Free-Tier-Kontingent.',
   };
 }

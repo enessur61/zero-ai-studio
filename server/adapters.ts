@@ -1,9 +1,9 @@
 import {
   assertZeroBudgetModelAllowed,
+  classifyProviderError,
   formatGermanApiError,
   getGeminiClient,
-  isQuotaOrRateLimitError,
-  isTransientServerError,
+  isExhaustedWithinCurrentDay,
   ThinkingLevel,
   withTransientRetry,
 } from './geminiClient.ts';
@@ -14,6 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
+import { generateCloudflareText } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -160,18 +161,23 @@ export async function runLiveModelTest(
     return model;
   }
 
-  if (!model.hasRealAdapter) {
+  // Apple Foundation Models require native iOS installation and cannot be
+  // verified by a server-side request.
+  if (model.id === 'apple-foundation-model') {
+    model.hasRealAdapter = false;
     model.testPassed = false;
     model.status = 'INSTALLATION ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
-    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
+    model.lastTestMessage =
+      'Apple Foundation Models können nur in der nativen ZERO-iOS-App auf einem kompatiblen iPhone geprüft werden.';
     return model;
   }
 
-  // A server-side test cannot execute browser APIs on the user's iPhone.
-  // Never mark a client-only adapter as tested without a real device-side probe.
+  // A server-side test cannot execute browser APIs or device-local runtimes.
+  // Never infer successful local inference from static catalog metadata.
   if (model.executionMode === 'LOCAL ON-DEVICE') {
+    model.hasRealAdapter = false;
     model.testPassed = false;
     model.status = 'BROWSER TEST ERFORDERLICH';
     model.lastTestedAt = now;
@@ -181,23 +187,59 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // Allow explicit live re-probe to recover from transient 429/503 cooldowns
-  if (db.budgetGuard.freeQuotaUsage[model.id]?.exhausted) {
-    db.budgetGuard.freeQuotaUsage[model.id].exhausted = false;
+  if (!model.hasRealAdapter) {
+    model.testPassed = false;
+    model.status = 'INSTALLATION ERFORDERLICH';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
+    return model;
   }
 
-  // Real FREE CLOUD probes
+  // A re-test must never clear a genuine quota lock. Only the proven daily
+  // rollover inside assertZeroBudgetModelAllowed may reset an exhausted quota.
+  const existingQuota = db.budgetGuard.freeQuotaUsage[model.id];
+  if (existingQuota && isExhaustedWithinCurrentDay(existingQuota)) {
+    model.testPassed = false;
+    model.status = 'FREE-TIER AUSGESCHÖPFT';
+    model.enabled = false;
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage =
+      'Free-Tier Tageskontingent ist ausgeschöpft. Ein erneuter Modelltest setzt diese Sperre nicht zurück — Freigabe erst nach dem nachgewiesenen täglichen Kontingent-Reset.';
+    recordBudgetAudit(db, {
+      adapterId: 'gemini-quota-guard',
+      modelId: model.id,
+      action: 'MODEL_TEST',
+      decision: 'GESTOPPT_KONTINGENT',
+      reason: 'Erneuter Modelltest blockiert: Tageskontingent weiterhin ausgeschöpft (kein Reset durch Re-Test).',
+      costEur: 0,
+    });
+    return model;
+  }
+
+  // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
+  // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if ([
+    if (model.id === 'cloudflare-glm-4.7-flash') {
+      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 32 });
+      model.testPassed = result.text.length > 0;
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? `Cloudflare Workers AI Live-Probe erfolgreich (${result.modelId}).`
+        : 'Leere Antwort vom Cloudflare-Endpunkt.';
+    } else if ([
       'gemini-3.8-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
     ].includes(model.id)) {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -220,10 +262,12 @@ export async function runLiveModelTest(
         ? `Live-Probe erfolgreich (${text.slice(0, 32)}).`
         : 'Leere Antwort vom Endpunkt.';
     } else if (model.id === 'gemini-3.8-flash-lite-tts' || model.id === 'gemini-3.8-flash-tts') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -246,10 +290,12 @@ export async function runLiveModelTest(
         ? `WAV-Synthese erfolgreich (${Math.round((audioB64!.length * 0.75) / 1024)} KB Audio).`
         : 'Keine Audiodaten empfangen.';
     } else if (model.id === 'gemini-3.5-transcribe') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -271,10 +317,12 @@ export async function runLiveModelTest(
         ? 'Audio-Transkriptions-Endpunkt erfolgreich geprüft (v1beta, audioTranscription).'
         : 'Keine Antwort vom Transkriptions-Endpunkt.';
     } else if (model.id === 'gemini-embedding-2') {
+      // Validate the explicit free-only billing gate before recording any model-call allowance.
+      // Client construction is local; no provider request is made here.
+      const ai = getGeminiClient();
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
@@ -344,24 +392,41 @@ export async function runLiveModelTest(
     }
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
-    if (isQuotaOrRateLimitError(err)) {
+    const kind = classifyProviderError(err);
+    if (kind === 'quota-exhausted') {
+      // Genuine, provider-confirmed quota exhaustion: persist a durable lock.
       if (db.budgetGuard.freeQuotaUsage[model.id]) {
         db.budgetGuard.freeQuotaUsage[model.id].exhausted = true;
       }
       model.status = 'FREE-TIER AUSGESCHÖPFT';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
-    } else if (isTransientServerError(err)) {
-      model.status = 'FREE-TIER AUSGESCHÖPFT';
+    } else if (kind === 'rate-limited') {
+      // A temporary 429 rate limit is NOT exhausted daily quota: never persist
+      // an exhausted lock, never auto-enable the model.
+      model.status = 'RATE LIMIT';
+      model.testPassed = false;
+      model.lastTestMessage = cleanMsg;
+    } else if (kind === 'transient') {
+      // A temporary 503/network fault must never be shown as exhausted quota.
+      model.status = 'VORÜBERGEHEND AUSGELASTET';
       model.testPassed = false;
       model.lastTestMessage = cleanMsg;
     } else if (
-      cleanMsg.includes('GEMINI_API_KEY') ||
+      kind === 'auth' ||
       cleanMsg.includes('ZERO_GEMINI_FREE_TIER_ONLY')
     ) {
       model.testPassed = false;
       model.status = 'INSTALLATION ERFORDERLICH';
       model.lastTestMessage = cleanMsg;
+      recordBudgetAudit(db, {
+        adapterId: 'gemini-budget-guard',
+        modelId: model.id,
+        action: 'MODEL_HEALTH_TEST',
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: 'Gemini-Modelltest vor jedem Provider-Aufruf blockiert: Free-only-Abrechnungsschutz ist nicht ausdrücklich bestätigt.',
+        costEur: 0,
+      });
     } else {
       model.testPassed = false;
       model.status = 'ADAPTER FEHLT';

@@ -3,15 +3,26 @@ name: ZERO AI STUDIO CI
 on:
   workflow_dispatch:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+# This workflow validates the current commit. Obsolete runs may be cancelled;
+# the full native iOS build is handled by its own workflow.
+concurrency:
+  # Give each commit an independent run so an orphaned macOS job cannot block newer PR validation.
+  group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.16@sha256:30551eca978d79ccf49d037bc297b5670baea61a04ceca42ff7fd3100163d3ce
         env:
           POSTGRES_USER: zero
           POSTGRES_PASSWORD: zero-test-password
@@ -25,10 +36,12 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Block committed local data and secrets
+      - name: Block committed local data and credential files
         shell: bash
         run: |
           node --input-type=module <<'NODE'
@@ -61,9 +74,14 @@ jobs:
               process.exit(1);
             }
           }
-          console.log('No local database or secret files are tracked.');
+          console.log('No prohibited local database or credential files are tracked.');
           NODE
-      - run: npm install --no-audit --no-fund
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
+        with:
+          go-version: '1.24.2'
+      - name: Scan repository content and git history for leaked secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
+      - run: npm ci --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
         run: |
@@ -80,31 +98,53 @@ jobs:
           NODE
       - run: npm run lint
       - run: npm test
+      - name: Test persistent GPU worker job storage
+        run: python3 gpu-worker/test_job_store.py
+      - name: Run PostgreSQL revision and concurrency integration tests
+        env:
+          DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
+          ZERO_POSTGRES_TESTS: 'true'
+        run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
       - run: npm run build
       - name: Production server smoke test
         shell: bash
         run: |
           set -euo pipefail
-          PORT=4179 NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 npm start > /tmp/zero-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
+          env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
+          SERVER_PID_A=$!
+          trap 'status=$?; if [ "$status" -ne 0 ]; then echo "--- ZERO SERVER A LOG ---"; cat /tmp/zero-server-a.log; echo "--- ZERO SERVER B LOG ---"; cat /tmp/zero-server-b.log; fi; kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true; exit "$status"' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:4179/api/health > /tmp/zero-health.json; then
               break
             fi
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              cat /tmp/zero-server.log
+            if ! kill -0 "$SERVER_PID_A" 2>/dev/null; then
+              cat /tmp/zero-server-a.log
               exit 1
             fi
             sleep 1
           done
           test -s /tmp/zero-health.json
+          env "${COMMON_ENV[@]}" PORT=4180 npm start > /tmp/zero-server-b.log 2>&1 &
+          SERVER_PID_B=$!
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4180/api/health > /tmp/zero-health-b.json; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID_B" 2>/dev/null; then
+              cat /tmp/zero-server-b.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s /tmp/zero-health-b.json
           node -e "const h=require('/tmp/zero-health.json'); if(!h.ok || h.app !== 'ZERO AI STUDIO' || h.maxVideoDurationSec !== 60 || h.readiness?.database !== 'ready' || h.readiness?.authentication !== 'ready') process.exit(1); console.log(JSON.stringify(h))"
           for asset in /manifest.webmanifest /sw.js /icons/apple-touch-icon.png; do
             curl --fail --silent --output /dev/null "http://127.0.0.1:4179$asset"
           done
           node --input-type=module <<'NODE'
           const base = 'http://127.0.0.1:4179';
+          const baseB = 'http://127.0.0.1:4180';
           const unauthenticated = await fetch(base + '/api/projects');
           if (unauthenticated.status !== 401) throw new Error('Private API is accessible without login');
           const authStatus = await fetch(base + '/api/auth/status');
@@ -129,21 +169,92 @@ jobs:
           const authenticatedStatus = await authFetch('/api/auth/status');
           const authenticatedInfo = await authenticatedStatus.json();
           if (!authenticatedInfo.authenticated) throw new Error('Session cookie rejected: ' + JSON.stringify(authenticatedInfo));
+          const crossInstanceLogin = await fetch(base + '/api/auth/login', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ password: 'zero-ci-password-123' })
+          });
+          const crossInstanceCookie = crossInstanceLogin.headers.get('set-cookie')?.split(';')[0];
+          if (!crossInstanceLogin.ok || !crossInstanceCookie) throw new Error('Second production login failed');
+          const crossInstanceAccess = await fetch(baseB + '/api/projects', { headers: { cookie: crossInstanceCookie } });
+          if (!crossInstanceAccess.ok) throw new Error('A session created on instance A was not accepted by instance B');
+          const crossInstanceLogout = await fetch(baseB + '/api/auth/logout', {
+            method: 'POST', headers: { cookie: crossInstanceCookie }
+          });
+          if (!crossInstanceLogout.ok) throw new Error('Logout on instance B failed');
+          const revokedOnA = await fetch(base + '/api/projects', { headers: { cookie: crossInstanceCookie } });
+          if (revokedOnA.status !== 401) throw new Error('Logout on instance B did not revoke the session on instance A');
+          const securityHeaders = await fetch(base + '/api/health');
+          for (const header of ['x-content-type-options', 'referrer-policy', 'x-frame-options', 'permissions-policy', 'content-security-policy-report-only', 'strict-transport-security']) {
+            if (!securityHeaders.headers.get(header)) throw new Error('Missing security header: ' + header);
+          }
+          const unknownApi = await authFetch('/api/this-route-does-not-exist');
+          if (unknownApi.status !== 404 ||
+              !(unknownApi.headers.get('content-type') ?? '').includes('application/json') ||
+              !(await unknownApi.json()).error) {
+            throw new Error('Unknown API routes must return JSON 404, not the SPA fallback');
+          }
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const rateBase = attempt % 2 === 0 ? base : baseB;
+            const limited = await fetch(rateBase + '/api/auth/login', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+              body: JSON.stringify({ password: 'incorrect-ci-password' })
+            });
+            if (limited.status !== 401) throw new Error('Shared login rate limit triggered too early across production instances');
+          }
+          const blockedIp = await fetch(baseB + '/api/auth/login', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+            body: JSON.stringify({ password: 'incorrect-ci-password' })
+          });
+          if (blockedIp.status !== 429) throw new Error('Shared login rate limit did not block the ninth attempt on the other instance');
+          const independentIp = await fetch(base + '/api/auth/login', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.11' },
+            body: JSON.stringify({ password: 'incorrect-ci-password' })
+          });
+          if (independentIp.status !== 401) throw new Error('Login rate limit is shared across different forwarded client IPs');
           const durationResponse = await authFetch('/api/projects', {
             method: 'POST',
             body: JSON.stringify({
               title: 'CI 60-second cap test',
-              scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5 }))
+              scenes: Array.from({ length: 16 }, (_, index) => ({ id: 'scene-' + index, durationSec: 5, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }))
             })
           });
-          if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed');
+          if (!durationResponse.ok) throw new Error('Project duration cap endpoint failed: ' + durationResponse.status + ' ' + await durationResponse.text());
           const { project: durationProject } = await durationResponse.json();
           const totalDuration = durationProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
           if (totalDuration > 60) throw new Error('Film duration exceeded hard 60-second cap: ' + totalDuration);
+          if (durationProject.scenes.some((scene) => scene.imageUrl !== undefined || scene.audioDataUrl !== undefined) ||
+              durationProject.snapshots[0].state.scenes.some((scene) => scene.imageUrl !== undefined || scene.audioDataUrl !== undefined)) {
+            throw new Error('Project creation persisted unsafe scene media URLs');
+          }
           if (durationProject.targetDurationSec !== totalDuration ||
               durationProject.snapshots[0].sceneCount !== durationProject.scenes.length ||
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
+          }
+          const mediaDataUrl = 'data:video/mp4;base64,' + Buffer.alloc(2048, 0).toString('base64');
+          const sceneVideoPath = '/api/projects/' + durationProject.id + '/scenes/' + durationProject.scenes[0].id + '/video';
+          const mediaWrite = await authFetch(sceneVideoPath, {
+            method: 'PUT', body: JSON.stringify({ dataUrl: mediaDataUrl })
+          });
+          if (!mediaWrite.ok || !(await mediaWrite.json()).serverPersisted) throw new Error('Scene clip was not persisted to the project');
+          const mediaReadFromSecondInstance = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          const mediaPayload = await mediaReadFromSecondInstance.json();
+          if (!mediaReadFromSecondInstance.ok || mediaPayload.dataUrl !== mediaDataUrl) {
+            throw new Error('Scene media written on instance A was not visible on instance B');
+          }
+          const crossInstanceProjects = await fetch(baseB + '/api/projects', { headers: { cookie } });
+          const crossInstanceProjectPayload = await crossInstanceProjects.json();
+          const projectAfterMediaWrite = crossInstanceProjectPayload.projects?.find((project) =>
+            project.id === durationProject.id
+          );
+          if (!crossInstanceProjects.ok ||
+              !projectAfterMediaWrite?.assets?.some((asset) =>
+                asset.modelId === 'zero-scene-video:' + durationProject.scenes[0].id
+              )) {
+            throw new Error('Project/asset reads on instance B returned stale PostgreSQL state');
           }
           if (!durationProject.snapshots[0].state ||
               durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
@@ -153,12 +264,44 @@ jobs:
             method: 'PUT',
             body: JSON.stringify({
               title: 'CI edited project',
-              scenes: durationProject.scenes.slice(0, 1),
-              snapshotNote: 'CI snapshot restore test'
+              scenes: durationProject.scenes.slice(0, 1).map((scene) => ({ ...scene, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' })),
+              snapshotNote: 'CI snapshot restore test',
+              id: 'attacker-controlled-id',
+              createdAt: '2000-01-01T00:00:00.000Z',
+              updatedAt: '2000-01-01T00:00:00.000Z',
+              version: 999999,
+              targetDurationSec: 999999,
+              snapshots: [],
+              assets: [{ id: 'forged-asset', type: 'image', title: 'Injected', url: 'javascript:alert(1)', modelId: 'attacker', createdAt: '2000-01-01T00:00:00.000Z' }],
+              status: 'HACKED'
             })
           });
           if (!editedProjectResponse.ok) throw new Error('Project edit for snapshot test failed');
           const editedProject = (await editedProjectResponse.json()).project;
+          if (editedProject.id !== durationProject.id ||
+              editedProject.createdAt !== durationProject.createdAt ||
+              editedProject.version !== durationProject.version + 1 ||
+              editedProject.targetDurationSec > 60 ||
+              editedProject.status !== durationProject.status ||
+              editedProject.assets.length !== projectAfterMediaWrite.assets.length ||
+              editedProject.snapshots.length === 0 ||
+              editedProject.updatedAt === '2000-01-01T00:00:00.000Z' ||
+              editedProject.scenes[0]?.imageUrl !== undefined ||
+              editedProject.scenes[0]?.audioDataUrl !== undefined) {
+            throw new Error('Project update accepted client-controlled server fields or unsafe scene media URLs: ' + JSON.stringify({ editedId: editedProject.id, expectedId: durationProject.id, editedVersion: editedProject.version, expectedVersion: durationProject.version + 1, editedAssets: editedProject.assets?.length, expectedAssets: projectAfterMediaWrite.assets?.length, editedStatus: editedProject.status, expectedStatus: durationProject.status }));
+          }
+          const unsafeJavascriptAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'javascript:alert(1)' })
+          });
+          if (unsafeJavascriptAsset.status !== 400) throw new Error('javascript: project asset URL was not rejected');
+          const unsafeHtmlAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'data:text/html;base64,PHNjcmlwdD4=' })
+          });
+          if (unsafeHtmlAsset.status !== 400) throw new Error('HTML data URL was not rejected as an image asset');
+          const safeImageAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
+            method: 'POST', body: JSON.stringify({ type: 'image', url: 'data:image/png;base64,AAAA' })
+          });
+          if (!safeImageAsset.ok) throw new Error('Valid PNG data URL was rejected as a project asset');
           const snapshotToRestore = editedProject.snapshots.find((snapshot) => snapshot.state);
           if (!snapshotToRestore) throw new Error('Project edit did not create a restorable snapshot');
           const restoreResponse = await authFetch(
@@ -190,7 +333,42 @@ jobs:
           if (!localProbe.ok) throw new Error('Local browser adapter probe failed');
           const localProbeData = await localProbe.json();
           if (localProbeData.model.status !== 'BROWSER TEST ERFORDERLICH' || localProbeData.model.testPassed) {
-            throw new Error('Server falsely marked a browser-only adapter as verified');
+            throw new Error('Server falsely marked a browser-only adapter as verified: ' + JSON.stringify(localProbeData.model));
+          }
+          const forgedProbeCases = [
+            ['/api/models/local/activate', { modelId: 'zero-canvas-img2img', probeResponse: 'FORGED_SUCCESS' }, 'BROWSER TEST ERFORDERLICH'],
+            ['/api/models/webgpu/activate', { modelId: 'webgpu-llama-3.2-1b', probeResponse: 'FORGED_SUCCESS' }, 'BROWSER TEST ERFORDERLICH'],
+            ['/api/models/native/activate', { probeResponse: 'FORGED_SUCCESS' }, 'INSTALLATION ERFORDERLICH']
+          ];
+          for (const [path, payload, expectedStatus] of forgedProbeCases) {
+            const response = await authFetch(path, {
+              method: 'POST',
+              body: JSON.stringify(payload)
+            });
+            if (response.status !== 202) {
+              throw new Error('Untrusted browser probe was not safely downgraded: ' + path + ' (' + response.status + ') ' + await response.text());
+            }
+            const result = await response.json();
+            if (result.verified !== false || result.model?.enabled !== true ||
+                result.model?.testPassed !== false || result.model?.hasRealAdapter !== false ||
+                result.model?.status !== expectedStatus) {
+              throw new Error('Client-reported local availability must not be mistaken for trusted verification: ' + path + ' ' + JSON.stringify(result));
+            }
+            const disabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
+            const disabledPayload = await disabledResponse.json();
+            const disabledModel = disabledPayload.model;
+            if (!disabledResponse.ok || disabledModel?.enabled !== false ||
+                disabledModel?.testPassed !== false || disabledModel?.hasRealAdapter !== false ||
+                disabledModel?.status !== expectedStatus) {
+              throw new Error('Local availability toggle changed trusted verification state: ' + path + ' ' + JSON.stringify({ status: disabledResponse.status, error: disabledPayload.error, disabledModel, expectedStatus }));
+            }
+            const enabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
+            const enabledModel = (await enabledResponse.json()).model;
+            if (!enabledResponse.ok || enabledModel?.enabled !== true ||
+                enabledModel?.testPassed !== false || enabledModel?.hasRealAdapter !== false ||
+                enabledModel?.status !== expectedStatus) {
+              throw new Error('Local availability could not be re-enabled without false verification: ' + path);
+            }
           }
           for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
             const model = models.find((entry) => entry.id === id);
@@ -257,11 +435,27 @@ jobs:
             method: 'POST', body: JSON.stringify({})
           });
           if (!zipRestore.ok) throw new Error('PostgreSQL ZIP restore failed: ' + await zipRestore.text());
+          const mediaAfterZipRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          if (!mediaAfterZipRestore.ok || (await mediaAfterZipRestore.json()).dataUrl !== mediaDataUrl) {
+            throw new Error('ZIP restore did not preserve the project scene clip');
+          }
           const jsonRestore = await authFetch('/api/system/restore', {
             method: 'POST', body: JSON.stringify({ backupId: jsonBackup.id })
           });
           if (!jsonRestore.ok) throw new Error('PostgreSQL JSON restore failed: ' + await jsonRestore.text());
-          console.log('Verified PostgreSQL state, JSON backups, ZIP backup download and restore.');
+          const mediaAfterJsonRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          if (!mediaAfterJsonRestore.ok || (await mediaAfterJsonRestore.json()).dataUrl !== mediaDataUrl) {
+            throw new Error('JSON backup restore did not preserve the project scene clip');
+          }
+          const reconciliationResponse = await authFetch('/api/system/zip-backups/reconciliation');
+          if (!reconciliationResponse.ok) throw new Error('PostgreSQL backup reconciliation endpoint failed: ' + await reconciliationResponse.text());
+          const reconciliation = await reconciliationResponse.json();
+          if (reconciliation.orphanedCount !== 0 || reconciliation.missingCount !== 0 ||
+              !Array.isArray(reconciliation.orphanedBlobIds) || !Array.isArray(reconciliation.missingBlobIds)) {
+            throw new Error('PostgreSQL backup reconciliation found inconsistent metadata/blob state: ' + JSON.stringify(reconciliation));
+          }
+          console.log('Verified PostgreSQL state, JSON backups, ZIP backup download/restore and read-only reconciliation.');
+
           const logout = await authFetch('/api/auth/logout', { method: 'POST' });
           if (!logout.ok) throw new Error('Logout failed');
           const clearedCookie = logout.headers.get('set-cookie') ?? '';
@@ -270,12 +464,3 @@ jobs:
           if (afterLogout.status !== 401) throw new Error('Revoked session cookie remained valid after logout');
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
-
-  ios-swift-package:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Verify Swift toolchain
-        run: swift --version
-      - name: Build iOS Swift package sources
-        run: swift build --package-path ios/ZeroCoreML

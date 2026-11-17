@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -17,10 +18,13 @@ import type {
   ZipBackupVersion,
 } from '../src/types/zero.ts';
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
-import { deleteBackupFile, readBackupFile, readPersistentState, writeBackupFile, writePersistentState } from './persistence.ts';
+import { BackupCleanupError, createVersionedZipBackupService } from './versionedZipBackup.ts';
+import { createVerifiedZipRestoreService } from './verifiedZipRestore.ts';
+import { acquirePersistentAutoBackupLease, acquirePersistentZipOperationLease, deleteBackupFile, inspectPersistentBackupConsistency, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
+  MAX_ZIP_ARCHIVE_BYTES,
   verifyZipBuffer,
 } from './zipExporter.ts';
 
@@ -81,6 +85,9 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
+  } else if (def.id === 'cloudflare-glm-4.7-flash') {
+    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
+    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem Server. Cloudflare Free stellt 10.000 Neurons pro Tag bereit; kein kostenpflichtiger Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';
@@ -416,7 +423,7 @@ function createDefaultDatabase(): ZeroDatabase {
     backups: [],
     backupConfig: {
       currentVersion: '1.1.0',
-      autoZipOnChange: true,
+      autoZipOnChange: false,
       lastVerifiedAt: now,
       zipBackups: [],
       changelogHistory: [
@@ -439,9 +446,15 @@ function createDefaultDatabase(): ZeroDatabase {
 }
 
 let dbCache: ZeroDatabase | null = null;
+const dbRevisions = new WeakMap<ZeroDatabase, number>();
+const systemBackupRevisions = new WeakMap<SystemBackupMeta, number>();
+const zipBackupRevisions = new WeakMap<ZipBackupVersion, number>();
+let persistenceSaveQueue: Promise<void> = Promise.resolve();
 
 export async function loadDb(): Promise<ZeroDatabase> {
-  if (dbCache) return dbCache;
+  // PostgreSQL is the cross-instance source of truth. Only file-backed local
+  // development may reuse the process cache between requests.
+  if (dbCache && !process.env.DATABASE_URL) return dbCache;
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.mkdir(BACKUP_DIR, { recursive: true });
   await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
@@ -453,7 +466,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
     const stored = process.env.DATABASE_URL
       ? await readPersistentState<ZeroDatabase>()
       : null;
-    const raw = stored ? JSON.stringify(stored) : process.env.DATABASE_URL
+    const raw = stored ? JSON.stringify(stored.payload) : process.env.DATABASE_URL
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
@@ -471,6 +484,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         'sana-free',
       ].includes(def.id);
       const requiresNativeRuntimeVerification = [
+        'apple-foundation-model',
         'qwen-2.5-3b-coreml',
         'llama-3.2-1b-coreml',
         'llama-3.2-3b-coreml',
@@ -485,7 +499,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         def.executionMode === 'FREE CLOUD' &&
         prev.status === 'FUNKTIONIERT' &&
         !prev.lastTestedAt;
-      const requiresBrowserRuntimeVerification = [
+      const requiresBrowserRuntimeVerification = def.adapterId === 'webllm' || [
         'zero-canvas-img2img',
         'zero-timeline-video-60s',
         'apple-avspeech-webspeech',
@@ -500,7 +514,26 @@ export async function loadDb(): Promise<ZeroDatabase> {
         !hasStaleRawError &&
         prev.adapterId === def.adapterId &&
         prev.hasRealAdapter === def.hasRealAdapter;
-      const merged = shouldKeepPrevState
+      // Runtime verification must be repeated on every process/device, but
+      // the user's availability toggle is still durable configuration. Keep
+      // only that preference for these unverified adapters; never carry over
+      // client-reported testPassed/status metadata.
+      const preserveAvailabilityToggle = Boolean(
+        prev &&
+        (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
+        prev.adapterId === def.adapterId
+      );
+      const preserveNativeClientActivation = Boolean(
+        prev &&
+        requiresNativeRuntimeVerification &&
+        prev.adapterId === def.adapterId &&
+        prev.status === 'BROWSER TEST ERFORDERLICH' &&
+        prev.testPassed === false &&
+        prev.hasRealAdapter === false
+      );
+      const requiresUnverifiedLocalRuntime =
+        requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification;
+      const merged: ModelDefinition = shouldKeepPrevState
         ? {
             ...def,
             enabled: def.requiresPaidKey ? false : prev.enabled,
@@ -510,8 +543,21 @@ export async function loadDb(): Promise<ZeroDatabase> {
             testPassed: prev.testPassed,
             status: def.requiresPaidKey ? 'GESPERRT' : prev.status,
           }
-        : def;
-      return enrichModelMetadata(merged);
+        : requiresUnverifiedLocalRuntime
+          ? {
+              ...def,
+              // Preserve only the user's enabled preference for a matching local adapter.
+              // Never trust persisted/client-reported verification fields for on-device runtimes.
+              enabled: def.requiresPaidKey ? false : (preserveAvailabilityToggle ? prev!.enabled : false),
+              hasRealAdapter: false,
+              testPassed: false,
+              status: requiresNativeRuntimeVerification && !preserveNativeClientActivation ? 'INSTALLATION ERFORDERLICH' : 'BROWSER TEST ERFORDERLICH',
+              lastTestedAt: null,
+              lastTestLatencyMs: null,
+              lastTestMessage: def.lastTestMessage,
+            }
+          : def;
+      return enrichModelMetadata(merged as ModelDefinition);
     });
     // Remove persisted quota counters for Gemini aliases retired from the catalog.
     delete parsed.budgetGuard.freeQuotaUsage['gemini-3.7-flash'];
@@ -546,7 +592,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       const now = new Date().toISOString();
       parsed.backupConfig = {
         currentVersion: '1.1.0',
-        autoZipOnChange: true,
+        autoZipOnChange: false,
         lastVerifiedAt: now,
         zipBackups: [],
         changelogHistory: [
@@ -559,7 +605,25 @@ export async function loadDb(): Promise<ZeroDatabase> {
       };
     }
     dbCache = parsed;
-    if (process.env.DATABASE_URL) await writePersistentState(parsed);
+    if (process.env.DATABASE_URL) {
+      const persistedShape = JSON.parse(JSON.stringify(parsed)) as ZeroDatabase;
+      const needsPersistence = !stored || !isDeepStrictEqual(persistedShape, stored.payload);
+      if (needsPersistence) {
+        try {
+          const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
+          dbRevisions.set(parsed, nextRevision);
+        } catch (error) {
+          if (!(error instanceof PersistentStateConflictError)) throw error;
+          // Another instance initialized or migrated the row first. Use its latest committed state.
+          const latest = await readPersistentState<ZeroDatabase>();
+          if (!latest) throw error;
+          dbCache = latest.payload;
+          dbRevisions.set(latest.payload, latest.revision);
+        }
+      } else if (stored) {
+        dbRevisions.set(parsed, stored.revision);
+      }
+    }
     return dbCache;
   } catch (error) {
     if (process.env.DATABASE_URL || process.env.NODE_ENV === 'production') throw error;
@@ -570,12 +634,57 @@ export async function loadDb(): Promise<ZeroDatabase> {
   }
 }
 
-export async function saveDb(db: ZeroDatabase): Promise<void> {
-  dbCache = db;
+export interface SaveDbOptions {
+  expectedRevision?: number;
+  backupFile?: { id: string; filename: string; contentType: string; payload: Buffer };
+  recordAutoBackupSuccess?: boolean;
+}
+
+export function getDbRevision(db: ZeroDatabase): number {
+  const revision = dbRevisions.get(db);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
+export function getSystemBackupRevision(backup: SystemBackupMeta): number {
+  const revision = systemBackupRevisions.get(backup);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
+export function getZipBackupRevision(backup: ZipBackupVersion): number {
+  const revision = zipBackupRevisions.get(backup);
+  if (revision === undefined) throw new PersistentStateConflictError(-1, null);
+  return revision;
+}
+
+export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
   if (process.env.DATABASE_URL) {
-    await writePersistentState(db);
-    return;
+    // All writers share the PostgreSQL advisory transaction lock and revision check.
+    const operation = persistenceSaveQueue.then(async () => {
+      const expectedRevision = options.expectedRevision ?? dbRevisions.get(db);
+      if (expectedRevision === undefined) {
+        throw new PersistentStateConflictError(-1, null);
+      }
+      try {
+        const nextRevision = options.backupFile
+          ? await writePersistentStateWithBackupFile(
+              db, expectedRevision, options.backupFile, options.recordAutoBackupSuccess ?? false
+            )
+          : await writePersistentState(db, expectedRevision);
+        dbRevisions.set(db, nextRevision);
+        dbCache = db;
+      } catch (error) {
+        // A conflict means the process cache can no longer be trusted.
+        if (error instanceof PersistentStateConflictError) dbCache = null;
+        throw error;
+      }
+    });
+    persistenceSaveQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
+
+  dbCache = db;
   await fs.mkdir(DATA_DIR, { recursive: true });
   const tmpPath = `${DB_PATH}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(db, null, 2), 'utf8');
@@ -601,27 +710,42 @@ export function recordBudgetAudit(
 }
 
 export async function createSystemBackup(note: string): Promise<SystemBackupMeta> {
-  const db = await loadDb();
+  const current = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
+  const nextDb = JSON.parse(JSON.stringify(current)) as ZeroDatabase;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `zero-backup-${stamp}.json`;
-  const payload = JSON.stringify(db, null, 2);
+  const payload = JSON.stringify(nextDb, null, 2);
+  const bytes = Buffer.from(payload, 'utf8');
   const meta: SystemBackupMeta = {
-    id: `bkp-${Date.now()}`,
+    id: `bkp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     filename,
     createdAt: new Date().toISOString(),
     note,
-    sizeBytes: Buffer.byteLength(payload, 'utf8'),
+    sizeBytes: bytes.length,
   };
+  nextDb.backups.unshift(meta);
+  const removedBackups = nextDb.backups.length > 20 ? nextDb.backups.slice(20) : [];
+  if (removedBackups.length) nextDb.backups = nextDb.backups.slice(0, 20);
+
   if (process.env.DATABASE_URL) {
-    await writeBackupFile(meta.id, filename, 'application/json', Buffer.from(payload, 'utf8'));
+    await saveDb(nextDb, {
+      expectedRevision,
+      backupFile: { id: meta.id, filename, contentType: 'application/json', payload: bytes },
+    });
+    systemBackupRevisions.set(meta, getDbRevision(nextDb));
   } else {
     await fs.mkdir(BACKUP_DIR, { recursive: true });
-    await fs.writeFile(path.join(BACKUP_DIR, filename), payload, 'utf8');
+    const backupPath = path.join(BACKUP_DIR, filename);
+    await fs.writeFile(backupPath, payload, 'utf8');
+    try {
+      await saveDb(nextDb);
+    } catch (error) {
+      await fs.rm(backupPath, { force: true });
+      throw error;
+    }
   }
-  db.backups.unshift(meta);
-  const removedBackups = db.backups.length > 20 ? db.backups.slice(20) : [];
-  if (removedBackups.length) db.backups = db.backups.slice(0, 20);
-  await saveDb(db);
+
   if (process.env.DATABASE_URL) {
     await Promise.all(removedBackups.map((backup) => deleteBackupFile(backup.id)));
   } else {
@@ -632,7 +756,7 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
   return meta;
 }
 
-function assertRestorableDatabase(value: unknown): asserts value is ZeroDatabase {
+export function assertRestorableDatabase(value: unknown): asserts value is ZeroDatabase {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Die Datenbankstruktur ist ungültig.');
   }
@@ -691,118 +815,96 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Create and persist a recoverable copy of the current state before replacing anything.
-  await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
+  // Persist a safety backup first. The final revision check below fences off any
+  // normal write that lands between the safety backup and the restore replacement.
+  const safetyBackup = await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
   const current = await loadDb();
+  const expectedRevision = process.env.DATABASE_URL ? getSystemBackupRevision(safetyBackup) : undefined;
   restored.backups = current.backups;
   restored.backupConfig = current.backupConfig;
   restored.settings = { ...restored.settings, maxVideoDurationSec: 60 };
   restored.models = restored.models.map(enrichModelMetadata);
-  await saveDb(restored);
+  await saveDb(restored, { expectedRevision });
   return restored;
 }
 
-function bumpPatchVersion(version: string): string {
-  const parts = version.split('.').map((n) => Number(n));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return '1.1.1';
-  return `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+export const createVersionedZipBackup = createVersionedZipBackupService({
+  loadDb,
+  getDbRevision,
+  saveDb,
+  deleteBackupFile,
+  buildFullProjectZip,
+  verifyZipBuffer,
+  excludedSecrets: EXCLUDED_SECRETS_DOC,
+  isPersistent: () => Boolean(process.env.DATABASE_URL),
+  rootDir: () => process.cwd(),
+  zipBackupDir: ZIP_BACKUP_DIR,
+  rememberBackupRevision: (record, revision) => zipBackupRevisions.set(record, revision),
+});
+
+export async function inspectZipBackupConsistency(): Promise<{
+  orphanedBlobIds: string[];
+  missingBlobIds: string[];
+}> {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.');
+  }
+  return inspectPersistentBackupConsistency();
 }
 
-export async function createVersionedZipBackup(params: {
-  changelog: string;
-  trigger: 'manual' | 'auto' | 'pre_restore';
-  bumpVersion?: boolean;
-}): Promise<ZipBackupVersion> {
-  const db = await loadDb();
-  const nextVersion =
-    params.bumpVersion === false
-      ? db.backupConfig.currentVersion
-      : bumpPatchVersion(db.backupConfig.currentVersion);
-
-  const now = new Date().toISOString();
-  const datePart = now.slice(0, 19).replace(/[:T]/g, '-');
-  const filename = `ZERO_AI_STUDIO_v${nextVersion}_${datePart}.zip`;
-  const targetPath = path.join(ZIP_BACKUP_DIR, filename);
-
-  // Persist pending version/changelog before zipping so the archive itself contains exact state
-  db.backupConfig.currentVersion = nextVersion;
-  db.backupConfig.changelogHistory.unshift({
-    version: nextVersion,
-    date: now,
-    summary: params.changelog,
-  });
-  if (db.backupConfig.changelogHistory.length > 40) {
-    db.backupConfig.changelogHistory = db.backupConfig.changelogHistory.slice(0, 40);
+async function createAutoBackupWithoutMisreportingCommittedCleanupFailure(
+  create: () => Promise<ZipBackupVersion | null>
+): Promise<ZipBackupVersion | null> {
+  try {
+    return await create();
+  } catch (error) {
+    if (error instanceof BackupCleanupError) {
+      console.error('[ZERO Backup] ZIP-Backup veröffentlicht; Bereinigung ausstehend.', {
+        backupId: error.backup.id,
+        orphanedBlobIds: error.orphanedBlobIds,
+      });
+      return error.backup;
+    }
+    throw error;
   }
-  await saveDb(db);
-
-  const zipRes = await buildFullProjectZip(process.cwd(), {
-    'data/zero-studio-db.json': Buffer.from(JSON.stringify(await loadDb(), null, 2), 'utf8'),
-  });
-  const verification = verifyZipBuffer(zipRes.buffer);
-  if (!verification.result.valid) {
-    throw new Error(
-      `ZIP-Integritätsprüfung fehlgeschlagen: ${[
-        ...verification.result.errors,
-        ...verification.result.missingCoreFiles.map((f) => `Fehlende Datei: ${f}`),
-      ].join('; ')}`
-    );
-  }
-
-  // Mark latest verified working backup as protected; keep prior protected backups intact
-  const record: ZipBackupVersion = {
-    id: `zip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    version: nextVersion,
-    filename,
-    createdAt: now,
-    changelog: params.changelog,
-    trigger: params.trigger,
-    fileCount: zipRes.fileCount,
-    sizeBytes: zipRes.buffer.length,
-    verified: true,
-    protected: params.trigger !== 'auto',
-    excludedSecrets: EXCLUDED_SECRETS_DOC,
-  };
-
-  if (process.env.DATABASE_URL) {
-    await writeBackupFile(record.id, filename, 'application/zip', zipRes.buffer);
-  } else {
-    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
-    await fs.writeFile(targetPath, zipRes.buffer);
-  }
-  db.backupConfig.lastVerifiedAt = now;
-  db.backupConfig.zipBackups.unshift(record);
-  let removedZipBackups: ZipBackupVersion[] = [];
-  if (db.backupConfig.zipBackups.length > 25) {
-    // Keep all manually protected backups and at most 10 recent automatic backups.
-    const beforePrune = db.backupConfig.zipBackups;
-    const protectedItems = beforePrune.filter((b) => b.protected);
-    const unprotectedItems = beforePrune.filter((b) => !b.protected).slice(0, 10);
-    db.backupConfig.zipBackups = [...protectedItems, ...unprotectedItems].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt)
-    );
-    const retainedIds = new Set(db.backupConfig.zipBackups.map((b) => b.id));
-    removedZipBackups = beforePrune.filter((b) => !retainedIds.has(b.id));
-  }
-  await saveDb(db);
-  if (process.env.DATABASE_URL) {
-    await Promise.all(removedZipBackups.map((backup) => deleteBackupFile(backup.id)));
-  } else {
-    await Promise.all(removedZipBackups.map((backup) =>
-      fs.rm(path.join(ZIP_BACKUP_DIR, backup.filename), { force: true })
-    ));
-  }
-  return record;
 }
 
 export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBackupVersion | null> {
   const db = await loadDb();
   if (!db.backupConfig.autoZipOnChange) return null;
-  return createVersionedZipBackup({
+
+  const create = (recordAutoBackupSuccess = false) => createVersionedZipBackup({
     changelog,
     trigger: 'auto',
     bumpVersion: true,
+    recordAutoBackupSuccess,
   });
+
+  if (process.env.DATABASE_URL) {
+    // Background auto-backups share the same two global ZIP slots as HTTP
+    // downloads, exports, restores and manual backup creation.
+    const zipLease = await acquirePersistentZipOperationLease();
+    if (!zipLease) return null;
+    try {
+      // The auto-backup wrapper releases (or destroys) its own lease connection
+      // on every failure path; this outer lease bounds total ZIP resource use.
+      return await createAutoBackupWithoutMisreportingCommittedCleanupFailure(() =>
+        withPersistentAutoBackupLease(
+          () => acquirePersistentAutoBackupLease(),
+          () => create(true)
+        )
+      );
+    } finally {
+      await zipLease.release();
+    }
+  }
+
+  // Local file mode has only one process; retain the local 15-minute throttle.
+  const latestAutoBackup = db.backupConfig.zipBackups.find((backup) => backup.trigger === 'auto');
+  if (latestAutoBackup && Date.now() - Date.parse(latestAutoBackup.createdAt) < 15 * 60 * 1000) {
+    return null;
+  }
+  return createAutoBackupWithoutMisreportingCommittedCleanupFailure(() => create());
 }
 
 export async function getZipBackupFilePath(zipId: string): Promise<{
@@ -812,9 +914,22 @@ export async function getZipBackupFilePath(zipId: string): Promise<{
   const db = await loadDb();
   const record = db.backupConfig.zipBackups.find((b) => b.id === zipId);
   if (!record) throw new Error('ZIP-Version nicht gefunden.');
-  const buffer = process.env.DATABASE_URL
-    ? await readBackupFile(record.id)
-    : await fs.readFile(path.join(ZIP_BACKUP_DIR, record.filename));
+  if (!Number.isSafeInteger(record.sizeBytes) || record.sizeBytes < 0 || record.sizeBytes > MAX_ZIP_ARCHIVE_BYTES) {
+    throw new Error(`ZIP-Backup überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+  }
+  let buffer: Buffer;
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL checks octet_length before returning the BYTEA payload, avoiding
+    // an oversized blob allocation in the application process.
+    buffer = await readBackupFile(record.id, MAX_ZIP_ARCHIVE_BYTES);
+  } else {
+    const filePath = path.join(ZIP_BACKUP_DIR, record.filename);
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_ZIP_ARCHIVE_BYTES) {
+      throw new Error(`ZIP-Backup überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+    }
+    buffer = await fs.readFile(filePath);
+  }
   return { record, buffer };
 }
 
@@ -835,72 +950,29 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   if (target.protected) {
     throw new Error('Geschütztes Backup darf nicht gelöscht werden. Hebe zuerst den Schutz auf.');
   }
-  if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
-  else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
+  // Remove metadata first. If blob cleanup subsequently fails, reconciliation
+  // reports an orphaned blob; deleting bytes first could leave a live entry broken.
   db.backupConfig.zipBackups.splice(idx, 1);
   await saveDb(db);
+  try {
+    if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
+    else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
+  } catch (error) {
+    throw new BackupCleanupError(target, [target.id], [error]);
+  }
 }
 
-export async function restoreFromVerifiedZipBackup(zipId: string): Promise<{
-  restoredVersion: string;
-  safetyBackup: ZipBackupVersion;
-  db: ZeroDatabase;
-}> {
-  const { record, buffer: zipBuf } = await getZipBackupFilePath(zipId);
-  const verification = verifyZipBuffer(zipBuf);
-
-  if (!verification.result.valid) {
-    throw new Error(
-      `Wiederherstellung abgebrochen — ZIP beschädigt oder unvollständig: ${verification.result.errors.join('; ')}`
-    );
-  }
-
-  const dbEntry = verification.extractedFiles.get('data/zero-studio-db.json');
-  if (!dbEntry) {
-    throw new Error('Wiederherstellung abgebrochen — data/zero-studio-db.json fehlt im ZIP.');
-  }
-
-  let parsedRestoredDb: ZeroDatabase;
-  try {
-    const parsed: unknown = JSON.parse(dbEntry.toString('utf8'));
-    assertRestorableDatabase(parsed);
-    parsedRestoredDb = parsed;
-  } catch (err) {
-    throw new Error(
-      `Wiederherstellung abgebrochen — JSON im Backup ungültig: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  // Mandatory safety backup BEFORE restoring!
-  const safetyBackup = await createVersionedZipBackup({
+export const restoreFromVerifiedZipBackup = createVerifiedZipRestoreService({
+  getZipBackupFilePath,
+  verifyZipBuffer,
+  assertRestorableDatabase,
+  createSafetyBackup: (record) => createVersionedZipBackup({
     changelog: `Sicherheitsbackup vor Wiederherstellung von v${record.version}`,
     trigger: 'pre_restore',
     bumpVersion: true,
-  });
-
-  const currentDb = await loadDb();
-  const preservedBackupConfig = currentDb.backupConfig;
-  const preservedJsonBackups = currentDb.backups;
-
-  parsedRestoredDb.backupConfig = {
-    ...preservedBackupConfig,
-    changelogHistory: [
-      {
-        version: preservedBackupConfig.currentVersion,
-        date: new Date().toISOString(),
-        summary: `Projektzustand aus verifiziertem Backup v${record.version} wiederhergestellt (Sicherheitsbackup v${safetyBackup.version} erstellt).`,
-      },
-      ...preservedBackupConfig.changelogHistory,
-    ].slice(0, 40),
-  };
-  parsedRestoredDb.backups = preservedJsonBackups;
-  parsedRestoredDb.settings = { ...parsedRestoredDb.settings, maxVideoDurationSec: 60 };
-  parsedRestoredDb.models = parsedRestoredDb.models.map(enrichModelMetadata);
-
-  await saveDb(parsedRestoredDb);
-  return {
-    restoredVersion: record.version,
-    safetyBackup,
-    db: parsedRestoredDb,
-  };
-}
+  }),
+  loadDb,
+  getZipBackupRevision,
+  saveDb,
+  enrichModelMetadata,
+});

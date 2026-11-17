@@ -41,6 +41,8 @@ export function SettingsView({
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [quotaUsage, setQuotaUsage] = useState(budgetGuard.freeQuotaUsage);
+  const [resettingQuota, setResettingQuota] = useState<string | null>(null);
 
   // Versioned ZIP Backup & Export Center state
   const [backupConfig, setBackupConfig] = useState<BackupConfigState>(initialBackupConfig);
@@ -73,6 +75,37 @@ export function SettingsView({
   } | null>(null);
 
   const totalZipStorageBytes = backupConfig.zipBackups.reduce((sum, b) => sum + b.sizeBytes, 0);
+
+  async function handleConfirmProviderQuotaReset(modelId: string) {
+    if (resettingQuota) return;
+    const confirmed = window.confirm(
+      'Hast du im Google AI Studio / Google Cloud Konto geprüft, dass das kostenlose Kontingent für dieses Modell tatsächlich zurückgesetzt wurde? ZERO kann den Provider-Status nicht selbst prüfen. Nur fortfahren, wenn du den Reset extern bestätigt hast.'
+    );
+    if (!confirmed) return;
+
+    setResettingQuota(modelId);
+    setErrorMsg(null);
+    setStatusMsg(null);
+    try {
+      const result = await apiRequest<{
+        ok: boolean;
+        modelId: string;
+        quota: { requestsToday: number; dailySoftLimit: number; exhausted: boolean; lastResetDate: string };
+        providerVerifiedByZero: boolean;
+      }>('/api/system/quota/confirm-provider-reset', {
+        method: 'POST',
+        body: JSON.stringify({ modelId, confirmedProviderReset: true }),
+      });
+      setQuotaUsage((previous) => ({ ...previous, [modelId]: result.quota }));
+      setStatusMsg(
+        `Manueller Reset für ${modelId} gespeichert. Provider-Prüfung erfolgte durch dich, nicht durch ZERO.`
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Kontingent-Reset konnte nicht bestätigt werden.');
+    } finally {
+      setResettingQuota(null);
+    }
+  }
 
   async function handleGeminiConnectionTest() {
     if (testingGemini) return;
@@ -600,14 +633,38 @@ export function SettingsView({
 
           <div className="space-y-2 pt-2 border-t border-white/[0.06]">
             <h3 className="text-xs font-semibold text-slate-300">Free-Tier Kontingent-Überwachung</h3>
-            {Object.entries(budgetGuard.freeQuotaUsage).map(([modelId, q]) => (
-              <div key={modelId} className="flex items-center justify-between text-xs">
-                <span className="text-slate-300 font-mono truncate">{modelId}</span>
-                <span className="font-mono tabular-nums text-slate-400">
-                  {q.requestsToday} / {q.dailySoftLimit} {q.exhausted ? '(GESTOPPT)' : '(OK)'}
-                </span>
-              </div>
-            ))}
+            {Object.entries(quotaUsage).map(([modelId, q]) => {
+              const todayUtc = new Date().toISOString().slice(0, 10);
+              const needsManualReset =
+                !q.lastResetDate ||
+                q.lastResetDate !== todayUtc ||
+                q.exhausted ||
+                q.requestsToday >= q.dailySoftLimit;
+              return (
+                <div key={modelId} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs py-1">
+                  <div className="min-w-0">
+                    <span className="text-slate-300 font-mono truncate block">{modelId}</span>
+                    <span className="font-mono tabular-nums text-slate-400">
+                      {q.requestsToday} / {q.dailySoftLimit} {q.exhausted ? '(GESTOPPT)' : '(LOKAL)'}
+                      {q.lastResetDate ? ` · Resetmarke ${q.lastResetDate}` : ' · Resetmarke fehlt'}
+                    </span>
+                  </div>
+                  {needsManualReset && modelId.startsWith('gemini-') && (
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmProviderQuotaReset(modelId)}
+                      disabled={resettingQuota !== null}
+                      className="min-h-[34px] px-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-200 disabled:opacity-50 inline-flex items-center gap-1.5 shrink-0"
+                    >
+                      {resettingQuota === modelId
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <Unlock className="w-3 h-3" />}
+                      Provider-Reset bestätigen
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

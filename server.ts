@@ -1,26 +1,35 @@
 import 'dotenv/config';
 import express from 'express';
+import { asyncRoute } from './server/asyncRoute.ts';
+import { createRestoreHandlers } from './server/restoreHandlers.ts';
+import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/concurrencyGate.ts';
+import { BackupCleanupError } from './server/versionedZipBackup.ts';
+import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { checkPostgresConnection } from './server/persistence.ts';
+import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
+import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
   formatGermanApiError,
   getGeminiClient,
-  isQuotaOrRateLimitError,
+  isQuotaExhaustionError,
   ThinkingLevel,
   Type,
+  ZeroQuotaExhaustedError,
   withTransientRetry,
 } from './server/geminiClient.ts';
+import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
 import {
   generateFreeCloudImage,
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
+import { generateCloudflareText, isCloudflareWorkersAiConfigured } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -32,6 +41,7 @@ import {
   DEVELOPMENT_ROADMAP,
   getZipBackupFilePath,
   IST_ZUSTAND_REPORT,
+  inspectZipBackupConsistency,
   loadDb,
   maybeAutoCreateZipBackup,
   recordBudgetAudit,
@@ -41,6 +51,7 @@ import {
   toggleZipBackupProtection,
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
+import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -58,6 +69,16 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
+// ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
+// Node processes. The local gate is only for development without PostgreSQL.
+export const zipOperationGate = process.env.DATABASE_URL
+  ? createPostgresConcurrencyGate(getPostgresPool(), 2, 5)
+  : createConcurrencyGate(2, 5);
+
+// Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
+// makes req.ip reflect the client address for login rate limiting.
+app.set('trust proxy', 1);
+
 const IS_PRODUCTION = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
 const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
 const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
@@ -65,10 +86,22 @@ const AUTH_COOKIE_NAME = 'zero_session';
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const activeSessions = new Map<string, number>();
+const postgresAuthStore = process.env.DATABASE_URL ? createPostgresAuthStore(getPostgresPool()) : null;
 
-function hasValidSession(req: express.Request): boolean {
+function authStore() {
+  if (!postgresAuthStore) throw new Error('PostgreSQL ist für die gemeinsame Produktionsanmeldung erforderlich.');
+  return postgresAuthStore;
+}
+
+function tokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function loginKeyDigest(address: string): string {
+  return createHmac('sha256', ZERO_SESSION_SECRET).update(address).digest('hex');
+}
+
+async function hasValidSession(req: express.Request): Promise<boolean> {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
@@ -76,20 +109,93 @@ function hasValidSession(req: express.Request): boolean {
   if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
-  return activeSessions.get(token) === Number(expiresAt);
+  return authStore().hasSession(tokenDigest(token));
 }
 
-function createSessionCookie(): string {
+async function createSessionCookie(): Promise<string> {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
   const nonce = randomBytes(24).toString('hex');
   const payload = expiresAt + '.' + nonce;
   const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(payload).digest('hex');
   const token = payload + '.' + signature;
-  for (const [session, expiry] of activeSessions) if (expiry <= Date.now()) activeSessions.delete(session);
-  activeSessions.set(token, Number(expiresAt));
+  await authStore().createSession(tokenDigest(token), new Date(Number(expiresAt)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
 }
+
+async function reserveZeroBudgetModelAllowed(
+  modelId: string,
+  action: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  let allowedAudit: Parameters<typeof recordBudgetAudit>[1] | null = null;
+  assertZeroBudgetModelAllowed(modelId, action, db.budgetGuard, (entry) => {
+    if (entry.decision === 'ERLAUBT_0_EUR') allowedAudit = entry;
+    else recordBudgetAudit(db, entry);
+  });
+  if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
+
+  if (process.env.DATABASE_URL) {
+    const quota = db.budgetGuard.freeQuotaUsage[modelId];
+    if (!quota) throw new Error(`Kein Kontingentdatensatz für "${modelId}".`);
+    const reservation = await authStore().reserveGeminiQuota({
+      modelId,
+      resetDate: quota.lastResetDate ?? '',
+      currentRequests: quota.requestsToday,
+      dailyLimit: quota.dailySoftLimit,
+    });
+    if (!reservation.allowed) {
+      quota.exhausted = true;
+      recordBudgetAudit(db, {
+        adapterId: 'gemini-quota-guard',
+        modelId,
+        action,
+        decision: 'GESTOPPT_KONTINGENT',
+        reason: `Globales Free-Tier-Kontingent ausgeschöpft (${reservation.requestsToday}/${quota.dailySoftLimit}). Anfrage vor dem Provider-Aufruf gestoppt.`,
+        costEur: 0,
+      });
+      throw new ZeroQuotaExhaustedError(
+        `Globales kostenloses Tageskontingent für "${modelId}" ausgeschöpft. Kein kostenpflichtiger Fallback.`
+      );
+    }
+    // recordBudgetAudit increments once; align the process-local display count
+    // with the atomic cross-instance reservation immediately before that increment.
+    quota.requestsToday = Math.max(0, reservation.requestsToday - 1);
+  }
+
+  recordBudgetAudit(db, allowedAudit);
+}
+
+async function markGeminiQuotaExhausted(
+  modelId: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  const quota = db.budgetGuard.freeQuotaUsage[modelId];
+  if (!quota) return;
+  quota.exhausted = true;
+  if (process.env.DATABASE_URL) {
+    await authStore().markGeminiQuotaExhausted(modelId, quota.lastResetDate ?? '');
+  }
+}
+// Baseline browser security headers. CSP starts in report-only mode so external
+// model assets and media can be audited without unexpectedly breaking the PWA.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader(
+    'Content-Security-Policy-Report-Only',
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+      "script-src 'self' 'unsafe-inline' blob: https:; style-src 'self' 'unsafe-inline' https:; " +
+      "img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; " +
+      "font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob: https:"
+  );
+  if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
 app.use('/api', (req, res, next) => {
   if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
     return next();
@@ -99,43 +205,38 @@ app.use('/api', (req, res, next) => {
       error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
     });
   }
-  if (!hasValidSession(req)) {
-    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  }
-  return next();
+  void hasValidSession(req).then((valid) => {
+    if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    return next();
+  }).catch(next);
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
 
-app.get('/api/auth/status', (_req, res) => {
+app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
     !IS_PRODUCTION ||
     (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
   res.json({
     required: IS_PRODUCTION,
     configured,
-    authenticated: !IS_PRODUCTION || (configured && hasValidSession(_req)),
+    authenticated: !IS_PRODUCTION || (configured && await hasValidSession(_req)),
   });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (!IS_PRODUCTION) return res.json({ ok: true, authenticated: true });
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
     return res.status(503).json({ error: 'Serveranmeldung ist noch nicht konfiguriert.' });
   }
 
-  const now = Date.now();
-  const ip = req.ip || 'unknown';
-  const attempt = loginAttempts.get(ip);
-  const current = !attempt || attempt.resetAt <= now
-    ? { count: 0, resetAt: now + LOGIN_WINDOW_MS }
-    : attempt;
-  if (current.count >= MAX_LOGIN_ATTEMPTS) {
+  const ipKey = loginKeyDigest(req.ip || 'unknown');
+  const attempt = await authStore().consumeLoginAttempt(ipKey, new Date(), LOGIN_WINDOW_MS, MAX_LOGIN_ATTEMPTS);
+  if (!attempt.allowed) {
+    res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
     return res.status(429).json({ error: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.' });
   }
-  current.count += 1;
-  loginAttempts.set(ip, current);
 
   const supplied = Buffer.from(String(req.body?.password ?? ''));
   const expected = Buffer.from(ZERO_ADMIN_PASSWORD);
@@ -144,19 +245,19 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Passwort ist nicht korrekt.' });
   }
 
-  loginAttempts.delete(ip);
-  res.setHeader('Set-Cookie', createSessionCookie());
+  await authStore().clearLoginAttempts(ipKey);
+  res.setHeader('Set-Cookie', await createSessionCookie());
   return res.json({ ok: true, authenticated: true });
-});
+}));
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token) activeSessions.delete(decodeURIComponent(token));
+  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
-});
+}));
 
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -174,7 +275,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // === SYSTEM & AUDIT ===
-app.get('/api/health', async (_req, res) => {
+app.get('/api/health', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const authConfigured =
     !IS_PRODUCTION ||
@@ -213,12 +314,12 @@ app.get('/api/health', async (_req, res) => {
       message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
     });
   }
-});
+}));
 
 
 // === GEMINI CONNECTION DIAGNOSTIC ===
 // Protected by the /api session middleware. Never returns or logs the API key.
-app.post('/api/system/gemini-connection-test', async (_req, res) => {
+app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const apiKeyConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
   const freeTierGuardEnabled = process.env.ZERO_GEMINI_FREE_TIER_ONLY === 'true';
@@ -242,9 +343,7 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
     db = await loadDb();
-    assertZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
-      recordBudgetAudit(db!, entry)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -284,6 +383,7 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
     });
   } catch (err) {
     if (db) {
+      if (isQuotaExhaustionError(err)) await markGeminiQuotaExhausted(modelId, db).catch(() => undefined);
       await saveDb(db).catch(() => undefined);
     }
     return res.json({
@@ -297,9 +397,85 @@ app.post('/api/system/gemini-connection-test', async (_req, res) => {
       message: formatGermanApiError(err),
     });
   }
-});
+}));
 
-app.get('/api/system/audit', async (_req, res) => {
+// === CLOUDFLARE WORKERS AI CONNECTION DIAGNOSTIC ===
+app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const configured = isCloudflareWorkersAiConfigured();
+  const modelId = '@cf/zai-org/glm-4.7-flash';
+  if (!configured) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
+      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      cloudflareConnection: 'NOT_TESTED',
+      modelResponse: 'NOT_TESTED',
+      modelId,
+      paidFallback: false,
+      message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
+    });
+  }
+  try {
+    const result = await generateCloudflareText({
+      prompt: 'Antworte ausschließlich mit: ZERO_CLOUDFLARE_OK',
+      maxTokens: 32,
+    });
+    return res.json({
+      ok: true,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'CONNECTED',
+      modelResponse: 'RECEIVED',
+      modelId: result.modelId,
+      responseVerified: result.text.length > 0,
+      paidFallback: false,
+      message: 'Cloudflare Workers AI hat erfolgreich geantwortet.',
+    });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'FAILED',
+      modelResponse: 'NOT_RECEIVED',
+      modelId,
+      paidFallback: false,
+      message: err instanceof Error ? err.message : 'Cloudflare-Verbindung fehlgeschlagen.',
+    });
+  }
+}));
+
+app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res) => {
+  const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : '';
+  const confirmedProviderReset = req.body?.confirmedProviderReset === true;
+  const db = await loadDb();
+
+  try {
+    const quota = applyManualFreeQuotaReset({
+      modelId,
+      confirmedProviderReset,
+      budgetGuard: db.budgetGuard,
+    });
+    recordBudgetAudit(db, {
+      adapterId: 'manual-quota-reset',
+      modelId,
+      action: 'PROVIDER_QUOTA_RESET_CONFIRMED',
+      decision: 'RESET_BESTAETIGT_MANUELL',
+      reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
+      costEur: 0,
+    });
+    await saveDb(db);
+    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
+    return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : 'Manuelle Kontingentfreigabe fehlgeschlagen.',
+    });
+  }
+}));
+
+app.get('/api/system/audit', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({
     istZustand: IST_ZUSTAND_REPORT,
@@ -308,9 +484,9 @@ app.get('/api/system/audit', async (_req, res) => {
     backups: db.backups,
     settings: db.settings,
   });
-});
+}));
 
-app.post('/api/system/backup', async (req, res) => {
+app.post('/api/system/backup', asyncRoute(async (req, res) => {
   try {
     const note = typeof req.body?.note === 'string' && req.body.note.trim() ? req.body.note.trim() : 'Manuelles System-Backup';
     const meta = await createSystemBackup(note);
@@ -318,19 +494,16 @@ app.post('/api/system/backup', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Backup fehlgeschlagen' });
   }
+}));
+
+const restoreHandlers = createRestoreHandlers({
+  restoreSystemBackup,
+  restoreZipBackup: restoreFromVerifiedZipBackup,
 });
 
-app.post('/api/system/restore', async (req, res) => {
-  try {
-    const backupId = String(req.body?.backupId ?? '');
-    const restored = await restoreSystemBackup(backupId);
-    res.json({ ok: true, restoredProjects: restored.projects.length, restoredMemories: restored.memories.length });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
-  }
-});
+app.post('/api/system/restore', restoreHandlers.json);
 
-app.get('/api/system/export-manifest', async (_req, res) => {
+app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -348,9 +521,9 @@ app.get('/api/system/export-manifest', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Export-Manifest fehlgeschlagen' });
   }
-});
+}));
 
-app.get('/api/system/export-zip', async (_req, res) => {
+app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -370,10 +543,25 @@ app.get('/api/system/export-zip', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Export fehlgeschlagen' });
   }
-});
+}));
 
 // === VERSIONED ZIP BACKUP & RESTORE SYSTEM ===
-app.get('/api/system/zip-backups', async (_req, res) => {
+app.get('/api/system/zip-backups/reconciliation', asyncRoute(async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(409).json({
+      error: 'Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.',
+    });
+  }
+  const result = await inspectZipBackupConsistency();
+  res.json({
+    ok: true,
+    orphanedBlobIds: result.orphanedBlobIds,
+    missingBlobIds: result.missingBlobIds,
+    orphanedCount: result.orphanedBlobIds.length,
+    missingCount: result.missingBlobIds.length,
+  });
+}));
+app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const totalStorageBytes = db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0);
   res.json({
@@ -381,9 +569,9 @@ app.get('/api/system/zip-backups', async (_req, res) => {
     totalStorageBytes,
     excludedSecrets: EXCLUDED_SECRETS_DOC,
   });
-});
+}));
 
-app.post('/api/system/zip-backups', async (req, res) => {
+app.post('/api/system/zip-backups', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const changelog =
       typeof req.body?.changelog === 'string' && req.body.changelog.trim()
@@ -401,18 +589,29 @@ app.post('/api/system/zip-backups', async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      const db = await loadDb();
+      return res.status(202).json({
+        ok: true,
+        backup: err.backup,
+        backupConfig: db.backupConfig,
+        totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Backup fehlgeschlagen' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/settings', async (req, res) => {
+app.post('/api/system/zip-backups/settings', asyncRoute(async (req, res) => {
   const db = await loadDb();
   db.backupConfig.autoZipOnChange = Boolean(req.body?.autoZipOnChange);
   await saveDb(db);
   res.json({ backupConfig: db.backupConfig });
-});
+}));
 
-app.get('/api/system/zip-backups/:id/download', async (req, res) => {
+app.get('/api/system/zip-backups/:id/download', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const { record, buffer } = await getZipBackupFilePath(req.params.id);
     res.setHeader('Content-Type', 'application/zip');
@@ -421,18 +620,18 @@ app.get('/api/system/zip-backups/:id/download', async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : 'ZIP-Datei nicht gefunden' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/:id/protect', async (req, res) => {
+app.post('/api/system/zip-backups/:id/protect', asyncRoute(async (req, res) => {
   try {
     const record = await toggleZipBackupProtection(req.params.id);
     res.json({ backup: record });
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : 'Backup nicht gefunden' });
   }
-});
+}));
 
-app.delete('/api/system/zip-backups/:id', async (req, res) => {
+app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
   try {
     await deleteUnprotectedZipBackup(req.params.id);
     const db = await loadDb();
@@ -442,41 +641,37 @@ app.delete('/api/system/zip-backups/:id', async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      return res.status(202).json({
+        ok: true,
+        deleted: true,
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(400).json({ error: err instanceof Error ? err.message : 'Löschen blockiert' });
   }
-});
+}));
 
-app.post('/api/system/zip-backups/:id/restore', async (req, res) => {
-  try {
-    const restored = await restoreFromVerifiedZipBackup(req.params.id);
-    res.json({
-      ok: true,
-      restoredVersion: restored.restoredVersion,
-      safetyBackup: restored.safetyBackup,
-      backupConfig: restored.db.backupConfig,
-    });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
-  }
-});
+app.post('/api/system/zip-backups/:id/restore', zipOperationGate.middleware, restoreHandlers.zip);
 
 // === ZERO MODEL HUB ===
-app.get('/api/models', async (_req, res) => {
+app.get('/api/models', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ models: db.models, budgetGuard: db.budgetGuard });
-});
+}));
 
-app.get('/api/models/coreml/llama-3.2', async (_req, res) => {
+app.get('/api/models/coreml/llama-3.2', asyncRoute(async (_req, res) => {
   const verification = await verifyCoreMLAdapterPackage();
   res.json(verification);
-});
+}));
 
-app.get('/api/models/ios-runtime', async (_req, res) => {
+app.get('/api/models/ios-runtime', asyncRoute(async (_req, res) => {
   const suite = await verifyZeroIOSRuntimeSuite();
   res.json(suite);
-});
+}));
 
-app.post('/api/models/test-all', async (_req, res) => {
+app.post('/api/models/test-all', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const result = await runAllModelTests(db);
   await saveDb(db);
@@ -485,11 +680,11 @@ app.post('/api/models/test-all', async (_req, res) => {
     models: result.models,
     budgetGuard: db.budgetGuard,
   });
-});
+}));
 
 // The WebGPU engine runs in the user's browser, so the server cannot execute its probe.
 // Persist activation only after the browser reports a non-empty response from real local inference.
-app.post('/api/models/webgpu/activate', async (req, res) => {
+app.post('/api/models/webgpu/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const modelId = String(req.body?.modelId ?? 'webgpu-llama-3.2-1b');
   const model = db.models.find((item) => item.id === modelId);
@@ -500,19 +695,23 @@ app.post('/api/models/webgpu/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Lokaler Inferenztest fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
+  // A client-controlled probeResponse is not proof: any authenticated caller can forge it.
+  // Keep the model disabled until verification can be performed by a trusted runtime.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
   model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Der Browser hat eine echte lokale WebGPU-Inferenzantwort bestätigt. Kein Cloud- oder Paid-Fallback.';
+  model.lastTestMessage = 'Der Browser hat eine Probe gemeldet, aber der Server kann diese nicht unabhängig verifizieren. Das Modell bleibt deshalb deaktiviert.';
   await saveDb(db);
-  res.json({ model });
-});
+  res.status(202).json({ model, verified: false });
+}));
 
 // Local creative engines are activated only after a real browser-side render probe.
-app.post('/api/models/local/activate', async (req, res) => {
+app.post('/api/models/local/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const modelId = String(req.body?.modelId ?? '');
   const probeResponse = String(req.body?.probeResponse ?? '').trim();
@@ -529,19 +728,23 @@ app.post('/api/models/local/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Echter Browser-Testnachweis fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
+  // Browser-supplied output is self-reported and can be forged by an authenticated client.
+  // Do not convert it into a trusted adapter or successful server-side test.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
   model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = `Echter lokaler Browser-Render erfolgreich: ${probeResponse}. Kein Cloud- oder Paid-Fallback.`;
+  model.lastTestMessage = 'Eine lokale Browser-Probe wurde gemeldet, kann serverseitig aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
   await saveDb(db);
-  res.json({ model });
-});
+  res.status(202).json({ model, verified: false });
+}));
 
 // Apple Foundation Models can only be probed inside the signed native iOS host.
-app.post('/api/models/native/activate', async (req, res) => {
+app.post('/api/models/native/activate', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((item) => item.id === 'apple-foundation-model');
   const probeResponse = String(req.body?.probeResponse ?? '').trim();
@@ -551,18 +754,21 @@ app.post('/api/models/native/activate', async (req, res) => {
   if (!probeResponse || probeResponse.length > 1000) {
     return res.status(400).json({ error: 'Native Inferenzantwort fehlt oder ist ungültig.' });
   }
-  model.hasRealAdapter = true;
-  model.testPassed = true;
+  // A client-supplied response cannot prove that the signed native runtime executed it.
+  model.hasRealAdapter = false;
+  model.testPassed = false;
+  // Enabled means the user has a client-reported local runtime available.
+  // It does not certify the adapter or count as a trusted test.
   model.enabled = true;
-  model.status = 'LOKAL INSTALLIERT';
-  model.lastTestedAt = new Date().toISOString();
+  model.status = 'INSTALLATION ERFORDERLICH';
+  model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Native Apple Foundation Models Inferenz auf diesem iPhone erfolgreich bestätigt. Kein Cloud- oder Paid-Fallback.';
+  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Signierte iOS-Installation und echte Geräte-Inferenz bleiben erforderlich.';
   await saveDb(db);
-  res.json({ model });
-});
+  res.status(202).json({ model, verified: false });
+}));
 
-app.post('/api/models/registry/register', async (req, res) => {
+app.post('/api/models/registry/register', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const started = Date.now();
   const now = new Date().toISOString();
@@ -653,9 +859,9 @@ app.post('/api/models/registry/register', async (req, res) => {
     registeredModels,
     models: db.models,
   });
-});
+}));
 
-app.post('/api/models/:id/toggle', async (req, res) => {
+app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
@@ -669,12 +875,31 @@ app.post('/api/models/:id/toggle', async (req, res) => {
       error: '0 € Budget-Schutz: Kostenpflichtige oder nicht bereitgestellte Hardware-Modelle können nicht aktiviert werden.',
     });
   }
-  if (!model.hasRealAdapter) {
+  const clientLocalRuntimeIds = new Set([
+    'zero-canvas-img2img',
+    'zero-timeline-video-60s',
+    'zero-webaudio-synth',
+    'webgpu-llama-3.2-1b',
+    'apple-foundation-model',
+  ]);
+  const isUnverifiedClientLocalRuntime =
+    model.executionMode === 'LOCAL ON-DEVICE' &&
+    (
+      (
+        (clientLocalRuntimeIds.has(model.id) || model.adapterId === 'webllm') &&
+        model.status === 'BROWSER TEST ERFORDERLICH'
+      ) ||
+      (model.id === 'apple-foundation-model' && model.status === 'INSTALLATION ERFORDERLICH')
+    ) &&
+    !model.hasRealAdapter &&
+    !model.testPassed;
+
+  if (!isUnverifiedClientLocalRuntime && !model.hasRealAdapter) {
     return res.status(400).json({
-      error: `Modell "${model.name}" besitzt noch keinen lauffähigen Adapter (${model.status}).`,
+      error: `Modell "${model.name}" besitzt noch keinen verifizierten Adapter (${model.status}).`,
     });
   }
-  if (!model.testPassed || !['FUNKTIONIERT', 'LOKAL INSTALLIERT'].includes(model.status)) {
+  if (!isUnverifiedClientLocalRuntime && (!model.testPassed || !['FUNKTIONIERT', 'LOKAL INSTALLIERT'].includes(model.status))) {
     return res.status(409).json({
       error: `Modell "${model.name}" muss zuerst einen erfolgreichen echten Laufzeittest bestehen. Aktueller Status: ${model.status}.`,
     });
@@ -686,24 +911,24 @@ app.post('/api/models/:id/toggle', async (req, res) => {
   }
   await saveDb(db);
   res.json({ model });
-});
+}));
 
-app.post('/api/models/:id/test', async (req, res) => {
+app.post('/api/models/:id/test', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
   const tested = await runLiveModelTest(model, db);
   await saveDb(db);
   res.json({ model: tested, budgetGuard: db.budgetGuard });
-});
+}));
 
 // === ZERO CORE & ZERO BRAIN ===
-app.get('/api/brain/history', async (_req, res) => {
+app.get('/api/brain/history', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ messages: db.chatHistory });
-});
+}));
 
-app.post('/api/brain/chat', async (req, res) => {
+app.post('/api/brain/chat', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   let routedModelId = '';
   try {
@@ -768,10 +993,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
-        recordBudgetAudit(database, e)
-      );
-      const ai = getGeminiClient();
+      if (selectedModel !== 'cloudflare-glm-4.7-flash') {
+        await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database);
+      }
+      const ai = selectedModel === 'cloudflare-glm-4.7-flash' ? null : getGeminiClient();
       const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
@@ -781,15 +1006,12 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       let groundingContext = '';
 
       if (useWebSearch) {
+        if (!ai) throw new Error('ZERO Websuche benötigt derzeit ein aktiviertes Gemini-Free-Tier-Modell; Cloudflare-Chat selbst bleibt kostenlos und ohne Fallback.');
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
-        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
+        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
+        await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
@@ -826,20 +1048,33 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         res.flushHeaders();
         res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
       }
-      const responseStream = await ai.models.generateContentStream({
-        model: selectedModel,
-        contents: streamContents,
-        config: streamConfig,
-      });
-      for await (const chunk of responseStream) {
-        const piece = chunk.text ?? '';
-        if (!piece) continue;
-        replyText += piece;
-        if (wantsStream) {
-          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+      if (selectedModel === 'cloudflare-glm-4.7-flash') {
+        const cloudflareResult = await generateCloudflareText({
+          prompt: streamContents,
+          systemPrompt: systemInstruction,
+          maxTokens: 1200,
+        });
+        replyText = cloudflareResult.text;
+        if (wantsStream && replyText) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: replyText }) + '\n\n');
         }
+      } else {
+        if (!ai) throw new Error('Kein KI-Provider verfügbar.');
+        const responseStream = await ai.models.generateContentStream({
+          model: selectedModel,
+          contents: streamContents,
+          config: streamConfig,
+        });
+        for await (const chunk of responseStream) {
+          const piece = chunk.text ?? '';
+          if (!piece) continue;
+          replyText += piece;
+          if (wantsStream) {
+            res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+          }
+        }
+        replyText = replyText.trim() || 'Keine Antwort erhalten.';
       }
-      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
@@ -885,10 +1120,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     const quotaKeys = req.body?.useWebSearch
       ? ['gemini-web-grounding', 'gemini-2.5-flash-lite', requestedModel]
       : [requestedModel];
-    if (db && isQuotaOrRateLimitError(err)) {
+    if (db && isQuotaExhaustionError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
@@ -902,9 +1137,9 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     }
     return res.status(db ? 400 : 503).json({ error: errorMessage });
   }
-});
+}));
 
-app.post('/api/brain/clear', async (_req, res) => {
+app.post('/api/brain/clear', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   db.chatHistory = [
     {
@@ -917,21 +1152,17 @@ app.post('/api/brain/clear', async (_req, res) => {
   ];
   await saveDb(db);
   res.json({ messages: db.chatHistory });
-});
+}));
 
 // === ZERO WEB INTELLIGENCE ===
-app.post('/api/web/research', async (req, res) => {
+app.post('/api/web/research', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const query = String(req.body?.query ?? '').trim();
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
-    assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
+    await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -959,28 +1190,28 @@ app.post('/api/web/research', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (isQuotaOrRateLimitError(err)) {
+    if (isQuotaExhaustionError(err)) {
       for (const quotaKey of ['gemini-web-grounding', 'gemini-2.5-flash-lite']) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
     }
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO IMAGE STUDIO ===
-app.post('/api/image/generate', async (req, res) => {
+app.post('/api/image/generate', asyncRoute(async (req, res) => {
   const rawPrompt = String(req.body?.prompt ?? '').trim();
   if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
   return res.status(503).json({
     error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
   });
-});
+}));
 
-app.post('/api/image/analyze', async (req, res) => {
+app.post('/api/image/analyze', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
 
   try {
@@ -1007,9 +1238,7 @@ app.post('/api/image/analyze', async (req, res) => {
       return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
     }
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1031,8 +1260,8 @@ app.post('/api/image/analyze', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
-      db.budgetGuard.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
+      await markGeminiQuotaExhausted('gemini-3.8-flash', db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1045,10 +1274,10 @@ app.post('/api/image/analyze', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
 // === ZERO AUDIO STUDIO ===
-app.post('/api/audio/tts', async (req, res) => {
+app.post('/api/audio/tts', asyncRoute(async (req, res) => {
   const useExpressiveModel = Boolean(req.body?.expressive);
   const preferredModelId = useExpressiveModel ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
   let modelId = preferredModelId;
@@ -1071,9 +1300,7 @@ app.post('/api/audio/tts', async (req, res) => {
       return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
     }
 
-    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1116,8 +1343,8 @@ app.post('/api/audio/tts', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
-      db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
+      await markGeminiQuotaExhausted(modelId, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1130,9 +1357,9 @@ app.post('/api/audio/tts', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
-app.post('/api/audio/transcribe', async (req, res) => {
+app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   let selectedTranscriptionModel = 'gemini-3.5-transcribe';
 
@@ -1167,9 +1394,7 @@ app.post('/api/audio/transcribe', async (req, res) => {
       });
     }
 
-    assertZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1226,8 +1451,8 @@ app.post('/api/audio/transcribe', async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (db && isQuotaOrRateLimitError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
-      db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel].exhausted = true;
+    if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
+      await markGeminiQuotaExhausted(selectedTranscriptionModel, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1240,18 +1465,16 @@ app.post('/api/audio/transcribe', async (req, res) => {
         : 'Die ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.',
     });
   }
-});
+}));
 
 // === ZERO MUSIC STUDIO (AI Composition + Local WebAudio DSP) ===
-app.post('/api/music/compose', async (req, res) => {
+app.post('/api/music/compose', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
     const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1296,12 +1519,12 @@ app.post('/api/music/compose', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO VIDEO ENGINE BRIDGE (OPTIONAL SELF-HOSTED WAN WORKER) ===
 // The GPU worker is deliberately external: the Render web service is not a video-generation GPU.
 // Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
-app.get('/api/video/engine/status', async (_req, res) => {
+app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
@@ -1380,7 +1603,7 @@ app.get('/api/video/engine/status', async (_req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
 // Authenticated server-side proxy for the self-hosted Wan worker.
 // The browser never receives the worker URL or its bearer token.
@@ -1400,7 +1623,7 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
   }
 }
 
-app.post('/api/video/engine/jobs', async (req, res) => {
+app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -1433,9 +1656,9 @@ app.post('/api/video/engine/jobs', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
-app.get('/api/video/engine/jobs/:id', async (req, res) => {
+app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
@@ -1454,9 +1677,9 @@ app.get('/api/video/engine/jobs/:id', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
-app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
+app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
@@ -1481,10 +1704,10 @@ app.get('/api/video/engine/jobs/:id/video', async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-});
+}));
 
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
-app.post('/api/film/direct', async (req, res) => {
+app.post('/api/film/direct', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const idea = String(req.body?.idea ?? '').trim();
@@ -1495,9 +1718,7 @@ app.post('/api/film/direct', async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db);
 
     const char = characterId ? db.characters.find((c) => c.id === characterId) : db.characters[0];
     const charContext = char
@@ -1696,9 +1917,9 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
-app.post('/api/film/regenerate-scene', async (req, res) => {
+app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const projectId = String(req.body?.projectId ?? '');
@@ -1709,9 +1930,7 @@ app.post('/api/film/regenerate-scene', async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1755,21 +1974,27 @@ Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
 // === ZERO PROJECTS ===
-app.get('/api/projects', async (_req, res) => {
+app.get('/api/projects', asyncRoute(async (_req, res) => {
   const db = await loadDb();
-  res.json({ projects: db.projects });
-});
+  const projects = db.projects.map((project) => ({
+    ...project,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
+    snapshots: sanitizeProjectSnapshots(project.snapshots),
+  }));
+  res.json({ projects });
+}));
 
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const now = new Date().toISOString();
   const rawDuration = Number(req.body?.targetDurationSec ?? 58);
   const clampedDuration = Math.min(60, Math.max(10, rawDuration));
   const scenes = Array.isArray(req.body?.scenes)
-    ? clampScenesToMax60Seconds(req.body.scenes as FilmScene[])
+    ? sanitizeProjectScenes(clampScenesToMax60Seconds(req.body.scenes as FilmScene[]))
     : [];
   const scenesDuration = scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
   const projectDuration = Math.min(60, scenesDuration || clampedDuration);
@@ -1816,20 +2041,36 @@ app.post('/api/projects', async (req, res) => {
   db.projects.unshift(newProject);
   await saveDb(db);
   res.json({ project: newProject });
-});
+}));
 
-app.put('/api/projects/:id', async (req, res) => {
+app.put('/api/projects/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const idx = db.projects.findIndex((p) => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
   const prev = db.projects[idx];
-  const nextScenes = Array.isArray(req.body?.scenes)
-    ? clampScenesToMax60Seconds(req.body.scenes)
-    : prev.scenes;
+
+  // Only explicitly supported content fields may be changed through this route.
+  // Identity, timestamps, versions, snapshots and assets are server-managed;
+  // assets must continue to use the dedicated validated /assets endpoint.
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown>
+    : {};
+  const nextScenes = sanitizeProjectScenes(
+    Array.isArray(body.scenes) ? clampScenesToMax60Seconds(body.scenes) : prev.scenes
+  );
+  const safePreviousAssets = sanitizeProjectAssets(prev.assets);
+  const safePreviousScenes = sanitizeProjectScenes(prev.scenes);
   const nextTotal = nextScenes.reduce((s, sc) => s + sc.durationSec, 0);
   const nextVersion = prev.version + 1;
   const now = new Date().toISOString();
+  const allowedStatuses: StudioProject['status'][] = ['Konzept', 'In Produktion', 'Schnittbereit', 'Exportiert'];
+  const requestedStatus = typeof body.status === 'string' && allowedStatuses.includes(body.status as StudioProject['status'])
+    ? body.status as StudioProject['status']
+    : prev.status;
+  const requestedCharacterIds = Array.isArray(body.characterIds)
+    ? body.characterIds.filter((id): id is string => typeof id === 'string').slice(0, 100)
+    : prev.characterIds;
 
   const previousState = {
     title: prev.title,
@@ -1840,15 +2081,22 @@ app.put('/api/projects/:id', async (req, res) => {
     story: prev.story,
     screenplay: prev.screenplay,
     characterIds: prev.characterIds,
-    scenes: prev.scenes,
-    assets: prev.assets,
+    scenes: safePreviousScenes,
+    assets: safePreviousAssets,
     status: prev.status,
   };
   const updated: StudioProject = {
     ...prev,
-    ...req.body,
-    id: prev.id,
+    title: typeof body.title === 'string' ? body.title.slice(0, 200) : prev.title,
+    logline: typeof body.logline === 'string' ? body.logline.slice(0, 2000) : prev.logline,
+    genre: typeof body.genre === 'string' ? body.genre.slice(0, 120) : prev.genre,
+    concept: typeof body.concept === 'string' ? body.concept.slice(0, 10000) : prev.concept,
+    story: typeof body.story === 'string' ? body.story.slice(0, 20000) : prev.story,
+    screenplay: typeof body.screenplay === 'string' ? body.screenplay.slice(0, 30000) : prev.screenplay,
+    characterIds: requestedCharacterIds,
+    status: requestedStatus,
     scenes: nextScenes,
+    assets: safePreviousAssets,
     targetDurationSec: Math.min(60, nextTotal || prev.targetDurationSec),
     version: nextVersion,
     updatedAt: now,
@@ -1856,13 +2104,15 @@ app.put('/api/projects/:id', async (req, res) => {
       {
         id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         version: prev.version,
-        note: String(req.body?.snapshotNote || `Sicherung vor Version ${nextVersion}`),
+        note: typeof body.snapshotNote === 'string' && body.snapshotNote.trim()
+          ? body.snapshotNote.trim().slice(0, 200)
+          : `Sicherung vor Version ${nextVersion}`,
         createdAt: now,
         sceneCount: prev.scenes.length,
         totalDurationSec: Math.min(60, prev.targetDurationSec),
         state: previousState,
       },
-      ...prev.snapshots,
+      ...sanitizeProjectSnapshots(prev.snapshots),
     ].slice(0, 15),
   };
 
@@ -1870,9 +2120,9 @@ app.put('/api/projects/:id', async (req, res) => {
   await saveDb(db);
   await maybeAutoCreateZipBackup(`Projekt "${updated.title}" auf Version ${updated.version} aktualisiert`);
   res.json({ project: updated });
-});
+}));
 
-app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => {
+app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
@@ -1892,11 +2142,11 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => 
     story: project.story,
     screenplay: project.screenplay,
     characterIds: project.characterIds,
-    scenes: project.scenes,
-    assets: project.assets,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
     status: project.status,
   };
-  const restoredScenes = clampScenesToMax60Seconds(snapshot.state.scenes);
+  const restoredScenes = sanitizeProjectScenes(clampScenesToMax60Seconds(snapshot.state.scenes));
   const restoredDuration = Math.min(60, restoredScenes.reduce((sum, scene) => sum + scene.durationSec, 0) || snapshot.state.targetDurationSec);
   const nextVersion = project.version + 1;
   const safetySnapshot = {
@@ -1913,22 +2163,84 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', async (req, res) => 
     ...snapshot.state,
     id: project.id,
     scenes: restoredScenes,
-    assets: Array.isArray(snapshot.state.assets) ? snapshot.state.assets.slice(0, 200) : [],
+    assets: sanitizeProjectAssets(snapshot.state.assets),
     targetDurationSec: restoredDuration,
     version: nextVersion,
     updatedAt: now,
-    snapshots: [safetySnapshot, ...project.snapshots].slice(0, 15),
+    snapshots: [safetySnapshot, ...sanitizeProjectSnapshots(project.snapshots)].slice(0, 15),
   };
   db.projects[db.projects.indexOf(project)] = restoredProject;
   await saveDb(db);
   await maybeAutoCreateZipBackup(`Projekt "${restoredProject.title}" auf gespeicherte Version ${snapshot.version} zurückgesetzt`);
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
-});
+}));
 
-app.post('/api/projects/:id/assets', async (req, res) => {
+app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const scene = project.scenes.find((item) => item.id === req.params.sceneId);
+  if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+
+  const dataUrl = typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '';
+  if (!isSafeProjectAssetUrl(dataUrl, 'video') || dataUrl.length > 12 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 8 MB.' });
+  }
+  const assetKey = `zero-scene-video:${scene.id}`;
+  const existing = project.assets.find((asset) => asset.type === 'video' && asset.modelId === assetKey);
+  const storedSceneVideoChars = project.assets
+    .filter((asset) => asset.type === 'video' && asset.modelId.startsWith('zero-scene-video:'))
+    .reduce((total, asset) => total + asset.url.length, 0);
+  const nextSceneVideoChars = storedSceneVideoChars - (existing?.url.length ?? 0) + dataUrl.length;
+  if (nextSceneVideoChars > 24 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Die Szenenclips dieses Projekts überschreiten zusammen das 24-MB-Synchronisationslimit. Bitte ältere Clips entfernen.' });
+  }
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.url = dataUrl;
+    existing.title = `Szenenclip: ${scene.title}`.slice(0, 120);
+    existing.durationSec = Math.min(60, scene.durationSec);
+    existing.createdAt = now;
+  } else {
+    if (project.assets.length >= 200) {
+      return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
+    }
+    project.assets.unshift({
+      id: `asset-${Date.now()}-${randomBytes(4).toString('hex')}`,
+      type: 'video',
+      title: `Szenenclip: ${scene.title}`.slice(0, 120),
+      url: dataUrl,
+      modelId: assetKey,
+      durationSec: Math.min(60, scene.durationSec),
+      createdAt: now,
+    });
+  }
+  project.updatedAt = now;
+  await saveDb(db);
+  return res.json({ ok: true, serverPersisted: true });
+}));
+
+app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const assetKey = `zero-scene-video:${req.params.sceneId}`;
+  const asset = project.assets.find((item) => item.type === 'video' && item.modelId === assetKey);
+  if (!asset || !isSafeProjectAssetUrl(asset.url, 'video')) {
+    return res.status(404).json({ error: 'Für diese Szene ist kein dauerhaft gespeicherter Videoclip vorhanden.' });
+  }
+  return res.json({ dataUrl: asset.url, serverPersisted: true });
+}));
+
+app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((p) => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+
+  // Remove unsafe media persisted by older versions before returning the project.
+  project.scenes = sanitizeProjectScenes(project.scenes);
+  project.assets = sanitizeProjectAssets(project.assets);
+  project.snapshots = sanitizeProjectSnapshots(project.snapshots);
 
   const allowedTypes: ProjectAsset['type'][] = ['image', 'audio', 'music', 'video', 'script'];
   const type = req.body?.type ?? 'image';
@@ -1942,11 +2254,8 @@ app.post('/api/projects/:id/assets', async (req, res) => {
   if (url.length > 16 * 1024 * 1024) {
     return res.status(413).json({ error: 'Asset ist zu groß (maximal 16 MB Daten). Bitte kleinere Datei verwenden.' });
   }
-  const isDataUrl = /^data:[a-z0-9.+-]+\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(url);
-  const isHttpUrl = /^https?:\/\//i.test(url);
-  const isLocalAssetPath = url.startsWith('/src/assets/');
-  if (!isDataUrl && !isHttpUrl && !isLocalAssetPath) {
-    return res.status(400).json({ error: 'Ungültige Asset-Quelle. Erlaubt sind Bild-/Mediendaten, HTTPS/HTTP oder lokale Studio-Assets.' });
+  if (!isSafeProjectAssetUrl(url, type)) {
+    return res.status(400).json({ error: 'Ungültige Asset-Quelle oder nicht erlaubter Medientyp. Erlaubt sind passende Bild-/Audio-/Video-Daten, HTTPS/HTTP oder lokale Studio-Assets.' });
   }
   const rawDuration = req.body?.durationSec;
   const durationSec = rawDuration === undefined || rawDuration === null || rawDuration === ''
@@ -1972,25 +2281,31 @@ app.post('/api/projects/:id/assets', async (req, res) => {
   project.updatedAt = new Date().toISOString();
   await saveDb(db);
   res.json({ asset, project });
-});
+}));
 
-app.delete('/api/projects/:id', async (req, res) => {
+app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   if (db.projects.length <= 1) {
     return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
   }
   db.projects = db.projects.filter((p) => p.id !== req.params.id);
   await saveDb(db);
-  res.json({ ok: true, projects: db.projects });
-});
+  const projects = db.projects.map((project) => ({
+    ...project,
+    scenes: sanitizeProjectScenes(project.scenes),
+    assets: sanitizeProjectAssets(project.assets),
+    snapshots: sanitizeProjectSnapshots(project.snapshots),
+  }));
+  res.json({ ok: true, projects });
+}));
 
 // === ZERO CHARACTER ENGINE ===
-app.get('/api/characters', async (_req, res) => {
+app.get('/api/characters', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ characters: db.characters });
-});
+}));
 
-app.post('/api/characters', async (req, res) => {
+app.post('/api/characters', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const now = new Date().toISOString();
   const name = String(req.body?.name ?? '').trim();
@@ -2044,35 +2359,38 @@ app.post('/api/characters', async (req, res) => {
   });
   await saveDb(db);
   res.json({ character: char });
-});
+}));
 
 // === ZERO MEMORY ===
-app.get('/api/memory', async (_req, res) => {
+app.get('/api/memory', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ memories: db.memories });
-});
+}));
 
-app.post('/api/memory', async (req, res) => {
+app.post('/api/memory', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const title = String(req.body?.title ?? '').trim();
   const content = String(req.body?.content ?? '').trim();
   if (!title || !content) return res.status(400).json({ error: 'Titel und Inhalt erforderlich.' });
 
   let embedding: number[] | undefined;
+  let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
-    try {
-      assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
-      const ai = getGeminiClient();
-      const emb = await ai.models.embedContent({
-        model: 'gemini-embedding-2',
-        contents: [`${title}\n${content}`],
-      });
-      embedding = emb.embeddings?.[0]?.values;
-    } catch {
-      embedding = undefined;
-    }
+    const result = await runMemoryEmbedding({
+      budgetGuard: db.budgetGuard,
+      action: 'MEMORY_EMBED',
+      contents: [`${title}\n${content}`],
+      recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db),
+      embed: async (modelId, contents) => {
+        const ai = getGeminiClient();
+        const response = await ai.models.embedContent({ model: modelId, contents });
+        return response.embeddings?.[0]?.values;
+      },
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
+    });
+    embedding = result.vector;
+    embeddingNotice = result.notice;
   }
 
   const now = new Date().toISOString();
@@ -2094,29 +2412,32 @@ app.post('/api/memory', async (req, res) => {
 
   db.memories.unshift(entry);
   await saveDb(db);
-  res.json({ memory: entry });
-});
+  res.json({ memory: entry, ...(embeddingNotice ? { embeddingNotice } : {}) });
+}));
 
-app.post('/api/memory/search', async (req, res) => {
+app.post('/api/memory/search', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const query = String(req.body?.query ?? '').trim();
   if (!query) return res.json({ results: db.memories.map((m) => ({ memory: m, score: 1 })) });
 
   let queryVec: number[] | null = null;
+  let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
-    try {
-      assertZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
-      const ai = getGeminiClient();
-      const emb = await ai.models.embedContent({
-        model: 'gemini-embedding-2',
-        contents: [query],
-      });
-      queryVec = emb.embeddings?.[0]?.values ?? null;
-    } catch {
-      queryVec = null;
-    }
+    const result = await runMemoryEmbedding({
+      budgetGuard: db.budgetGuard,
+      action: 'MEMORY_SEARCH',
+      contents: [query],
+      recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db),
+      embed: async (modelId, contents) => {
+        const ai = getGeminiClient();
+        const response = await ai.models.embedContent({ model: modelId, contents });
+        return response.embeddings?.[0]?.values;
+      },
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
+    });
+    queryVec = result.vector ?? null;
+    embeddingNotice = result.notice;
   }
 
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -2130,32 +2451,34 @@ app.post('/api/memory/search', async (req, res) => {
 
   scored.sort((a, b) => b.score - a.score);
   await saveDb(db);
-  res.json({ results: scored, semanticActive: Boolean(queryVec) });
-});
+  res.json({
+    results: scored,
+    semanticActive: Boolean(queryVec),
+    ...(embeddingNotice ? { embeddingNotice } : {}),
+  });
+}));
 
-app.delete('/api/memory/:id', async (req, res) => {
+app.delete('/api/memory/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
   db.memories = db.memories.filter((m) => m.id !== req.params.id);
   await saveDb(db);
   res.json({ ok: true });
-});
+}));
 
 // === ZERO AUTOMATION ENGINE ===
-app.get('/api/automation', async (_req, res) => {
+app.get('/api/automation', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   res.json({ runs: db.automationRuns });
-});
+}));
 
-app.post('/api/automation/run', async (req, res) => {
+app.post('/api/automation/run', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const goal = String(req.body?.goal ?? '').trim();
     const includeExternalPublishGate = Boolean(req.body?.includeExternalPublishGate);
     if (!goal) return res.status(400).json({ error: 'Automatisierungsziel fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
     const planRes = await withTransientRetry(() =>
@@ -2229,9 +2552,9 @@ app.post('/api/automation/run', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
-});
+}));
 
-app.post('/api/automation/:id/confirm', async (req, res) => {
+app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const run = db.automationRuns.find((r) => r.id === req.params.id);
   if (!run) return res.status(404).json({ error: 'Lauf nicht gefunden.' });
@@ -2252,6 +2575,26 @@ app.post('/api/automation/:id/confirm', async (req, res) => {
   run.finishedAt = undefined;
   await saveDb(db);
   res.json({ run });
+}));
+
+// Convert otherwise-unhandled Express 4 async route rejections into JSON 500 responses.
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[ZERO API] Unhandled route error:', error);
+  if (res.headersSent) return;
+  if (error instanceof PersistentStateConflictError) {
+    return res.status(409).json({
+      error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
+      code: 'PERSISTENCE_REVISION_CONFLICT',
+      expectedRevision: error.expectedRevision,
+      actualRevision: error.actualRevision,
+    });
+  }
+  res.status(500).json({ error: 'Interner Serverfehler.' });
+});
+
+// Keep unknown API paths in the JSON API namespace instead of returning the SPA shell.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API-Route nicht gefunden.' });
 });
 
 async function startServer() {

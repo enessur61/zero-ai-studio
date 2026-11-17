@@ -9,6 +9,8 @@ export type ModelStatus =
   | 'ADAPTER FEHLT'
   | 'NICHT KOMPATIBEL'
   | 'FREE-TIER AUSGESCHÖPFT'
+  | 'RATE LIMIT'
+  | 'VORÜBERGEHEND AUSGELASTET'
   | 'GESPERRT';
 
 export type ModelCategory =
@@ -66,7 +68,7 @@ export interface BudgetAuditEvent {
   adapterId: string;
   modelId: string;
   action: string;
-  decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD' | 'GESTOPPT_KONTINGENT';
+  decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD' | 'GESTOPPT_KONTINGENT' | 'RESET_BESTAETIGT_MANUELL';
   reason: string;
   costEur: number;
 }
@@ -136,6 +138,8 @@ export interface FilmScene {
   imagePrompt: string;
   videoPrompt: string;
   imageUrl?: string;
+  /** Temporary browser object URL for a generated scene clip; the clip itself is stored separately. */
+  videoUrl?: string;
   audioDataUrl?: string;
   status: 'Entwurf' | 'Bild bereit' | 'Audio bereit' | 'Szenenbereit' | 'Bildgenerierung nicht verfügbar';
 }
