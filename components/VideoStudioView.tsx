@@ -125,12 +125,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           const clipUrl = URL.createObjectURL(blob);
           setWanClipUrl(clipUrl);
           let persistedLocally = false;
+          let persistedOnServer = false;
           let storagePersistent: boolean | null = null;
           let storageError = '';
           if (currentProject?.id) {
             try {
               const storageStatus = await saveSceneVideoClip(currentProject.id, scene.id, blob);
-              persistedLocally = true;
+              persistedLocally = storageStatus.localSaved;
+              persistedOnServer = storageStatus.serverPersisted === true;
               storagePersistent = storageStatus.persistent;
             } catch (saveError) {
               storageError = saveError instanceof Error ? saveError.message : 'Unbekannter Speicherfehler';
@@ -140,13 +142,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           setScenes((previous) => previous.map((item) =>
             item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
           ));
-          setWanProgress(!persistedLocally
-            ? `Clip erzeugt, aber nicht lokal gespeichert. Bitte vor dem Neuladen exportieren. ${storageError}`
-            : storagePersistent === true
-              ? 'Echter Wan-2.1-Clip fertig · lokal gespeichert · Browser-Speicher ist gegen automatische Bereinigung geschützt. Nicht geräteübergreifend synchronisiert.'
-              : storagePersistent === false
-                ? 'Clip lokal gespeichert, aber iOS hat keinen Schutz vor automatischer Speicherbereinigung bestätigt. Bitte zusätzlich exportieren; keine Gerätesynchronisierung.'
-                : 'Clip lokal gespeichert, Schutzstatus des Browser-Speichers unbekannt. Bitte zusätzlich exportieren; keine Gerätesynchronisierung.');
+          setWanProgress(persistedOnServer
+            ? persistedLocally && storagePersistent === true
+              ? 'Echter Wan-2.1-Clip fertig · lokal und dauerhaft im ZERO-Projekt gespeichert · geräteübergreifend verfügbar.'
+              : 'Echter Wan-2.1-Clip fertig · dauerhaft im ZERO-Projekt gespeichert. Lokaler Browser-Cache ist nicht verfügbar oder nicht gegen Bereinigung geschützt.'
+            : persistedLocally
+              ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
+              : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
           completed = true;
           break;
         }
