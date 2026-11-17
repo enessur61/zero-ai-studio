@@ -43,13 +43,13 @@ _pipeline: WanPipeline | None = None
 _piper_voice: Any | None = None
 _piper_lock = Lock()
 PIPER_VOICE_DIR = Path(os.environ.get("PIPER_VOICE_DIR", str(OUTPUT_DIR / "voices"))).resolve()
-PIPER_MODEL_NAME = "de_DE-thorsten-high"
+PIPER_MODEL_NAME = "de_DE-thorsten-medium"
 PIPER_MODEL_PATH = PIPER_VOICE_DIR / f"{PIPER_MODEL_NAME}.onnx"
 PIPER_CONFIG_PATH = PIPER_VOICE_DIR / f"{PIPER_MODEL_NAME}.onnx.json"
-PIPER_MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx"
-PIPER_CONFIG_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx.json"
-PIPER_MODEL_MD5 = "256505fe58fb8b9d6ed78b83f6a9d2"
-PIPER_CONFIG_MD5 = "e81686e00a9d825e2488ead660bec6fd"
+PIPER_MODEL_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx"
+PIPER_CONFIG_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json"
+PIPER_MODEL_MD5 = "a129b00fb3078df43c96bab6c94535c0"
+PIPER_CONFIG_MD5 = "843a7bd7272724f750534dd5a26d1aad"
 
 
 class GenerateRequest(BaseModel):
