@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +71,44 @@ class PersistentJobStoreTests(unittest.TestCase):
             second_restart = PersistentJobStore(output).load_all()
             self.assertEqual(second_restart["queued"]["status"], "failed")
             self.assertTrue(video.is_file())
+
+    def test_separate_process_restart_recovers_jobs_and_video_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            video = output / "survives-restart.mp4"
+            video.write_bytes(b"persistent-mp4-content")
+            first_process = """
+from pathlib import Path
+from job_store import PersistentJobStore
+store = PersistentJobStore(Path(__import__('sys').argv[1]))
+store.save({"id": "completed", "status": "succeeded", "filename": "survives-restart.mp4"})
+store.save({"id": "interrupted", "status": "running"})
+"""
+            subprocess.run(
+                [sys.executable, "-c", first_process, str(output)],
+                check=True,
+                cwd=Path(__file__).parent,
+            )
+            second_process = """
+import json
+from pathlib import Path
+from job_store import PersistentJobStore
+root = Path(__import__('sys').argv[1])
+jobs = PersistentJobStore(root).load_all()
+assert jobs["completed"]["status"] == "succeeded"
+assert jobs["interrupted"]["status"] == "failed"
+assert (root / jobs["completed"]["filename"]).read_bytes() == b"persistent-mp4-content"
+print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs["interrupted"]["status"]}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", second_process, str(output)],
+                check=True,
+                cwd=Path(__file__).parent,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn('"completed": "succeeded"', result.stdout)
+            self.assertIn('"interrupted": "failed"', result.stdout)
 
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
