@@ -89,7 +89,7 @@ try {
   db.continuity!.dramaturgyAnalyses.push(analysis);
 
   const applyPath = `/series/${seriesId}/dramaturgy-analyses/1/apply`;
-  const applyBody = (decisionId: string) => ({ decisionId, findingId: 'finding-test-1', projectId: 'project-a', sceneId: 'scene-a', field: 'dialogueText', expectedPreviousText: 'Alter Dialog', replacementText: 'Neuer, manuell geprüfter Dialog' });
+  const applyBody = (decisionId: string) => ({ confirmed: true, decisionId, findingId: 'finding-test-1', projectId: 'project-a', sceneId: 'scene-a', field: 'dialogueText', expectedPreviousText: 'Alter Dialog', replacementText: 'Neuer, manuell geprüfter Dialog' });
   const noApproval = await request(applyPath, 'POST', applyBody('missing-approval'));
   assert.equal(noApproval.status, 403, 'application without manual approval must be blocked');
 
@@ -108,6 +108,8 @@ try {
 
   const finalApprovalResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: true, note: 'Erneut ausdrücklich freigegeben' });
   const finalApproval = (await json(finalApprovalResponse)).decision;
+  const unconfirmedApply = await request(applyPath, 'POST', { ...applyBody(finalApproval.id), confirmed: false });
+  assert.equal(unconfirmedApply.status, 400, 'server must require explicit confirmation in addition to approval');
   const staleTextPreview = await request(applyPath, 'POST', { ...applyBody(finalApproval.id), expectedPreviousText: 'Zwischenzeitlich geändert' });
   assert.equal(staleTextPreview.status, 409, 'a changed scene must invalidate the before/after preview');
   const successfulApply = await request(applyPath, 'POST', applyBody(finalApproval.id));
