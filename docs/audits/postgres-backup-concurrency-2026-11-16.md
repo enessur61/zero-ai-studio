@@ -139,7 +139,7 @@ Implemented in the follow-up draft:
 - The advisory lock serializes each primary-state transaction. The complete restore workflow is not held inside one long-lived transaction while archive verification and filesystem work execute; instead the final revision fence aborts restore if the live state changed after the safety snapshot. This favors safety over automatic retry.
 - PostgreSQL automatic ZIP throttling is now coordinated by a dedicated session-level advisory-lock lease across archive generation and publication; the 15-minute throttle is checked while holding that lease. The lease and throttle are exercised across two independent pools in the integration test.
 - Pruning backup blobs occurs after metadata publication. A cleanup failure can leave orphaned bytes; a reconciliation/diagnostic task is still needed.
-- Browser IndexedDB scene clips remain outside server ZIP backups.
+- At this audit stage, browser IndexedDB scene clips remained outside server ZIP backups; Phase 1 below records the later server-side project-media mirror and backup coverage.
 - Integration tests run only against an explicitly local PostgreSQL endpoint and do not inspect production data.
 
 The integration test is wired as a dedicated CI step and passed on PR #84 head `221366f56ebc957f02590ac3f4db842446cd7e86` in CI run #728 (`43971499532`): all 19 job steps completed successfully, including PostgreSQL revision/concurrency integration, production build, and production server smoke test. The HTTP restore-vs-write test also passed using two independent PostgreSQL pools.
