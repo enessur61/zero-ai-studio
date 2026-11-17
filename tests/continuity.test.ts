@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import { assertNoFutureKnowledge, createSceneVersion, eventKnowledgeConflicts, validateContinuityState } from '../server/continuity.ts';
+const state=validateContinuityState({});
+assert.deepEqual(state.series,[]);
+const event={id:'e1',seriesId:'s',title:'E',description:'',occurredAt:'2026-01-02T00:00:00.000Z',characterIds:[],createdAt:'',updatedAt:''};
+assert.throws(()=>assertNoFutureKnowledge(event,'2026-01-01T00:00:00.000Z'),/vor dem auslösenden Ereignis/);
+assert.doesNotThrow(()=>assertNoFutureKnowledge(event,'2026-01-03T00:00:00.000Z'));
+const versions=createSceneVersion({seriesId:'s',projectId:'p',sceneId:'sc',snapshot:{title:'A'},note:''},[]);
+assert.equal(versions.version,1);
+const next=createSceneVersion({seriesId:'s',projectId:'p',sceneId:'sc',snapshot:{title:'B'},note:''},[versions]);
+assert.equal(next.version,2);
+assert.equal(versions.snapshot.title,'A');
+assert.equal(eventKnowledgeConflicts([event],[{id:'k',seriesId:'s',characterId:'c',fact:'x',sourceEventId:'e1',learnedAt:'2026-01-01T00:00:00.000Z',createdAt:'',updatedAt:''}]).length,1);
+console.log('Continuity engine tests passed.');

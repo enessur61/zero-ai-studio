@@ -53,6 +53,7 @@ import {
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
+import { createContinuityRouter } from './src/routes/continuity.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -215,6 +216,9 @@ app.use('/api', (req, res, next) => {
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
+
+// Continuity routes reuse the existing JSONB state store and revision/advisory-lock writes.
+app.use('/api/continuity', createContinuityRouter({ loadDb, saveDb }));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
