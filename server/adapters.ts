@@ -14,6 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
+import { generateCloudflareText } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -217,9 +218,17 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // Real FREE CLOUD probes
+  // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
+  // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if ([
+    if (model.id === 'cloudflare-glm-4.7-flash') {
+      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 32 });
+      model.testPassed = result.text.length > 0;
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? `Cloudflare Workers AI Live-Probe erfolgreich (${result.modelId}).`
+        : 'Leere Antwort vom Cloudflare-Endpunkt.';
+    } else if ([
       'gemini-3.8-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash-lite',
