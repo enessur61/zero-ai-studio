@@ -7,11 +7,9 @@ from typing import Any
 
 
 
-_EPHEMERAL_FILESYSTEMS = {
-    "overlay", "overlayfs", "aufs", "tmpfs", "ramfs", "devtmpfs",
-    "proc", "sysfs", "cgroup", "cgroup2", "squashfs", "autofs",
-    "nsfs", "mqueue", "tracefs", "securityfs", "debugfs", "pstore",
-    "efivarfs",
+_PERSISTENT_FILESYSTEMS = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs",
+    "nfs", "nfs4", "cifs", "ceph", "glusterfs",
 }
 
 
@@ -51,7 +49,7 @@ def has_persistent_mount(path: str | Path, mountinfo_text: str | None = None) ->
             best_mount = mount_point
             best_fs = post_fields[0].lower()
 
-    return best_mount is not None and best_fs not in _EPHEMERAL_FILESYSTEMS
+    return best_mount is not None and best_fs in _PERSISTENT_FILESYSTEMS
 
 
 def require_persistent_storage(configured: bool) -> None:
