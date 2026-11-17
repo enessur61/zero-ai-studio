@@ -22,6 +22,11 @@ export function crc32(buf: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+export const MAX_ZIP_ARCHIVE_BYTES = 160 * 1024 * 1024;
+export const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
+export const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
+export const MAX_ZIP_ENTRIES = 10_000;
+
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', 'exports', 'build', 'coverage']);
 
 export const EXCLUDED_SECRETS_DOC = [
@@ -99,6 +104,27 @@ export async function buildFullProjectZip(
   const centralRecords: Buffer[] = [];
   let offset = 0;
 
+  if (files.length > MAX_ZIP_ENTRIES) {
+    throw new Error(`ZIP enthält zu viele Dateien (Limit: ${MAX_ZIP_ENTRIES}).`);
+  }
+
+  let totalUncompressedBytes = 0;
+  let estimatedArchiveBytes = 22;
+  const fileSizes = new Map<string, number>();
+  // Preflight every source before reading or compressing any file. This keeps
+  // aggregate-limit rejection from first allocating most of an oversized tree.
+  for (const relPath of files) {
+    const extra = extraFiles[relPath];
+    const sourceSize = extra !== undefined ? extra.length : (await fs.stat(path.join(rootDir, relPath))).size;
+    if (!Number.isSafeInteger(sourceSize) || sourceSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP-Datei "${relPath}" überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
+    }
+    totalUncompressedBytes += sourceSize;
+    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new Error(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
+    }
+    fileSizes.set(relPath, sourceSize);
+  }
   const now = new Date();
   const dosTime =
     ((now.getHours() & 0x1f) << 11) |
@@ -111,7 +137,12 @@ export async function buildFullProjectZip(
 
   for (const relPath of files) {
     const fullPath = path.join(rootDir, relPath);
-    const raw = extraFiles[relPath] ?? await fs.readFile(fullPath);
+    const extra = extraFiles[relPath];
+    const sourceSize = fileSizes.get(relPath)!;
+    const raw = extra ?? await fs.readFile(fullPath);
+    if (raw.length !== sourceSize) {
+      throw new Error(`ZIP-Datei "${relPath}" hat sich während des Lesens in der Größe geändert.`);
+    }
     const compressed = zlib.deflateRawSync(raw, { level: 6 });
     const nameBuf = Buffer.from(relPath, 'utf8');
     const crc = crc32(raw);
@@ -130,6 +161,10 @@ export async function buildFullProjectZip(
     localHeader.writeUInt16LE(0, 28);
     nameBuf.copy(localHeader, 30);
 
+    estimatedArchiveBytes += localHeader.length + compressed.length + 46 + nameBuf.length;
+    if (estimatedArchiveBytes > MAX_ZIP_ARCHIVE_BYTES) {
+      throw new Error(`ZIP überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+    }
     localChunks.push(localHeader, compressed);
 
     const central = Buffer.alloc(46 + nameBuf.length);
@@ -181,93 +216,6 @@ export function verifyZipBuffer(zipBuf: Buffer): {
   const errors: string[] = [];
   const extractedFiles = new Map<string, Buffer>();
   const files: string[] = [];
-
-  if (zipBuf.length < 22) {
-    return {
-      result: {
-        valid: false,
-        fileCount: 0,
-        files: [],
-        missingCoreFiles: ['package.json', 'server.ts', 'App.tsx'],
-        errors: ['ZIP-Datei ist zu klein oder leer.'],
-      },
-      extractedFiles,
-    };
-  }
-
-  // Locate EOCD signature 0x06054b50
-  let eocdOffset = -1;
-  const minScan = Math.max(0, zipBuf.length - 65557);
-  for (let i = zipBuf.length - 22; i >= minScan; i--) {
-    if (zipBuf.readUInt32LE(i) === 0x06054b50) {
-      eocdOffset = i;
-      break;
-    }
-  }
-
-  if (eocdOffset === -1) {
-    return {
-      result: {
-        valid: false,
-        fileCount: 0,
-        files: [],
-        missingCoreFiles: ['package.json', 'server.ts', 'App.tsx'],
-        errors: ['EOCD-Signatur fehlt — beschädigtes ZIP-Archiv.'],
-      },
-      extractedFiles,
-    };
-  }
-
-  const totalEntries = zipBuf.readUInt16LE(eocdOffset + 10);
-  const centralOffset = zipBuf.readUInt32LE(eocdOffset + 16);
-
-  let ptr = centralOffset;
-  for (let i = 0; i < totalEntries; i++) {
-    if (ptr + 46 > zipBuf.length || zipBuf.readUInt32LE(ptr) !== 0x02014b50) {
-      errors.push(`Ungültiger Central-Directory-Eintrag bei Index ${i}.`);
-      break;
-    }
-
-    const compressionMethod = zipBuf.readUInt16LE(ptr + 10);
-    const expectedCrc = zipBuf.readUInt32LE(ptr + 16);
-    const compressedSize = zipBuf.readUInt32LE(ptr + 20);
-    const nameLen = zipBuf.readUInt16LE(ptr + 28);
-    const extraLen = zipBuf.readUInt16LE(ptr + 30);
-    const commentLen = zipBuf.readUInt16LE(ptr + 32);
-    const localHeaderOffset = zipBuf.readUInt32LE(ptr + 42);
-    const name = zipBuf.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8');
-    ptr += 46 + nameLen + extraLen + commentLen;
-
-    if (
-      localHeaderOffset + 30 > zipBuf.length ||
-      zipBuf.readUInt32LE(localHeaderOffset) !== 0x04034b50
-    ) {
-      errors.push(`Lokaler Header ungültig für "${name}".`);
-      continue;
-    }
-
-    const lNameLen = zipBuf.readUInt16LE(localHeaderOffset + 26);
-    const lExtraLen = zipBuf.readUInt16LE(localHeaderOffset + 28);
-    const dataStart = localHeaderOffset + 30 + lNameLen + lExtraLen;
-    const compressedSlice = zipBuf.subarray(dataStart, dataStart + compressedSize);
-
-    try {
-      const rawData =
-        compressionMethod === 0 ? compressedSlice : zlib.inflateRawSync(compressedSlice);
-      const actualCrc = crc32(rawData);
-      if (actualCrc !== expectedCrc) {
-        errors.push(`CRC32-Prüfsummenfehler bei "${name}".`);
-      } else {
-        files.push(name);
-        extractedFiles.set(name, rawData);
-      }
-    } catch (err) {
-      errors.push(
-        `Dekomprimierungsfehler bei "${name}": ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-
   const requiredCore = [
     'package.json',
     'server.ts',
@@ -275,12 +223,190 @@ export function verifyZipBuffer(zipBuf: Buffer): {
     'App.tsx',
     'data/zero-studio-db.json',
   ];
-  const missingCoreFiles = requiredCore.filter((req) => !extractedFiles.has(req));
+  const invalid = (message: string) => ({
+    result: {
+      valid: false,
+      fileCount: files.length,
+      files: [...files],
+      missingCoreFiles: requiredCore.filter((required) => !extractedFiles.has(required)),
+      errors: [message],
+    },
+    extractedFiles,
+  });
 
-  // Reject archives that contain credentials or private-key material.
-  for (const f of files) {
-    if (isSensitiveFile(f)) {
-      errors.push(`Sicherheitsverstoß: vertrauliche Datei "${f}" im Backup gefunden.`);
+  if (zipBuf.length > MAX_ZIP_ARCHIVE_BYTES) {
+    return invalid(`ZIP überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
+  }
+  if (zipBuf.length < 22) return invalid('ZIP-Datei ist zu klein oder leer.');
+
+  // A valid EOCD must be the final structure, including its declared comment.
+  let eocdOffset = -1;
+  const minScan = Math.max(0, zipBuf.length - 22 - 0xffff);
+  for (let i = zipBuf.length - 22; i >= minScan; i--) {
+    if (zipBuf.readUInt32LE(i) !== 0x06054b50) continue;
+    const commentLength = zipBuf.readUInt16LE(i + 20);
+    if (i + 22 + commentLength === zipBuf.length) {
+      eocdOffset = i;
+      break;
+    }
+  }
+  if (eocdOffset === -1) return invalid('EOCD fehlt oder Kommentar-/Archivlänge ist inkonsistent.');
+
+  const diskNumber = zipBuf.readUInt16LE(eocdOffset + 4);
+  const centralDisk = zipBuf.readUInt16LE(eocdOffset + 6);
+  const entriesOnDisk = zipBuf.readUInt16LE(eocdOffset + 8);
+  const totalEntries = zipBuf.readUInt16LE(eocdOffset + 10);
+  const centralSize = zipBuf.readUInt32LE(eocdOffset + 12);
+  const centralOffset = zipBuf.readUInt32LE(eocdOffset + 16);
+  const centralEnd = centralOffset + centralSize;
+
+  if (totalEntries > MAX_ZIP_ENTRIES) {
+    return invalid(`ZIP enthält zu viele Dateien (Limit: ${MAX_ZIP_ENTRIES}).`);
+  }
+  if (diskNumber !== 0 || centralDisk !== 0 || entriesOnDisk !== totalEntries) {
+    return invalid('Mehrteilige ZIP-Archive werden nicht unterstützt.');
+  }
+  if (
+    totalEntries === 0xffff ||
+    centralSize === 0xffffffff ||
+    centralOffset === 0xffffffff
+  ) {
+    return invalid('ZIP64-Archive werden von diesem Prüfer nicht unterstützt.');
+  }
+  if (
+    !Number.isSafeInteger(centralEnd) ||
+    centralOffset > eocdOffset ||
+    centralEnd !== eocdOffset
+  ) {
+    return invalid('Central-Directory-Grenzen stimmen nicht mit dem EOCD überein.');
+  }
+
+  let ptr = centralOffset;
+  let totalUncompressedBytes = 0;
+  const seenNames = new Set<string>();
+  for (let i = 0; i < totalEntries; i++) {
+    if (ptr + 46 > centralEnd || zipBuf.readUInt32LE(ptr) !== 0x02014b50) {
+      errors.push(`Ungültiger oder abgeschnittener Central-Directory-Eintrag bei Index ${i}.`);
+      break;
+    }
+
+    const flags = zipBuf.readUInt16LE(ptr + 8);
+    const compressionMethod = zipBuf.readUInt16LE(ptr + 10);
+    const expectedCrc = zipBuf.readUInt32LE(ptr + 16);
+    const compressedSize = zipBuf.readUInt32LE(ptr + 20);
+    const uncompressedSize = zipBuf.readUInt32LE(ptr + 24);
+    if (uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      errors.push(`ZIP-Datei überschreitet das Größenlimit von ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES} Bytes.`);
+      break;
+    }
+    totalUncompressedBytes += uncompressedSize;
+    if (!Number.isSafeInteger(totalUncompressedBytes) || totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      errors.push(`ZIP überschreitet das Gesamtlimit von ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} entpackten Bytes.`);
+      break;
+    }
+    const nameLen = zipBuf.readUInt16LE(ptr + 28);
+    const extraLen = zipBuf.readUInt16LE(ptr + 30);
+    const commentLen = zipBuf.readUInt16LE(ptr + 32);
+    const localHeaderOffset = zipBuf.readUInt32LE(ptr + 42);
+    const recordEnd = ptr + 46 + nameLen + extraLen + commentLen;
+    if (recordEnd > centralEnd) {
+      errors.push(`Central-Directory-Metadaten für Eintrag ${i} sind abgeschnitten.`);
+      break;
+    }
+
+    const nameBytes = zipBuf.subarray(ptr + 46, ptr + 46 + nameLen);
+    const name = nameBytes.toString('utf8');
+    ptr = recordEnd;
+
+    if (!name || name.includes('\\') || name.startsWith('/') || /^[a-zA-Z]:/.test(name) ||
+        name.split('/').some((segment) => segment === '..' || segment === '')) {
+      errors.push(`Unsicherer oder ungültiger ZIP-Dateipfad "${name}".`);
+      continue;
+    }
+    if (seenNames.has(name)) {
+      errors.push(`Doppelter ZIP-Dateieintrag "${name}".`);
+      continue;
+    }
+    seenNames.add(name);
+
+    // This exporter writes UTF-8 names, no encryption, and no data descriptors.
+    if (flags !== 0x0800) {
+      errors.push(`Nicht unterstützte ZIP-Flags für "${name}".`);
+      continue;
+    }
+    if (compressionMethod !== 0 && compressionMethod !== 8) {
+      errors.push(`Nicht unterstützte Kompressionsmethode für "${name}".`);
+      continue;
+    }
+    if (compressionMethod === 0 && compressedSize !== uncompressedSize) {
+      errors.push(`Gespeicherte und entpackte Größe stimmen für "${name}" nicht überein.`);
+      continue;
+    }
+    if (
+      localHeaderOffset + 30 > centralOffset ||
+      zipBuf.readUInt32LE(localHeaderOffset) !== 0x04034b50
+    ) {
+      errors.push(`Lokaler Header ungültig für "${name}".`);
+      continue;
+    }
+
+    const localFlags = zipBuf.readUInt16LE(localHeaderOffset + 6);
+    const localMethod = zipBuf.readUInt16LE(localHeaderOffset + 8);
+    const localCrc = zipBuf.readUInt32LE(localHeaderOffset + 14);
+    const localCompressedSize = zipBuf.readUInt32LE(localHeaderOffset + 18);
+    const localUncompressedSize = zipBuf.readUInt32LE(localHeaderOffset + 22);
+    const localNameLen = zipBuf.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLen = zipBuf.readUInt16LE(localHeaderOffset + 28);
+    const localNameStart = localHeaderOffset + 30;
+    const dataStart = localNameStart + localNameLen + localExtraLen;
+    const dataEnd = dataStart + compressedSize;
+
+    if (
+      localFlags !== flags ||
+      localMethod !== compressionMethod ||
+      localCrc !== expectedCrc ||
+      localCompressedSize !== compressedSize ||
+      localUncompressedSize !== uncompressedSize ||
+      localNameLen !== nameLen ||
+      dataStart > centralOffset ||
+      dataEnd > centralOffset ||
+      dataEnd < dataStart ||
+      !zipBuf.subarray(localNameStart, localNameStart + localNameLen).equals(nameBytes)
+    ) {
+      errors.push(`Lokaler Header und Central Directory widersprechen sich für "${name}".`);
+      continue;
+    }
+
+    const compressedSlice = zipBuf.subarray(dataStart, dataEnd);
+    try {
+      const rawData = compressionMethod === 0
+        ? compressedSlice
+        : zlib.inflateRawSync(compressedSlice, { maxOutputLength: Math.max(1, uncompressedSize) });
+      if (rawData.length !== uncompressedSize) {
+        errors.push(`Entpackte Dateigröße stimmt für "${name}" nicht mit dem Archiv überein.`);
+        continue;
+      }
+      if (crc32(rawData) !== expectedCrc) {
+        errors.push(`CRC32-Prüfsummenfehler bei "${name}".`);
+        continue;
+      }
+      files.push(name);
+      extractedFiles.set(name, rawData);
+    } catch (err) {
+      errors.push(
+        `Dekomprimierungsfehler bei "${name}": ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  if (ptr !== centralEnd) {
+    errors.push('Central-Directory-Größe stimmt nicht mit den gelesenen Einträgen überein.');
+  }
+
+  const missingCoreFiles = requiredCore.filter((required) => !extractedFiles.has(required));
+  for (const file of files) {
+    if (isSensitiveFile(file)) {
+      errors.push(`Sicherheitsverstoß: vertrauliche Datei "${file}" im Backup gefunden.`);
     }
   }
 
