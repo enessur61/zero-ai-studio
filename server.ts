@@ -1893,26 +1893,37 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
 
     const imageGenerationWarnings: string[] = [];
     if (generateImages) {
-      await Promise.all(
-        mappedScenes.map(async (scene, idx) => {
+      const imageModel = db.models.find((item) => item.id === 'flux-1-schnell-free');
+      const imageReady = Boolean(
+        imageModel?.enabled &&
+        imageModel.testPassed &&
+        imageModel.status === 'FUNKTIONIERT' &&
+        imageModel.hasRealAdapter
+      );
+      if (!imageReady) {
+        imageGenerationWarnings.push(
+          'FLUX-Szenenbilder sind noch nicht freigegeben. Bitte FLUX.1 Schnell im Model Hub live testen und aktivieren. Der Filmtext wurde trotzdem erstellt.'
+        );
+        mappedScenes.forEach((scene) => { scene.status = 'Bildgenerierung nicht verfügbar'; });
+      } else {
+        // Sequential requests reduce burst load on the shared Cloudflare Free Neuron allocation.
+        for (const [idx, scene] of mappedScenes.entries()) {
           try {
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
-              aspectRatio: '9:16',
-              seed: 1000 + idx * 37,
+              aspectRatio: '1:1',
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
           } catch (imageError) {
-            // Never label a film as being in production when no scene artwork exists.
             scene.status = 'Bildgenerierung nicht verfügbar';
             imageGenerationWarnings.push(
-              imageError instanceof Error ? imageError.message : 'Szenenbild konnte nicht generiert werden.'
+              imageError instanceof Error ? imageError.message : `Szenenbild ${idx + 1} konnte nicht generiert werden.`
             );
           }
-        })
-      );
+        }
+      }
     }
 
     const totalSec = mappedScenes.reduce((acc, s) => acc + s.durationSec, 0);
