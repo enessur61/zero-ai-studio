@@ -105,7 +105,6 @@ const CLOUDFLARE_IMAGE_MODEL_ID = '@cf/black-forest-labs/flux-1-schnell';
 export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
-  seed?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
@@ -135,7 +134,6 @@ export async function generateCloudflareImage(params: {
           body: JSON.stringify({
             prompt,
             steps,
-            ...(params.seed === undefined ? {} : { seed: params.seed }),
           }),
           signal: controller.signal,
         },
@@ -242,8 +240,11 @@ export async function transcribeCloudflareAudio(params: {
       }
       throw new CloudflareWorkersAiError(`Cloudflare Whisper Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
     }
-    const text = typeof payload?.result?.text === 'string' ? payload.result.text.trim() : '';
-    const segments = (payload?.result?.segments ?? []).flatMap((segment) => {
+    if (!payload?.result || typeof payload.result !== 'object' || typeof payload.result.text !== 'string') {
+      throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine gültige Transkriptionsantwort geliefert.');
+    }
+    const text = payload.result.text.trim();
+    const segments = (payload.result.segments ?? []).flatMap((segment) => {
       const start = Number(segment.start);
       const end = Number(segment.end);
       const segmentText = typeof segment.text === 'string' ? segment.text.trim() : '';
