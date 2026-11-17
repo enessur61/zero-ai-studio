@@ -5,7 +5,6 @@ export interface ContinuitySeries {
 export interface CharacterKnowledge {
   id: string; seriesId: string; characterId: string; fact: string;
   sourceEventId?: string; learnedAt: string; createdAt: string; updatedAt: string;
-  factType?: 'fact' | 'identity' | 'secret'; subjectCharacterId?: string; canonicalValue?: string;
 }
 export interface CharacterRelationship {
   id: string; seriesId: string; fromCharacterId: string; toCharacterId: string;
@@ -19,8 +18,6 @@ export interface ContinuityEvent {
   id: string; seriesId: string; title: string; description: string;
   occurredAt: string; sceneId?: string; characterIds: string[];
   createdAt: string; updatedAt: string;
-  kind?: 'scene' | 'fact' | 'death' | 'identity_reveal' | 'secret_reveal';
-  subjectCharacterId?: string; canonicalValue?: string; timeMode?: 'present' | 'flashback' | 'dream';
 }
 export interface SceneVersion {
   id: string; seriesId: string; projectId: string; sceneId: string;
