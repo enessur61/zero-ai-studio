@@ -14,7 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -231,7 +231,18 @@ export async function runLiveModelTest(
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if (model.id === 'cloudflare-whisper-large-v3-turbo') {
+    if (model.id === 'cloudflare-moondream-3.1-9b-a2b') {
+      // A tiny valid PNG verifies the actual vision endpoint and answer schema.
+      const result = await analyzeCloudflareImage({
+        imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRx8AAAAASUVORK5CYII=',
+        question: 'Beschreibe das Bild in einem kurzen Satz.',
+      });
+      model.testPassed = result.modelId === '@cf/moondream/moondream3.1-9B-A2B' && result.answer.length > 0;
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? 'Cloudflare Moondream Vision Live-Probe erfolgreich; Bildfragen und Bildbeschreibungen sind verfügbar.'
+        : 'Moondream lieferte keine gültige Bildanalyse.';
+    } else if (model.id === 'cloudflare-whisper-large-v3-turbo') {
       // A short silent PCM probe verifies the provider endpoint and response schema.
       // Speech quality is confirmed by actual uploaded audio in the Transcription Studio.
       const result = await transcribeCloudflareAudio({
