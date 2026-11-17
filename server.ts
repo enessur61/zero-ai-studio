@@ -6,6 +6,7 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { resolveFilmCameraMovement } from './server/filmDirection.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -2108,15 +2109,6 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
     }
 
-    const validMoves: FilmScene['cameraMovement'][] = [
-      'Statisch',
-      'Langsamer Zoom-In',
-      'Sanfter Zoom-Out',
-      'Schwenk Links',
-      'Schwenk Rechts',
-      'Vertikaler Tilt',
-    ];
-
     let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
@@ -2124,7 +2116,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       location: s.location,
       timeOfDay: s.timeOfDay,
       durationSec: Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
-      cameraMovement: validMoves[idx % validMoves.length],
+      cameraMovement: resolveFilmCameraMovement(s.cameraMovement, idx),
       characterIds: char ? [char.id] : [],
       narrationText: s.narrationText,
       dialogueText: '',
