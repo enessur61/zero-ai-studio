@@ -125,7 +125,7 @@ export function HomeView({
 
         <div className="lg:col-span-5 relative rounded-2xl overflow-hidden border border-white/[0.08] bg-[#11151E] min-h-[240px]">
           <img
-            src="/src/assets/images/hero_studio_console_1794745336582.jpg"
+            src="/assets/images/hero_studio_console_1794745336582.jpg"
             alt="ZERO AI STUDIO Mastering- und Produktionskonsole"
             referrerPolicy="no-referrer"
             className="w-full h-full object-cover lg:h-full"

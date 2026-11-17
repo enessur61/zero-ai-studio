@@ -262,7 +262,7 @@ function createDefaultDatabase(): ZeroDatabase {
         clothing: 'Dunkelgrauer langer Wollmantel über marineblauem Rollkragenpullover, schwarze Lederumhängetasche',
         voiceStyle: 'Ruhig, präzise, nachdenklich, leichte Spannung in der Stimme',
         voiceName: 'Kore',
-        referenceImageUrl: '/src/assets/images/char_elena_vance_1794745336698.jpg',
+        referenceImageUrl: '/assets/images/char_elena_vance_1794745336698.jpg',
         consistencyPrompt:
           'Elena Vance, 34-year-old European woman, dark blonde tied-back hair, calm focused expression, dark charcoal wool coat over navy turtleneck, Leica 35mm documentary lighting',
         notes: 'Hauptfigur für den 58-Sekunden-Thriller "Schatten über Mitte".',
@@ -299,7 +299,7 @@ function createDefaultDatabase(): ZeroDatabase {
             imagePrompt:
               'Minimalist dark audio mastering studio in Berlin, dual monitors with subtle waveforms, warm tungsten rim light, cinematic noir atmosphere',
             videoPrompt: 'Slow push-in across matte aluminum mastering console toward dimly lit screen',
-            imageUrl: '/src/assets/images/hero_studio_console_1794745336582.jpg',
+            imageUrl: '/assets/images/hero_studio_console_1794745336582.jpg',
             status: 'Bild bereit',
           },
           {
@@ -318,7 +318,7 @@ function createDefaultDatabase(): ZeroDatabase {
             imagePrompt:
               'Elena Vance, 34-year-old European woman in dark charcoal wool coat looking thoughtfully toward rain-streaked window, dramatic side lighting',
             videoPrompt: 'Subtle camera drift away from character portrait by dark window',
-            imageUrl: '/src/assets/images/char_elena_vance_1794745336698.jpg',
+            imageUrl: '/assets/images/char_elena_vance_1794745336698.jpg',
             status: 'Bild bereit',
           },
           {
@@ -337,7 +337,7 @@ function createDefaultDatabase(): ZeroDatabase {
             imagePrompt:
               'Macro close-up of brushed black aluminum analog audio knobs in warm tungsten studio light, shallow depth of field',
             videoPrompt: 'Slow lateral pan across brushed metal studio dials',
-            imageUrl: '/src/assets/images/scene_studio_synth_1794745338615.jpg',
+            imageUrl: '/assets/images/scene_studio_synth_1794745338615.jpg',
             status: 'Bild bereit',
           },
           {
@@ -356,7 +356,7 @@ function createDefaultDatabase(): ZeroDatabase {
             imagePrompt:
               'Nocturnal Berlin street in light rain, wet cobblestones reflecting amber streetlamps, dark modernist facades, anamorphic noir film still',
             videoPrompt: 'Slow moody dolly move down wet cobblestone Berlin street',
-            imageUrl: '/src/assets/images/scene_berlin_rain_1794745336613.jpg',
+            imageUrl: '/assets/images/scene_berlin_rain_1794745336613.jpg',
             status: 'Bild bereit',
           },
         ],

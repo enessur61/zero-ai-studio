@@ -9,60 +9,29 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 
 ## 1. Projektstruktur
 
+Die produktive Web-App liegt bewusst im Repository-Root; die iPhone-App und die optionalen Worker sind getrennte Pakete.
+
 ```text
 /
-├── backups/
-│   └── initial-snapshot.json        # Phase-1-Sicherung des Ausgangszustands
-├── data/
-│   ├── backups/                     # Zeitgestempelte System-Backups
-│   └── zero-studio-db.json          # Persistente JSON-Datenbank (Modelle, Projekte, Charaktere, Memory, Audit-Log)
+├── App.tsx, main.tsx, index.css       # React/Vite-Einstieg und globale Styles
+├── components/                       # Studio-Oberflächen
+├── lib/                              # Browser-Engines, PWA- und API-Client
+├── server.ts                         # Express-Einstieg und API-Routen
+├── server/                           # Backend-Module, KI-Router, Persistenz, Backups
+├── src/types/                        # Kanonische gemeinsame TypeScript-Typen
+├── types/                            # Kompatibilitäts-Export für bestehende Imports
+├── public/                           # PWA-Dateien, Icons und statische Medien
 ├── ios/
-│   ├── ZeroCoreML/                  # Swift-Quellcodepaket + WKWebView-Bridge
-│   └── ZEROAIStudio/                # XcodeGen-Projekt für den nativen iPhone-WKWebView-App-Host
-├── gpu-worker/                     # Optional authenticated Wan 2.1 CUDA inference worker
-│   ├── app.py                      # FastAPI queue, WanPipeline inference & MP4 delivery
-│   ├── Dockerfile                  # CUDA runtime container
-│   └── README.md                   # GPU host deployment and API contract
-├── server/
-│   ├── adapters.ts                  # Gemini-Free-Tier-Adapter, deaktivierte nicht verifizierte Cloud-Provider, iOS-Quellcodeprüfung
-│   ├── coremlAdapter.ts             # Verifizierer für das iPhone 16 Pro Max Swift-6-Paket (9 Dateien, 8 Modelle)
-│   ├── geminiClient.ts              # Server-seitiger @google/genai Client (v1beta, Transient-Retry, 0 € Budget-Guard)
-│   ├── modelCatalog.ts              # Katalog aller realen Modelle (Lizenz, RAM, iOS-Kompatibilität, Status)
-│   ├── store.ts                     # Atomare Persistenz, Ist-Zustand, 12-Phasen-Roadmap, Backup/Restore
-│   └── zipExporter.ts               # Reiner Node.js ZIP-Exporter für ZERO_AI_STUDIO_FULL_PROJECT.zip
-├── src/
-│   ├── assets/images/               # Generierte Studio- & Charakter-Assets
-│   ├── components/
-│   │   ├── AudioStudioView.tsx      # Gemini-TTS WAV, Apple Web Speech, Wort-Zeitstempel und SRT-Export
-│   │   ├── BrainView.tsx            # ZERO BRAIN Assistent, Web Intelligence & Automation Engine
-│   │   ├── FilmDirectorView.tsx     # 14-Stufen Kurzfilm-Regie (<= 60s) & Einzel-Szenen-Regenerierung
-│   │   ├── HomeView.tsx             # Übersicht, Metriken, Ist-Zustand & Entwicklungsplan
-│   │   ├── ImageStudioView.tsx      # Img2Img, 2x Upscale & Vision-Analyse; Cloud-Generierung pausiert
-│   │   ├── MemoryView.tsx           # Langzeitgedächtnis & semantische Vektorsuche (gemini-embedding-2)
-│   │   ├── ModelHubView.tsx         # Filterbarer Modellkatalog mit Live-Testrunner
-│   │   ├── MusicStudioView.tsx      # KI-Komposition + lokale Web Audio DSP-Synthese + SFX (.wav)
-│   │   ├── ProjectsCharactersView.tsx # Projektverwaltung (Snapshots/JSON) & Character Engine
-│   │   ├── SettingsView.tsx         # 0 € Budget-Guard, Kontingente, Backups, ZIP-Export & iOS-Architektur
-│   │   ├── StatusLabel.tsx          # Einheitliche Statusanzeige (ohne Pill-Clutter)
-│   │   └── VideoStudioView.tsx      # Szenen-Schnitt, Ken Burns, Untertitel & WebM/MP4 Export (<= 60s)
-│   ├── lib/
-│   │   ├── api.ts                   # Typisierter HTTP-Client
-│   │   ├── localAudioSynth.ts       # Web Audio API / OfflineAudioContext Synthesizer & WAV-Encoder
-│   │   ├── localImageProcessor.ts   # Lokales Canvas Grading & 2x Upscaling
-│   │   └── localVideoCompositor.ts  # Lokaler Canvas + MediaRecorder Video-Kompositor (max 60,0s)
-│   ├── types/
-│   │   └── zero.ts                  # Gemeinsame TypeScript-Datenmodelle
-│   ├── App.tsx                      # Hauptnavigation (Desktop Sidebar + iPhone 16 Pro Max Bottom Tab Bar)
-│   ├── index.css                    # Tailwind CSS v4 + iOS Safe-Area Helpers
-│   └── main.tsx                     # React Entry Point
-├── .env.example                     # Sichere Vorlage für Umgebungsvariablen (ohne Geheimnisse)
-├── index.html                       # HTML Entry Point (Fonts & iOS Viewport Meta)
-├── metadata.json                    # App-Metadaten & Capabilities
-├── package.json                     # Abhängigkeiten & Scripts
-├── server.ts                        # Express Backend + Vite Dev Middleware + API-Endpunkte
-├── tsconfig.json                    # TypeScript-Konfiguration
-└── vite.config.ts                   # Vite Build-Konfiguration
+│   ├── ZEROAIStudio/                 # XcodeGen-Projekt für die iPhone-App
+│   └── ZeroCoreML/                   # Swift-Paket und native Modelladapter
+├── piper-worker/                     # Eigenständiger CPU-Piper-TTS-Worker
+├── gpu-worker/                       # Optionaler CUDA/Wan-Worker (nicht vorausgesetzt)
+├── searxng/                          # Optionale private Suchdienst-Konfiguration
+├── tests/                            # Unit- und Integrationstests
+└── docs/                             # Architektur- und Sicherheitsdokumentation
 ```
+
+Laufzeitdaten und Backups werden zur Laufzeit erzeugt und gehören nicht in Git.
 
 ---
 
