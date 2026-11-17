@@ -495,7 +495,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         def.executionMode === 'FREE CLOUD' &&
         prev.status === 'FUNKTIONIERT' &&
         !prev.lastTestedAt;
-      const requiresBrowserRuntimeVerification = [
+      const requiresBrowserRuntimeVerification = def.adapterId === 'webllm' || [
         'zero-canvas-img2img',
         'zero-timeline-video-60s',
         'apple-avspeech-webspeech',
