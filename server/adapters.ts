@@ -87,7 +87,7 @@ export async function runLiveModelTest(
 
   if (
     !model.enabled &&
-    ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free'].includes(model.id)
+    ['gpt-oss-20b-free', 'sd-turbo-free', 'sana-free'].includes(model.id)
   ) {
     model.testPassed = false;
     model.status = 'ADAPTER FEHLT';
