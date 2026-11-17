@@ -544,7 +544,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
               lastTestMessage: def.lastTestMessage,
             }
           : def;
-      return enrichModelMetadata(merged);
+      return enrichModelMetadata(merged as ModelDefinition);
     });
     // Remove persisted quota counters for Gemini aliases retired from the catalog.
     delete parsed.budgetGuard.freeQuotaUsage['gemini-3.7-flash'];
