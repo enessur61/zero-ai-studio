@@ -84,7 +84,7 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
-  } else if (def.id === 'cloudflare-glm-4.7-flash' || def.id === 'flux-1-schnell-free') {
+  } else if (['cloudflare-glm-4.7-flash', 'flux-1-schnell-free', 'cloudflare-whisper-large-v3-turbo'].includes(def.id)) {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem ZERO-Server. Cloudflare Workers AI Free stellt 10.000 Neurons pro Tag für alle Modelle gemeinsam bereit; kein kostenpflichtiger Fallback.';
   } else {
