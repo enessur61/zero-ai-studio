@@ -385,6 +385,13 @@ jobs:
           }
           const whisperToggle = await authFetch('/api/models/cloudflare-whisper-large-v3-turbo/toggle', { method: 'POST' });
           if (whisperToggle.status !== 409) throw new Error('Untested Cloudflare Whisper must not be activated.');
+          const moondreamModel = models.find((entry) => entry.id === 'cloudflare-moondream-3.1-9b-a2b');
+          if (!moondreamModel || moondreamModel.enabled || !moondreamModel.hasRealAdapter ||
+              moondreamModel.testPassed || moondreamModel.freeTierType !== 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)') {
+            throw new Error('Cloudflare Moondream must have a real adapter but stay disabled until a live test succeeds.');
+          }
+          const moondreamToggle = await authFetch('/api/models/cloudflare-moondream-3.1-9b-a2b/toggle', { method: 'POST' });
+          if (moondreamToggle.status !== 409) throw new Error('Untested Cloudflare Moondream must not be activated.');
           for (const id of ['gpt-oss-20b-free', 'sd-turbo-free', 'sana-free']) {
             const model = models.find((entry) => entry.id === id);
             if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
