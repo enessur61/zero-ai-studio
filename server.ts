@@ -30,7 +30,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
-import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -1354,6 +1354,13 @@ app.post('/api/image/generate', asyncRoute(async (req, res) => {
 
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
+    if (!isCloudflareWorkersAiFreePlanConfirmed()) {
+      return res.status(503).json({
+        error: 'FLUX bleibt gesperrt, bis das Cloudflare-Konto nachweislich auf Workers Free steht und ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true gesetzt wurde. Kein Provider-Aufruf wurde gestartet.',
+        costEur: 0,
+        paidFallback: false,
+      });
+    }
     db = await loadDb();
     const routeDecision = chooseZeroMediaModel(db.models, db.budgetGuard, 'image', [], new Date(), 'flux-1-schnell-free');
     if (!routeDecision) {
@@ -2020,6 +2027,54 @@ function requireActiveCloudflareTextModel(db: Awaited<ReturnType<typeof loadDb>>
   }
 }
 
+async function generateFreeFilmDirectorText(params: {
+  db: Awaited<ReturnType<typeof loadDb>>;
+  systemPrompt: string;
+  prompt: string;
+  maxTokens: number;
+}): Promise<{ text: string; modelId: string }> {
+  // Cloudflare is excluded unless the operator has explicitly confirmed a
+  // Workers Free account. Gemini is selected only through ZERO's free quota gate.
+  const models = params.db.models.filter((model) =>
+    isCloudflareWorkersAiFreePlanConfirmed() || model.id !== 'cloudflare-glm-4.7-flash'
+  );
+  const decision = chooseZeroChatModel(
+    models,
+    params.db.budgetGuard,
+    'gemini-3.8-flash',
+  );
+  if (!decision) {
+    throw new Error('ZERO findet kein aktiviertes, erfolgreich getestetes und nachweislich kostenlos freigegebenes Textmodell. Cloudflare bleibt ohne bestätigten Workers-Free-Plan gesperrt.');
+  }
+
+  if (decision.modelId === 'cloudflare-glm-4.7-flash') {
+    const result = await generateCloudflareText({
+      systemPrompt: params.systemPrompt,
+      prompt: params.prompt,
+      maxTokens: params.maxTokens,
+    });
+    return result;
+  }
+
+  await reserveZeroBudgetModelAllowed(decision.modelId, 'FILM_DIRECTOR', params.db);
+  const response = await withTransientRetry(() =>
+    getGeminiClient().models.generateContent({
+      model: decision.modelId,
+      contents: [{
+        role: 'user',
+        parts: [{ text: `${params.systemPrompt}\n\n${params.prompt}` }],
+      }],
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: params.maxTokens,
+      },
+    })
+  );
+  const text = response.text?.trim() ?? '';
+  if (!text) throw new Error('Das kostenlose ZERO-Textmodell hat keine gültige Antwort geliefert.');
+  return { text, modelId: decision.modelId };
+}
+
 function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
   const cleaned = raw.trim().replace(/^\u0060\u0060\u0060(?:json)?\s*/i, '').replace(/\s*\u0060\u0060\u0060$/i, '').trim();
   const start = cleaned.indexOf('{');
@@ -2049,9 +2104,8 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
 
-    requireActiveCloudflareTextModel(db);
-
-    const modelResponse = await generateCloudflareText({
+    const modelResponse = await generateFreeFilmDirectorText({
+      db,
       systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
       prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
@@ -2139,6 +2193,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
     if (generateImages) {
       const imageModel = db.models.find((item) => item.id === 'flux-1-schnell-free');
       const imageReady = Boolean(
+        isCloudflareWorkersAiFreePlanConfirmed() &&
         imageModel?.enabled &&
         imageModel.testPassed &&
         imageModel.status === 'FUNKTIONIERT' &&
@@ -2146,7 +2201,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       );
       if (!imageReady) {
         imageGenerationWarnings.push(
-          'FLUX-Szenenbilder sind noch nicht freigegeben. Bitte FLUX.1 Schnell im Model Hub live testen und aktivieren. Der Filmtext wurde trotzdem erstellt.'
+          'FLUX-Szenenbilder sind gesperrt, solange ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true nicht für ein Workers-Free-Konto gesetzt ist und FLUX nicht live getestet wurde. Der Filmtext wurde trotzdem erstellt.'
         );
         mappedScenes.forEach((scene) => { scene.status = 'Bildgenerierung nicht verfügbar'; });
       } else {
@@ -2243,8 +2298,8 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    requireActiveCloudflareTextModel(db);
-    const response = await generateCloudflareText({
+    const response = await generateFreeFilmDirectorText({
+      db,
       systemPrompt: 'Du bist ZERO FILM DIRECTOR. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext.',
       prompt: `Überarbeite Szene ${scene.index} (" ${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
 Bisherige Erzählung: ${scene.narrationText}
