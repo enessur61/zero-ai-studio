@@ -37,7 +37,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     category: 'Text & Reasoning',
     executionMode: 'FREE CLOUD',
     status: 'INSTALLATION ERFORDERLICH',
-    license: 'GLM Open Model License',
+    license: 'MIT',
     commercialUse: 'Gemäß GLM-Modelllizenz und Cloudflare-Nutzungsbedingungen',
     sizeGB: 0,
     ramRequirementGB: 0,
