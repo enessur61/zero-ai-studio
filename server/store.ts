@@ -85,6 +85,9 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
+  } else if (def.id === 'cloudflare-glm-4.7-flash') {
+    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
+    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem Server. Cloudflare Free stellt 10.000 Neurons pro Tag bereit; kein kostenpflichtiger Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';
