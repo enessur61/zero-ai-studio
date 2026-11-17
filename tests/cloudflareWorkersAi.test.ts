@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -70,6 +70,47 @@ try {
   });
   assert.equal(image.modelId, '@cf/black-forest-labs/flux-1-schnell');
   assert.ok(image.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+
+  let visionUrl = '';
+  let visionBody = '';
+  const vision = await analyzeCloudflareImage({
+    imageDataUrl: 'data:image/png;base64,AAAA',
+    question: 'Was ist auf diesem Bild?',
+    fetchImpl: async (input, init) => {
+      visionUrl = String(input);
+      visionBody = String(init?.body);
+      return new Response(JSON.stringify({
+        success: true,
+        result: { answer: 'Ein Testbild.' },
+        errors: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  assert.ok(visionUrl.endsWith('/@cf/moondream/moondream3.1-9B-A2B'));
+  assert.deepEqual(JSON.parse(visionBody), {
+    task: 'query',
+    image: 'data:image/png;base64,AAAA',
+    question: 'Was ist auf diesem Bild?',
+    reasoning: false,
+    max_tokens: 512,
+    stream: false,
+  });
+  assert.equal(vision.modelId, '@cf/moondream/moondream3.1-9B-A2B');
+  assert.equal(vision.answer, 'Ein Testbild.');
+
+  let visionRateLimitAttempts = 0;
+  await assert.rejects(
+    () => analyzeCloudflareImage({
+      imageDataUrl: 'data:image/png;base64,AAAA',
+      question: 'Test',
+      fetchImpl: async () => {
+        visionRateLimitAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'rate limit' }] }), { status: 429 });
+      },
+    }),
+    /kein kostenpflichtiger Fallback/i,
+  );
+  assert.equal(visionRateLimitAttempts, 1);
 
   let transcriptionUrl = '';
   let transcriptionBody = '';
