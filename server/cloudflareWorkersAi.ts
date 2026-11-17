@@ -98,3 +98,79 @@ export async function generateCloudflareText(params: {
     clearTimeout(timeout);
   }
 }
+
+
+const CLOUDFLARE_IMAGE_MODEL_ID = '@cf/black-forest-labs/flux-1-schnell';
+
+export async function generateCloudflareImage(params: {
+  prompt: string;
+  steps?: number;
+  seed?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<{ imageDataUrl: string; modelId: string }> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !token) {
+    throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
+  }
+  const prompt = params.prompt.trim();
+  if (!prompt || prompt.length > 2_048) {
+    throw new CloudflareWorkersAiError('Bild-Prompt muss zwischen 1 und 2.048 Zeichen lang sein.');
+  }
+  const steps = Math.min(Math.max(Math.floor(params.steps ?? 4), 1), 8);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+  try {
+    const fetcher = params.fetchImpl ?? fetch;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetcher(
+        `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt,
+            steps,
+            ...(params.seed === undefined ? {} : { seed: params.seed }),
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+    if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
+    const payload = await response.json().catch(() => null) as {
+      success?: boolean;
+      result?: { image?: unknown };
+      errors?: Array<{ message?: string }>;
+    } | null;
+    if (!response.ok || payload?.success === false) {
+      const providerMessage = payload?.errors?.[0]?.message;
+      if (response.status === 429) {
+        throw new CloudflareWorkersAiError('Cloudflare Workers AI Free-Kontingent oder Rate-Limit erreicht (HTTP 429). Kein kostenpflichtiger Fallback.', 429);
+      }
+      if (response.status === 403) {
+        throw new CloudflareWorkersAiError('Cloudflare verweigert FLUX den Zugriff (HTTP 403). Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang.', 403);
+      }
+      throw new CloudflareWorkersAiError(`Cloudflare FLUX Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
+    }
+    const image = payload?.result?.image;
+    if (typeof image !== 'string' || image.length < 100) {
+      throw new CloudflareWorkersAiError('Cloudflare FLUX hat kein gültiges Base64-Bild zurückgegeben.');
+    }
+    return { imageDataUrl: `data:image/jpeg;base64,${image}`, modelId: CLOUDFLARE_IMAGE_MODEL_ID };
+  } catch (error) {
+    if (error instanceof CloudflareWorkersAiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new CloudflareWorkersAiError('Cloudflare FLUX Bildgenerierung nach 90 Sekunden abgebrochen (Timeout).');
+    }
+    throw new CloudflareWorkersAiError('Cloudflare FLUX Bildgenerierung ist momentan nicht erreichbar.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
