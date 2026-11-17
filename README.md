@@ -154,7 +154,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/models/:id/test` | Führt einen echten Live-Funktionstest für das jeweilige Modell aus |
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
 | `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
-| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
+| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE bevorzugt über private SearXNG-Instanz + optionales Cloudflare GLM; Gemini 2.5 Flash-Lite nur für bestehende Projekte mit bestätigtem API-Zugriff, kein kostenpflichtiger Fallback |
 | `POST` | `/api/image/generate` | Text-to-Image über FLUX.1 Schnell auf Cloudflare Workers AI Free; iPhone-Zielformate werden nach lokaler Bildgenerierung zugeschnitten |
 | `POST` | `/api/image/analyze` | Bildanalyse über live-getestetes Cloudflare Moondream 3.1; Gemini Free-Tier bleibt optionaler Weg, wenn Moondream nicht aktiviert ist |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |

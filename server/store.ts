@@ -85,6 +85,9 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
+  } else if (def.id === 'gemini-web-grounding') {
+    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
+    prerequisites = 'Legacy-Zugriff auf Gemini 2.5 Flash-Lite ist für neue API-Projekte nicht garantiert; ein echter Live-Test ist erforderlich. Google Search Grounding mit Gemini 3 und neuer ist im Free-Tier nicht verfügbar. Bevorzugt ZERO_WEB_SEARCH_URL + ZERO_WEB_SEARCH_TOKEN für die private SearXNG-Websuche; optional Cloudflare GLM nur nach bestätigtem Workers-Free-Gate. Kein kostenpflichtiger Fallback.';
   } else if (['cloudflare-glm-4.7-flash', 'flux-1-schnell-free', 'cloudflare-whisper-large-v3-turbo', 'cloudflare-moondream-3.1-9b-a2b'].includes(def.id)) {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN und beide ZERO-CLOUDFLARE-Freigaben nach manueller Prüfung des Workers-Free-Tarifs. Workers Free umfasst 10.000 Neurons pro Tag gemeinsam für alle Modelle; bei Workers Paid kann Nutzung oberhalb der Freizuteilung kostenpflichtig werden. ZERO bleibt standardmäßig gesperrt und nutzt keinen kostenpflichtigen Fallback.';

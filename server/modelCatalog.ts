@@ -1155,7 +1155,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
   },
   {
     id: 'gemini-web-grounding',
-    name: 'ZERO Web Intelligence (Google Search Grounding)',
+    name: 'ZERO Web Intelligence (Legacy Gemini Search)',
     family: 'Gemini Search',
     category: 'Embeddings & Suche',
     executionMode: 'FREE CLOUD',
@@ -1166,7 +1166,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     ramRequirementGB: 0,
     iosCompatible: true,
     iosNotes: 'Echte Websuche mit verifizierten Quellenlinks (keine erfundenen URLs).',
-    provider: 'Google Search + Gemini 2.5 Flash-Lite (Free Tier)',
+    provider: 'Google Search + Gemini 2.5 Flash-Lite (bestehende Projekte mit API-Zugriff)',
     adapterId: 'gemini-search-adapter',
     hasRealAdapter: true,
     requiresPaidKey: false,
@@ -1176,10 +1176,10 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     capabilities: ['Echtzeit-Websuche', 'Quellenprüfung', 'Faktencheck', 'Berichte'],
     lastTestedAt: null,
     lastTestLatencyMs: null,
-    lastTestMessage: 'Noch nicht live getestet: eigener GEMINI_API_KEY im kostenlosen Free Tier erforderlich.',
+    lastTestMessage: 'Nicht live getestet. Gemini 2.5 Flash-Lite ist für neue API-Projekte nicht mehr garantiert verfügbar; nur bei bestehender Freigabe nutzbar. Bevorzugt die private SearXNG-Websuche; kein kostenpflichtiger Fallback.',
     testPassed: false,
-    version: '4.0-grounding',
-    limitations: 'Nutzt gemini-2.5-flash-lite mit kostenlosem Google-Search-Grounding (providerseitig begrenzt); ZERO setzt zusätzlich ein eigenes Tageslimit von 100 Suchläufen. Kein kostenpflichtiger Gemini-3.8-Grounding-Aufruf.'
+    version: 'gemini-2.5-flash-lite',
+    limitations: 'Legacy-Zugriff auf Gemini 2.5 Flash-Lite ist für neue API-Projekte nicht garantiert; neue Projekte können HTTP 404 erhalten. Google Search Grounding mit Gemini 3 und neuer ist im Gemini-Free-Tier nicht verfügbar. ZERO schaltet niemals auf bezahltes Grounding um. Bevorzugter Weg: private SearXNG-Websuche + optionales Cloudflare GLM nach bestätigtem Workers-Free-Gate.'
   },
 
   // === ADDITIONAL VERIFIED WEBLLM PREBUILT MODELS ===

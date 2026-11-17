@@ -1334,8 +1334,9 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     res.json({
       report: (response.text ?? '').trim(),
       sources,
-      modelUsed: 'gemini-2.5-flash-lite + Google Search Grounding (Free Tier)',
+      modelUsed: 'gemini-2.5-flash-lite + Google Search Grounding (Legacy Free Tier; Zugriff projektabhängig)',
       costEur: 0,
+      paidFallback: false,
     });
   } catch (err) {
     if (isQuotaExhaustionError(err)) {
@@ -1346,7 +1347,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
       }
       await saveDb(db);
     }
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(400).json({ error: formatGermanApiError(err), paidFallback: false });
   }
 }));
 
