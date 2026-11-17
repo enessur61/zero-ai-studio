@@ -1850,7 +1850,7 @@ Gib ausschließlich dieses JSON-Schema zurück:
 }
 cameraMovement muss einer dieser Werte sein: Statisch, Langsamer Zoom-In, Sanfter Zoom-Out, Schwenk Links, Schwenk Rechts, Vertikaler Tilt.
 Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
-      maxTokens: 1200,
+      maxTokens: 1800,
     });
     const parsed = parseCloudflareJsonObject(modelResponse.text) as {
       title: string;
