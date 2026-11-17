@@ -16,7 +16,11 @@ export function compareDramaturgyAnalyses(previous:DramaturgyAnalysisVersion|und
   const newSet=new Set(next.findings.filter(x=>x.category==='contradiction').map(x=>norm(x.evidence+' '+x.interpretation)));
   const newContradictions=[...newSet].filter(x=>x&&!oldSet.has(x));
   const resolvedContradictions=[...oldSet].filter(x=>x&&!newSet.has(x));
-  return {previousVersion:previous.version,changedCharacters,newContradictions,resolvedContradictions,summary:`${changedCharacters.length} Figurenprofile verändert; ${newContradictions.length} neue und ${resolvedContradictions.length} nicht mehr gemeldete Widersprüche.`};
+  const oldSubtext=new Set(previous.analysis.findings.filter(x=>x.category==='subtext').map(x=>norm(x.evidence+' '+x.interpretation)));
+  const newSubtextSet=new Set(next.findings.filter(x=>x.category==='subtext').map(x=>norm(x.evidence+' '+x.interpretation)));
+  const newSubtext=[...newSubtextSet].filter(x=>x&&!oldSubtext.has(x));
+  const resolvedSubtext=[...oldSubtext].filter(x=>x&&!newSubtextSet.has(x));
+  return {previousVersion:previous.version,changedCharacters,newContradictions,resolvedContradictions,newSubtext,resolvedSubtext,summary:`${changedCharacters.length} Figurenprofile verändert; ${newContradictions.length} neue und ${resolvedContradictions.length} nicht mehr gemeldete Widersprüche.`};
 }
 export function createDramaturgyAnalysisVersion(input:{seriesId:string;modelId:string;costMode:'confirmed-free-cloud'|'local';analysis:StorySupervisorAiResult;previous?:DramaturgyAnalysisVersion;source:string}):DramaturgyAnalysisVersion {
   const version=(input.previous?.version??0)+1;

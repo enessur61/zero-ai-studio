@@ -33,11 +33,12 @@ assert.throws(()=>parseStorySupervisorAiResponse('{"overallAssessment":"","findi
 console.log('Story Supervisor AI tests passed: series context, relationship/subtext prompt and strict response validation.');
 
 const versionOne = createDramaturgyAnalysisVersion({seriesId:'s1',modelId:'free-test',costMode:'confirmed-free-cloud',analysis:response,source:'episode-one'});
-const changed = {...response,characterAnalyses:[{...response.characterAnalyses[0],coreMotivation:'Schutz statt Wahrheit'}],findings:[...response.findings,{...response.findings[0],id:'f2',category:'contradiction' as const,evidence:'Sie sagt A',interpretation:'Handelt gegenteilig'}]};
+const changed = {...response,characterAnalyses:[{...response.characterAnalyses[0],coreMotivation:'Schutz statt Wahrheit'}],findings:[...response.findings,{...response.findings[0],id:'f2',category:'contradiction' as const,evidence:'Sie sagt A',interpretation:'Handelt gegenteilig'},{...response.findings[0],id:'f3',category:'subtext' as const,evidence:'Sie schweigt',interpretation:'Verbirgt Angst'}]};
 const versionTwo = createDramaturgyAnalysisVersion({seriesId:'s1',modelId:'free-test',costMode:'confirmed-free-cloud',analysis:changed,previous:versionOne,source:'episode-two'});
 assert.equal(versionTwo.version,2);
 assert.equal(versionTwo.comparison?.previousVersion,1);
 assert.ok(versionTwo.comparison?.changedCharacters.some(x=>x.characterId==='c1'&&x.changedFields.includes('coreMotivation')));
 assert.equal(versionTwo.comparison?.newContradictions.length,1);
+assert.equal(versionTwo.comparison?.newSubtext.length,1);
 assert.equal(versionOne.comparison,undefined,'previous analysis versions remain immutable');
 console.log('Versioned dramaturgy comparison tests passed.');
