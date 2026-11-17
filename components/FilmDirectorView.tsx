@@ -10,6 +10,17 @@ import { apiRequest } from '../lib/api.ts';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import { runAutonomousFilmProduction } from '../lib/filmProductionPipeline.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
+import type { CharacterKnowledge, ContinuityEvent, ContinuitySeries } from '../src/types/continuity.ts';
+
+interface ContinuitySeriesDetail {
+  series: ContinuitySeries;
+  knowledge: CharacterKnowledge[];
+  events: ContinuityEvent[];
+  relationships: Array<{ id: string; fromCharacterId: string; toCharacterId: string; type: string; description: string }>;
+  locations: Array<{ id: string; name: string; description: string }>;
+  sceneVersions: Array<{ id: string; sceneId: string; version: number }>;
+  conflicts: Array<{ knowledgeId: string; eventId: string; message: string }>;
+}
 
 interface FilmDirectorViewProps {
   projects: StudioProject[];
@@ -39,10 +50,35 @@ export function FilmDirectorView({
   const [productionWarnings, setProductionWarnings] = useState<string[]>([]);
   const [productionVideo, setProductionVideo] = useState<VideoRenderResult | null>(null);
   const [productionVideoProjectId, setProductionVideoProjectId] = useState('');
+  const [continuitySeries, setContinuitySeries] = useState<ContinuitySeries[]>([]);
+  const [selectedSeriesId, setSelectedSeriesId] = useState('');
+  const [continuityDetail, setContinuityDetail] = useState<ContinuitySeriesDetail | null>(null);
+  const [continuityLoading, setContinuityLoading] = useState(false);
+  const [newSeriesTitle, setNewSeriesTitle] = useState('');
+  const [seriesBibleDraft, setSeriesBibleDraft] = useState('');
+  const [savingSeriesBible, setSavingSeriesBible] = useState(false);
+  const [continuityNotice, setContinuityNotice] = useState('');
 
   useEffect(() => () => {
     if (productionVideo?.videoUrl.startsWith('blob:')) URL.revokeObjectURL(productionVideo.videoUrl);
   }, [productionVideo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<{ series: ContinuitySeries[] }>('/api/continuity/series').then((data) => { if (!cancelled) setContinuitySeries(data.series.filter((series) => !series.archivedAt)); }).catch((err) => { if (!cancelled) setContinuityNotice(err instanceof Error ? err.message : 'Serien konnten nicht geladen werden.'); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedSeriesId) { setContinuityDetail(null); setSeriesBibleDraft(''); return; }
+    let cancelled = false;
+    setContinuityLoading(true);
+    apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + selectedSeriesId).then((detail) => {
+      if (cancelled) return;
+      setContinuityDetail(detail); setSeriesBibleDraft(detail.series.bible || ''); setContinuityNotice('');
+    }).catch((err) => { if (!cancelled) setContinuityNotice(err instanceof Error ? err.message : 'Serienkontext konnte nicht geladen werden.'); }).finally(() => { if (!cancelled) setContinuityLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedSeriesId]);
 
   const [activeProjectId, setActiveProjectId] = useState(projects[0]?.id ?? '');
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -52,6 +88,28 @@ export function FilmDirectorView({
     'Erhöhe Spannung und emotionale Wirkung; überarbeite Erzähltext, Dialog und Untertitel.'
   );
   const [ttsSceneId, setTtsSceneId] = useState<string | null>(null);
+
+  async function handleCreateSeries() {
+    const title = newSeriesTitle.trim();
+    if (!title) return;
+    setContinuityNotice('');
+    try {
+      const created = await apiRequest<{ series: ContinuitySeries }>('/api/continuity/series', { method: 'POST', body: JSON.stringify({ title, logline: idea.trim(), genre, bible: '', projectIds: [] }) });
+      setContinuitySeries((current) => [created.series, ...current]); setSelectedSeriesId(created.series.id); setNewSeriesTitle(''); setContinuityNotice('Serie angelegt. Ergänze jetzt die Serienbibel.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Serie konnte nicht angelegt werden.'); }
+  }
+
+  async function handleSaveSeriesBible() {
+    if (!continuityDetail || savingSeriesBible) return;
+    setSavingSeriesBible(true);
+    try {
+      const updated = await apiRequest<{ series: ContinuitySeries }>('/api/continuity/series/' + continuityDetail.series.id, { method: 'PUT', body: JSON.stringify({ bible: seriesBibleDraft }) });
+      setContinuityDetail((current) => current ? { ...current, series: updated.series } : current);
+      setContinuitySeries((current) => current.map((series) => series.id === updated.series.id ? updated.series : series));
+      setContinuityNotice('Serienbibel gespeichert.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Serienbibel konnte nicht gespeichert werden.'); }
+    finally { setSavingSeriesBible(false); }
+  }
 
   async function handleCreateFilm(e: React.FormEvent) {
     e.preventDefault();
@@ -77,6 +135,7 @@ export function FilmDirectorView({
               targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
               characterId,
               generateImages,
+              ...(selectedSeriesId ? { seriesId: selectedSeriesId } : {}),
             }),
           });
           defaultCharacter = characters.find((item) => draft.project.characterIds.includes(item.id)) || defaultCharacter;
@@ -260,6 +319,26 @@ export function FilmDirectorView({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="rounded-xl border border-white/[0.08] bg-[#090B10] p-3 space-y-3">
+            <label className="text-xs text-slate-300 block mb-1.5">Continuity Engine · Serienkontext</label>
+            <select value={selectedSeriesId} onChange={(event) => setSelectedSeriesId(event.target.value)} className="w-full min-h-[42px] bg-[#11151E] border border-white/[0.1] rounded-lg px-3 text-xs text-white">
+              <option value="">Ohne Serienbindung produzieren</option>
+              {continuitySeries.map((series) => <option key={series.id} value={series.id}>{series.title}</option>)}
+            </select>
+            <div className="flex gap-2"><input value={newSeriesTitle} onChange={(event) => setNewSeriesTitle(event.target.value)} placeholder="Neue Serie anlegen" className="min-w-0 flex-1 min-h-[40px] bg-[#11151E] border border-white/[0.1] rounded-lg px-3 text-xs text-white" /><button type="button" onClick={handleCreateSeries} disabled={!newSeriesTitle.trim()} className="min-h-[40px] px-3 rounded-lg bg-white/[0.08] text-xs text-white disabled:opacity-40">Anlegen</button></div>
+            {continuityLoading && <p className="text-[11px] text-slate-400">Lade Serienbibel und Kontinuität...</p>}
+            {continuityDetail && <div className="space-y-2 border-t border-white/[0.08] pt-3">
+              <label className="text-[11px] text-slate-400 block">Serienbibel · wird ZERO DIRECTOR als Kanon übergeben</label>
+              <textarea rows={4} value={seriesBibleDraft} onChange={(event) => setSeriesBibleDraft(event.target.value)} placeholder="Weltregeln, Tonalität, zentrale Geheimnisse, Staffel- und Figurenbögen..." className="w-full bg-[#11151E] border border-white/[0.1] rounded-lg p-3 text-xs text-white" />
+              <button type="button" onClick={handleSaveSeriesBible} disabled={savingSeriesBible} className="min-h-[38px] px-3 rounded-lg bg-[#2563EB] text-xs text-white disabled:opacity-50">{savingSeriesBible ? "Speichert..." : "Serienbibel speichern"}</button>
+              <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.knowledge.length}</p><p className="text-[10px] text-slate-400">Wissenseinträge</p></div><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.events.length}</p><p className="text-[10px] text-slate-400">Ereignisse</p></div><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.relationships.length}</p><p className="text-[10px] text-slate-400">Beziehungen</p></div></div>
+              {continuityDetail.conflicts.length > 0 && <p className="text-[11px] text-rose-300">{continuityDetail.conflicts.length} Kontinuitätskonflikt(e) – Produktion wird bis zur Klärung gestoppt.</p>}
+              {continuityDetail.knowledge.slice(0, 4).map((fact) => <p key={fact.id} className="text-[11px] text-slate-300">• {characters.find((character) => character.id === fact.characterId)?.name || "Figur"}: {fact.fact}</p>)}
+              {continuityDetail.events.slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)).slice(-4).map((event) => <p key={event.id} className="text-[11px] text-slate-400">Zeitachse · {event.title}</p>)}
+            </div>}
+            {continuityNotice && <p className="text-[11px] text-slate-400">{continuityNotice}</p>}
           </div>
 
           <label className="flex items-center gap-2 text-xs text-slate-300 min-h-[40px] cursor-pointer">
