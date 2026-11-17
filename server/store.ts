@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -469,6 +470,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
+    const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
     parsed.models = INITIAL_MODEL_CATALOG.map((def) => {
@@ -621,6 +623,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
       } else if (stored) {
         dbRevisions.set(parsed, stored.revision);
       }
+    } else if (migratedStaticAssetPathCount > 0) {
+      // Persist the one-time migration in local file-backed development too.
+      await saveDb(parsed);
     }
     return dbCache;
   } catch (error) {
