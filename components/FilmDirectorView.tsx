@@ -7,6 +7,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
+import { runAutonomousFilmProduction } from '../lib/filmProductionPipeline.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
 
 interface FilmDirectorViewProps {
@@ -30,9 +32,13 @@ export function FilmDirectorView({
   const [genre, setGenre] = useState('Neo-Noir Mystery Thriller');
   const [targetDurationSec, setTargetDurationSec] = useState(58);
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '');
-  const [generateImages, setGenerateImages] = useState(false);
+  const [generateImages, setGenerateImages] = useState(true);
   const [directing, setDirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [productionProgress, setProductionProgress] = useState({ percent: 0, label: '' });
+  const [productionWarnings, setProductionWarnings] = useState<string[]>([]);
+  const [productionVideo, setProductionVideo] = useState<VideoRenderResult | null>(null);
+  const [productionVideoProjectId, setProductionVideoProjectId] = useState('');
 
   const [activeProjectId, setActiveProjectId] = useState(projects[0]?.id ?? '');
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -48,21 +54,71 @@ export function FilmDirectorView({
     if (!idea.trim() || directing) return;
     setDirecting(true);
     setError(null);
+    setProductionWarnings([]);
+    setProductionVideo(null);
+    setProductionVideoProjectId('');
+    setProductionProgress({ percent: 1, label: 'ZERO startet die autonome Episode...' });
     try {
-      const data = await apiRequest<{ project: StudioProject }>('/api/film/direct', {
-        method: 'POST',
-        body: JSON.stringify({
-          idea: idea.trim(),
-          genre,
-          targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
-          characterId,
-          generateImages,
+      const selectedCharacter = characters.find((item) => item.id === characterId);
+      const result = await runAutonomousFilmProduction({
+        createDraft: async () => apiRequest<{
+          project: StudioProject;
+          imageGenerationWarnings?: string[];
+        }>('/api/film/direct', {
+          method: 'POST',
+          body: JSON.stringify({
+            idea: idea.trim(),
+            genre,
+            targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
+            characterId,
+            generateImages,
+          }),
         }),
-      });
-      onProjectCreated(data.project);
-      setActiveProjectId(data.project.id);
+        generateVoiceover: async (scene) => {
+          const tts = await apiRequest<{ audioDataUrl: string; modelUsed?: string }>('/api/audio/tts', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: scene.narrationText,
+              voiceName: selectedCharacter?.voiceName || 'Kore',
+              style: selectedCharacter?.voiceStyle || 'Ruhige, klare deutsche Thriller-Erzählstimme',
+            }),
+          });
+          return { audioDataUrl: tts.audioDataUrl, modelUsed: tts.modelUsed };
+        },
+        saveProject: async (projectId, scenes) => {
+          const saved = await apiRequest<{ project: StudioProject }>(`/api/projects/${projectId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              scenes,
+              status: 'Schnittbereit',
+              snapshotNote: 'ZERO autonome Episode: Szenen und verfügbare Voiceovers',
+            }),
+          });
+          onProjectCreated(saved.project);
+          setActiveProjectId(saved.project.id);
+          return saved.project;
+        },
+        renderVideo: async (project, onRenderProgress) => renderTimelineVideoMax60s({
+          scenes: project.scenes,
+          aspectRatio: '9:16',
+          burnSubtitles: true,
+          includeSceneVoiceovers: true,
+          onProgress: onRenderProgress,
+        }),
+      }, (progress) => setProductionProgress({
+        percent: progress.percent,
+        label: progress.label,
+      }));
+      setProductionWarnings(result.warnings);
+      setProductionVideo(result.video);
+      setProductionVideoProjectId(result.project.id);
+      setActiveProjectId(result.project.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Filmproduktion fehlgeschlagen');
+      setError(err instanceof Error ? err.message : 'Autonome Episode fehlgeschlagen');
+      setProductionProgress((current) => ({
+        ...current,
+        label: err instanceof Error ? err.message : 'Produktion wurde unterbrochen.',
+      }));
     } finally {
       setDirecting(false);
     }
@@ -131,7 +187,7 @@ export function FilmDirectorView({
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO FILM DIRECTOR</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Vollautomatische 14-Stufen Kurzfilm-Regie (Konzept, Drehbuch, Szenen, Bilder, Voiceover, Untertitel) · Strikt max. 60 Sekunden
+          Autonome Episode: Drehbuch, Szenen, verfügbare Gratis-Voiceovers, Schnitt und Hochkant-Export · Strikt max. 60 Sekunden
         </p>
       </div>
 
@@ -204,7 +260,7 @@ export function FilmDirectorView({
               onChange={(event) => setGenerateImages(event.target.checked)}
               className="rounded bg-[#090B10] border-white/20"
             />
-            Szenenbilder optional mit FLUX.1 Schnell generieren (Cloudflare Free; benötigt aktiviertes FLUX-Modell)
+            Szenenbilder automatisch mit FLUX erzeugen (nur bei bestätigtem Cloudflare Workers Free-Plan und erfolgreichem Modelltest)
           </label>
 
           {error && (
@@ -223,12 +279,60 @@ export function FilmDirectorView({
             ) : (
               <Clapperboard className="w-4 h-4" />
             )}
-            {directing ? 'Regie-Pipeline arbeitet...' : 'Kurzfilm automatisch produzieren (0 €)'}
+            {directing ? 'ZERO produziert die Episode...' : 'Episode autonom produzieren & exportieren'}
           </button>
+          {(directing || productionProgress.percent > 0) && (
+            <div className="space-y-2 rounded-xl border border-white/[0.08] bg-[#090B10] p-3">
+              <div className="flex items-center justify-between gap-3 text-xs text-slate-300">
+                <span>{productionProgress.label || 'ZERO wartet...'}</span>
+                <span className="font-mono">{productionProgress.percent}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-white/[0.08]">
+                <div
+                  className="h-full rounded-full bg-[#2563EB] transition-all"
+                  style={{ width: `${productionProgress.percent}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {productionWarnings.length > 0 && (
+            <div className="space-y-1 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] p-3 text-xs text-amber-100">
+              <p className="font-semibold">Produktionshinweise</p>
+              {productionWarnings.map((warning, index) => <p key={index}>• {warning}</p>)}
+            </div>
+          )}
         </form>
 
         {/* Active Production Breakdown */}
         <div className="lg:col-span-7 space-y-4">
+          {productionVideo && productionVideoProjectId === activeProject?.id && (
+            <div className="space-y-3 rounded-2xl border border-emerald-400/20 bg-[#11151E] p-4">
+              <div>
+                <h2 className="text-sm font-semibold text-white">ZERO Episode – Videoexport bereit</h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  {productionVideo.durationSec}s · {productionVideo.mimeType} · {productionVideo.sizeBytes.toLocaleString('de-DE')} Bytes · {productionVideo.hasAudioTrack ? 'mit Audiospur' : 'ohne Audiospur'}
+                </p>
+              </div>
+              <video
+                src={productionVideo.videoUrl}
+                controls
+                playsInline
+                className="aspect-[9/16] max-h-[520px] w-auto max-w-full rounded-xl bg-black"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const link = document.createElement('a');
+                  link.href = productionVideo.videoUrl;
+                  link.download = `${(activeProject?.title || 'zero-episode').replace(/[^a-z0-9-_]+/gi, '-').toLowerCase()}.${productionVideo.mimeType.includes('mp4') ? 'mp4' : 'webm'}`;
+                  link.click();
+                }}
+                className="min-h-[42px] rounded-xl bg-[#2563EB] px-4 text-xs font-semibold text-white"
+              >
+                Exportiertes Video herunterladen
+              </button>
+            </div>
+          )}
           {activeProject && (
             <>
               <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-5 space-y-3">
