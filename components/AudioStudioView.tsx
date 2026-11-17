@@ -236,7 +236,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO AUDIO STUDIO</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Lokale Apple-Sprachausgabe · optionale Gemini-Free-Tier-TTS und Transkription (eigener API-Key & Kontingent)
+          Lokale Apple-Sprachausgabe · Gemini-Free-Tier-TTS · Cloudflare Whisper oder Gemini-Free für Transkription
         </p>
       </div>
 
@@ -413,7 +413,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
             Spracherkennung & Transkript
           </h2>
           <p className="text-xs text-slate-400">
-            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — ZERO CORE nutzt ein aktiviertes, getestetes Transkriptionsmodell (Free Tier · API-Key, sofern Cloud-Modell). Browser-Diktat kann je nach Gerät eine Netzwerkverbindung benötigen.
+            Mikrofonaufnahme direkt vom iPhone oder Audio-Datei hochladen — ZERO CORE nutzt bevorzugt das aktivierte Cloudflare-Whisper-Modell (gemeinsames Workers-AI-Free-Kontingent) oder ein aktiviertes Gemini-Free-Modell. Kein kostenpflichtiger Fallback. Browser-Diktat kann je nach Gerät eine Netzwerkverbindung benötigen.
           </p>
 
           <div className="flex flex-wrap gap-2.5">
