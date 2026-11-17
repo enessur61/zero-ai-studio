@@ -1166,7 +1166,7 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     ramRequirementGB: 0,
     iosCompatible: true,
     iosNotes: 'Echte Websuche mit verifizierten Quellenlinks (keine erfundenen URLs).',
-    provider: 'Google Search + Gemini 2.5 Flash-Lite (bestehende Projekte mit API-Zugriff)',
+    provider: 'Google Search + gemini-2.5-flash-lite (bestehende Projekte mit API-Zugriff)',
     adapterId: 'gemini-search-adapter',
     hasRealAdapter: true,
     requiresPaidKey: false,
