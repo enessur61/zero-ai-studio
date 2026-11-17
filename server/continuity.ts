@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ContinuityEvent, ContinuityState, SceneVersion } from '../src/types/continuity.ts';
 export function validateContinuityState(value: unknown): ContinuityState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Continuity-Daten sind ungültig.');
@@ -19,7 +20,7 @@ export function eventKnowledgeConflicts(events: ContinuityEvent[], knowledge: Co
 }
 export function createSceneVersion(input: Omit<SceneVersion,'id'|'version'|'createdAt'>, versions: SceneVersion[]): SceneVersion {
   const prior=versions.filter(v=>v.seriesId===input.seriesId&&v.projectId===input.projectId&&v.sceneId===input.sceneId);
-  return { ...input, id: crypto.randomUUID(), version: prior.reduce((m,v)=>Math.max(m,v.version),0)+1, createdAt:new Date().toISOString() };
+  return { ...input, id: randomUUID(), version: prior.reduce((m,v)=>Math.max(m,v.version),0)+1, createdAt:new Date().toISOString() };
 }
 export function assertNoFutureKnowledge(event: {occurredAt:string}, learnedAt:string): void {
   const eventTime=Date.parse(event.occurredAt), knowledgeTime=Date.parse(learnedAt);
