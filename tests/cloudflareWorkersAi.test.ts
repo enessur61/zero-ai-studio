@@ -29,7 +29,7 @@ try {
       requestInit = init;
       return new Response(JSON.stringify({
         success: true,
-        result: { response: 'BEREIT' },
+        result: { choices: [{ message: { content: 'BEREIT' } }] },
         errors: [],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
@@ -37,9 +37,9 @@ try {
 
   assert.equal(result.text, 'BEREIT');
   assert.equal(result.modelId, '@cf/zai-org/glm-4.7-flash');
-  assert.match(requestUrl, /accounts\/account-test\/ai\/run\/@cf%2Fzai-org%2Fglm-4\.7-flash$/);
+  assert.match(requestUrl, /accounts\/account-test\/ai\/run\/@cf\/zai-org\/glm-4\.7-flash$/);
   assert.equal((requestInit?.headers as Record<string, string>).Authorization, 'Bearer secret-test-token');
-  assert.equal(JSON.parse(String(requestInit?.body)).max_tokens, 24);
+  assert.equal(JSON.parse(String(requestInit?.body)).max_completion_tokens, 24);
 
   await assert.rejects(
     () => generateCloudflareText({
