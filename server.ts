@@ -2000,34 +2000,19 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db);
-
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Überarbeite Szene ${scene.index} ("${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
+    requireActiveCloudflareTextModel(db);
+    const response = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO FILM DIRECTOR. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext.',
+      prompt: `Überarbeite Szene ${scene.index} (" ${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
 Bisherige Erzählung: ${scene.narrationText}
-Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              narrationText: { type: Type.STRING },
-              subtitleText: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING },
-              soundCue: { type: Type.STRING },
-            },
-            required: ['title', 'narrationText', 'subtitleText', 'imagePrompt', 'soundCue'],
-          },
-        },
-      })
-    );
+Bisheriger Bild-Prompt: ${scene.imagePrompt}
 
-    const updated = JSON.parse((response.text ?? '{}').trim());
+Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
+{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","soundCue":"..."}`,
+      maxTokens: 500,
+    });
+    const updated = parseCloudflareJsonObject(response.text);
+
     scene.title = updated.title || scene.title;
     scene.narrationText = updated.narrationText || scene.narrationText;
     scene.subtitleText = updated.subtitleText || scene.subtitleText;
