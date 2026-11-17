@@ -1206,11 +1206,39 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
 
 // === ZERO IMAGE STUDIO ===
 app.post('/api/image/generate', asyncRoute(async (req, res) => {
-  const rawPrompt = String(req.body?.prompt ?? '').trim();
-  if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
-  return res.status(503).json({
-    error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
-  });
+  const prompt = String(req.body?.prompt ?? '').trim();
+  if (!prompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
+  if (prompt.length > 2_048) return res.status(400).json({ error: 'Der Bild-Prompt darf maximal 2.048 Zeichen lang sein.' });
+  const requestedModel = String(req.body?.model ?? 'flux');
+  if (requestedModel !== 'flux') {
+    return res.status(400).json({ error: 'Aktuell ist nur FLUX.1 Schnell als kostenloser Cloud-Bildadapter verifiziert. SD Turbo und Sana bleiben deaktiviert.' });
+  }
+
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  try {
+    db = await loadDb();
+    const routeDecision = chooseZeroMediaModel(db.models, db.budgetGuard, 'image', [], new Date(), 'flux-1-schnell-free');
+    if (!routeDecision) {
+      return res.status(503).json({
+        error: 'FLUX ist noch nicht aktiviert. Bitte im Model Hub einen erfolgreichen Live-Test für FLUX.1 Schnell (Cloudflare Workers AI) durchführen. Kein kostenpflichtiger Fallback.',
+      });
+    }
+    const image = await generateFreeCloudImage({
+      prompt,
+      model: 'flux',
+      aspectRatio: ['16:9', '9:16', '1:1', '4:3'].includes(String(req.body?.aspectRatio))
+        ? req.body.aspectRatio as '16:9' | '9:16' | '1:1' | '4:3'
+        : '1:1',
+      ...(Number.isSafeInteger(req.body?.seed) ? { seed: req.body.seed as number } : {}),
+    });
+    res.json({ ...image, modelId: 'flux-1-schnell-free', costEur: 0 });
+  } catch (err) {
+    const message = db
+      ? formatGermanApiError(err)
+      : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte erneut versuchen.';
+    console.error('[ZERO IMAGE] Cloudflare FLUX request failed:', err instanceof Error ? err.message : 'unknown error');
+    res.status(503).json({ error: message, costEur: 0, paidFallback: false });
+  }
 }));
 
 app.post('/api/image/analyze', asyncRoute(async (req, res) => {
