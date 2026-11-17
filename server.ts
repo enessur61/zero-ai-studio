@@ -29,6 +29,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
+import { generateCloudflareText, isCloudflareWorkersAiConfigured } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -394,6 +395,53 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
       modelId,
       paidFallback: false,
       message: formatGermanApiError(err),
+    });
+  }
+}));
+
+// === CLOUDFLARE WORKERS AI CONNECTION DIAGNOSTIC ===
+app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const configured = isCloudflareWorkersAiConfigured();
+  const modelId = '@cf/zai-org/glm-4.7-flash';
+  if (!configured) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
+      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      cloudflareConnection: 'NOT_TESTED',
+      modelResponse: 'NOT_TESTED',
+      modelId,
+      paidFallback: false,
+      message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
+    });
+  }
+  try {
+    const result = await generateCloudflareText({
+      prompt: 'Antworte ausschließlich mit: ZERO_CLOUDFLARE_OK',
+      maxTokens: 32,
+    });
+    return res.json({
+      ok: true,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'CONNECTED',
+      modelResponse: 'RECEIVED',
+      modelId: result.modelId,
+      responseVerified: result.text.length > 0,
+      paidFallback: false,
+      message: 'Cloudflare Workers AI hat erfolgreich geantwortet.',
+    });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'FAILED',
+      modelResponse: 'NOT_RECEIVED',
+      modelId,
+      paidFallback: false,
+      message: err instanceof Error ? err.message : 'Cloudflare-Verbindung fehlgeschlagen.',
     });
   }
 }));
@@ -945,8 +993,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database);
-      const ai = getGeminiClient();
+      if (selectedModel !== 'cloudflare-glm-4.7-flash') {
+        await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database);
+      }
+      const ai = selectedModel === 'cloudflare-glm-4.7-flash' ? null : getGeminiClient();
       const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
@@ -956,6 +1006,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       let groundingContext = '';
 
       if (useWebSearch) {
+        if (!ai) throw new Error('ZERO Websuche benötigt derzeit ein aktiviertes Gemini-Free-Tier-Modell; Cloudflare-Chat selbst bleibt kostenlos und ohne Fallback.');
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
@@ -997,20 +1048,33 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         res.flushHeaders();
         res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
       }
-      const responseStream = await ai.models.generateContentStream({
-        model: selectedModel,
-        contents: streamContents,
-        config: streamConfig,
-      });
-      for await (const chunk of responseStream) {
-        const piece = chunk.text ?? '';
-        if (!piece) continue;
-        replyText += piece;
-        if (wantsStream) {
-          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+      if (selectedModel === 'cloudflare-glm-4.7-flash') {
+        const cloudflareResult = await generateCloudflareText({
+          prompt: streamContents,
+          systemPrompt: systemInstruction,
+          maxTokens: 1200,
+        });
+        replyText = cloudflareResult.text;
+        if (wantsStream && replyText) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: replyText }) + '\n\n');
         }
+      } else {
+        if (!ai) throw new Error('Kein KI-Provider verfügbar.');
+        const responseStream = await ai.models.generateContentStream({
+          model: selectedModel,
+          contents: streamContents,
+          config: streamConfig,
+        });
+        for await (const chunk of responseStream) {
+          const piece = chunk.text ?? '';
+          if (!piece) continue;
+          replyText += piece;
+          if (wantsStream) {
+            res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+          }
+        }
+        replyText = replyText.trim() || 'Keine Antwort erhalten.';
       }
-      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
