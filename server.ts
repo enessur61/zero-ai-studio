@@ -836,7 +836,7 @@ app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
   ]);
   const isUnverifiedClientLocalRuntime =
     model.executionMode === 'LOCAL ON-DEVICE' &&
-    clientLocalRuntimeIds.has(model.id) &&
+    (clientLocalRuntimeIds.has(model.id) || model.adapterId === 'webllm') &&
     model.status === 'BROWSER TEST ERFORDERLICH' &&
     !model.hasRealAdapter &&
     !model.testPassed;
