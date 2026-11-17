@@ -514,13 +514,14 @@ export async function loadDb(): Promise<ZeroDatabase> {
       // the user's availability toggle is still durable configuration. Keep
       // only that preference for these unverified adapters; never carry over
       // client-reported testPassed/status metadata.
-      const preserveAvailabilityToggle =
+      const preserveAvailabilityToggle = Boolean(
         prev &&
         (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
         prev.adapterId === def.adapterId &&
         prev.status === 'BROWSER TEST ERFORDERLICH' &&
         prev.testPassed === false &&
-        prev.hasRealAdapter === false;
+        prev.hasRealAdapter === false
+      );
       const merged: ModelDefinition = shouldKeepPrevState
         ? {
             ...def,
@@ -534,7 +535,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         : preserveAvailabilityToggle
           ? {
               ...def,
-              enabled: def.requiresPaidKey ? false : prev.enabled,
+              enabled: def.requiresPaidKey ? false : prev!.enabled,
               hasRealAdapter: false,
               testPassed: false,
               status: 'BROWSER TEST ERFORDERLICH',
