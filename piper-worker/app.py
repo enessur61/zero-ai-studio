@@ -1,6 +1,8 @@
 from __future__ import annotations
 import hashlib, hmac, io, os, threading, urllib.request, wave
 from pathlib import Path
+from urllib.parse import urlsplit
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -85,3 +87,84 @@ def tts(request:Request,authorization:str|None=Header(default=None)):
  except ValueError as exc: raise HTTPException(400,str(exc)) from exc
  except Exception as exc: raise HTTPException(503,f"Piper TTS unavailable: {str(exc)[:240]}") from exc
  return Response(content=audio,media_type="audio/wav",headers={"Content-Length":str(len(audio)),"Content-Disposition":'attachment; filename="zero-piper-de.wav"',"X-Zero-TTS-Model":VOICE,"X-Zero-TTS-Cost":"0"})
+
+
+def normalize_search_results(payload: dict, limit: int = 8) -> list[dict[str, str]]:
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise RuntimeError("SearXNG returned an invalid results document")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        raw_url = item.get("url")
+        raw_title = item.get("title")
+        raw_content = item.get("content")
+        if not isinstance(raw_url, str) or not isinstance(raw_title, str):
+            continue
+        url = raw_url.strip()
+        parts = urlsplit(url)
+        if parts.scheme not in {"https", "http"} or not parts.hostname or parts.username or parts.password:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        normalized.append({
+            "title": raw_title.strip()[:300] or parts.hostname,
+            "url": url[:2048],
+            "content": raw_content.strip()[:1200] if isinstance(raw_content, str) else "",
+            "engine": ",".join(str(x) for x in (item.get("engines") or [])[:4])[:120],
+        })
+        if len(normalized) >= max(1, min(limit, 8)):
+            break
+    return normalized
+
+
+@app.get("/search")
+async def search(
+    q: str,
+    language: str = "de",
+    limit: int = 8,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    auth(authorization)
+    query = q.strip()
+    if not query or len(query) > 250:
+        raise HTTPException(status_code=400, detail="Die Suchanfrage muss zwischen 1 und 250 Zeichen lang sein")
+    search_url = os.environ.get("SEARXNG_URL", "").strip()
+    if not search_url:
+        raise HTTPException(status_code=503, detail="SearXNG ist auf diesem Piper-Worker nicht verbunden")
+    parts = urlsplit(search_url)
+    if parts.scheme not in {"https", "http"} or not parts.hostname or parts.username or parts.password:
+        raise HTTPException(status_code=503, detail="SearXNG URL ist ungültig")
+    try:
+        async with httpx.AsyncClient(timeout=18.0, follow_redirects=False) as client:
+            response = await client.get(
+                search_url.rstrip("/") + "/search",
+                params={
+                    "q": query,
+                    "format": "json",
+                    "language": language if language in {"de", "en", "all"} else "de",
+                    "safesearch": "1",
+                },
+                headers={"Accept": "application/json"},
+            )
+        if response.status_code != 200:
+            raise HTTPException(status_code=503, detail=f"SearXNG antwortete mit HTTP {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("SearXNG returned non-object JSON")
+        results = normalize_search_results(payload, limit)
+        return {
+            "query": query,
+            "results": results,
+            "count": len(results),
+            "engine": "SearXNG (self-hosted)",
+            "cost_eur": 0,
+            "paid_fallback": False,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"SearXNG ist nicht erreichbar: {str(exc)[:180]}") from exc
