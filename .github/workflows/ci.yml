@@ -434,10 +434,18 @@ jobs:
             method: 'POST', body: JSON.stringify({})
           });
           if (!zipRestore.ok) throw new Error('PostgreSQL ZIP restore failed: ' + await zipRestore.text());
+          const mediaAfterZipRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          if (!mediaAfterZipRestore.ok || (await mediaAfterZipRestore.json()).dataUrl !== mediaDataUrl) {
+            throw new Error('ZIP restore did not preserve the project scene clip');
+          }
           const jsonRestore = await authFetch('/api/system/restore', {
             method: 'POST', body: JSON.stringify({ backupId: jsonBackup.id })
           });
           if (!jsonRestore.ok) throw new Error('PostgreSQL JSON restore failed: ' + await jsonRestore.text());
+          const mediaAfterJsonRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          if (!mediaAfterJsonRestore.ok || (await mediaAfterJsonRestore.json()).dataUrl !== mediaDataUrl) {
+            throw new Error('JSON backup restore did not preserve the project scene clip');
+          }
           const reconciliationResponse = await authFetch('/api/system/zip-backups/reconciliation');
           if (!reconciliationResponse.ok) throw new Error('PostgreSQL backup reconciliation endpoint failed: ' + await reconciliationResponse.text());
           const reconciliation = await reconciliationResponse.json();
