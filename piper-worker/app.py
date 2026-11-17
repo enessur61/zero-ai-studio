@@ -6,8 +6,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from piper import PiperVoice
-from piper.config import SynthesisConfig
+from piper import PiperVoice, SynthesisConfig
 
 APP_TOKEN=os.environ.get("ZERO_TTS_WORKER_TOKEN","").strip()
 MODEL_DIR=Path(os.environ.get("PIPER_MODEL_DIR","/tmp/zero-piper"))
@@ -60,7 +59,7 @@ def get_voice():
  with voice_lock:
   if voice is None:
    download("model",MODEL,100*1024*1024); download("config",CONFIG,1024*1024)
-   voice=PiperVoice.load(str(MODEL),config_path=str(CONFIG))
+   voice=PiperVoice.load(str(MODEL))
   return voice
 
 def synthesize(text:str,speed:float)->bytes:
