@@ -23,7 +23,8 @@ try {
   const result = await generateCloudflareText({
     prompt: 'Antworte BEREIT',
     systemPrompt: 'Du bist ZERO.',
-    maxTokens: 24,
+    maxTokens: 128,
+    enableThinking: false,
     fetchImpl: async (input, init) => {
       requestUrl = String(input);
       requestInit = init;
@@ -40,7 +41,8 @@ try {
   assert.match(requestUrl, /accounts\/account-test\/ai\/run\/@cf\/zai-org\/glm-4\.7-flash$/);
   assert.equal((requestInit?.headers as Record<string, string>).Authorization, 'Bearer secret-test-token');
   const requestBody = JSON.parse(String(requestInit?.body));
-  assert.equal(requestBody.max_completion_tokens, 24);
+  assert.equal(requestBody.max_completion_tokens, 128);
+  assert.deepEqual(requestBody.chat_template_kwargs, { enable_thinking: false });
   assert.deepEqual(requestBody.messages, [
     { role: 'system', content: 'Du bist ZERO.' },
     { role: 'user', content: 'Antworte BEREIT' },

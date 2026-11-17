@@ -16,6 +16,7 @@ export async function generateCloudflareText(params: {
   prompt: string;
   systemPrompt?: string;
   maxTokens?: number;
+  enableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
@@ -49,6 +50,7 @@ export async function generateCloudflareText(params: {
           ],
           max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
           temperature: 0.3,
+          ...(params.enableThinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: params.enableThinking } }),
         }),
         signal: controller.signal,
       },

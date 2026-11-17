@@ -222,7 +222,7 @@ export async function runLiveModelTest(
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
     if (model.id === 'cloudflare-glm-4.7-flash') {
-      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 32 });
+      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 128, enableThinking: false });
       model.testPassed = result.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
       model.lastTestMessage = model.testPassed
