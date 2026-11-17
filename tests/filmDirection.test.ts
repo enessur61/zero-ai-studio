@@ -46,10 +46,14 @@ console.log('Continuity-aware film direction tests passed: canon context, event/
   state.events.push({ id: 'early-identity-scene', seriesId: 'semantic', title: 'Hinweis', description: 'Mara Winter wird im Bericht genannt.', occurredAt: '2026-02-04T00:00:00.000Z', sceneId: 'early-identity-scene', characterIds: ['character-b'], kind: 'scene', createdAt: '', updatedAt: '' });
   state.events.push({ id: 'secret', seriesId: 'semantic', title: 'Geheimnis enthüllt', description: '', occurredAt: '2026-02-07T00:00:00.000Z', characterIds: [], kind: 'secret_reveal', subjectCharacterId: 'character-a', canonicalValue: 'Der Schlüssel liegt im Keller', createdAt: '', updatedAt: '' });
   state.knowledge.push({ id: 'early-secret-knowledge', seriesId: 'semantic', characterId: 'character-b', subjectCharacterId: 'character-a', factType: 'secret', canonicalValue: 'Der Schlüssel liegt im Keller', fact: 'Kennt das Geheimnis', learnedAt: '2026-02-06T00:00:00.000Z', createdAt: '', updatedAt: '' });
+  state.knowledge.push({ id: 'identity-known-too-early', seriesId: 'semantic', characterId: 'character-a', subjectCharacterId: 'character-b', factType: 'identity', canonicalValue: 'Mara Winter', fact: 'Kennt die Identität zu früh', learnedAt: '2026-02-04T00:00:00.000Z', createdAt: '', updatedAt: '' });
+  state.knowledge.push({ id: 'identity-wrong-after-reveal', seriesId: 'semantic', characterId: 'character-a', subjectCharacterId: 'character-b', factType: 'identity', canonicalValue: 'Alias X', fact: 'Falsche Identität bleibt bestehen', learnedAt: '2026-02-06T00:00:00.000Z', createdAt: '', updatedAt: '' });
   const semanticConflicts = detectSemanticContinuityConflicts(state, 'semantic');
   assert.ok(semanticConflicts.some((item) => item.code === 'DEAD_CHARACTER_ON_SCREEN' && item.sceneId === 'scene-after-death'));
   assert.ok(semanticConflicts.some((item) => item.code === 'IDENTITY_REVEALED_EARLY' && item.sceneId === 'early-identity-scene'));
   assert.ok(semanticConflicts.some((item) => item.code === 'SECRET_KNOWN_EARLY'));
+  assert.ok(semanticConflicts.some((item) => item.code === 'IDENTITY_KNOWLEDGE_EARLY'));
+  assert.ok(semanticConflicts.some((item) => item.code === 'IDENTITY_CANON_MISMATCH'));
   state.events.find((item) => item.id === 'scene-after-death')!.timeMode = 'flashback';
   assert.ok(!detectSemanticContinuityConflicts(state, 'semantic').some((item) => item.code === 'DEAD_CHARACTER_ON_SCREEN'));
 }

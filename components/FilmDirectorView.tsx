@@ -23,6 +23,11 @@ interface ContinuitySeriesDetail {
   semanticConflicts: SemanticContinuityConflict[];
 }
 
+function getLocalDateTimeInput(value: string | Date = new Date()): string {
+  const date = value instanceof Date ? value : new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 interface FilmDirectorViewProps {
   projects: StudioProject[];
   characters: CharacterProfile[];
@@ -59,7 +64,7 @@ export function FilmDirectorView({
   const [seriesBibleDraft, setSeriesBibleDraft] = useState('');
   const [savingSeriesBible, setSavingSeriesBible] = useState(false);
   const [continuityNotice, setContinuityNotice] = useState('');
-  const [knowledgeDraft, setKnowledgeDraft] = useState({ id: '', characterId: '', fact: '', learnedAt: new Date().toISOString().slice(0, 16), factType: 'fact' as 'fact' | 'identity' | 'secret', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' });
+  const [knowledgeDraft, setKnowledgeDraft] = useState({ id: '', characterId: '', fact: '', learnedAt: getLocalDateTimeInput(), factType: 'fact' as 'fact' | 'identity' | 'secret', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' });
   const [eventDraft, setEventDraft] = useState({ id: '', title: '', description: '', occurredAt: new Date().toISOString().slice(0, 16), kind: 'fact' as 'scene' | 'fact' | 'death' | 'identity_reveal' | 'secret_reveal', subjectCharacterId: '', canonicalValue: '', timeMode: 'present' as 'present' | 'flashback' | 'dream', characterIds: [] as string[] });
   const [savingContinuityItem, setSavingContinuityItem] = useState(false);
 
@@ -124,7 +129,7 @@ export function FilmDirectorView({
       const payload = { characterId: knowledgeDraft.characterId, fact: knowledgeDraft.fact, learnedAt: isoDateValue(knowledgeDraft.learnedAt), factType: knowledgeDraft.factType, subjectCharacterId: knowledgeDraft.subjectCharacterId || undefined, canonicalValue: knowledgeDraft.canonicalValue || undefined, sourceEventId: knowledgeDraft.sourceEventId || undefined };
       await apiRequest<{ knowledge: CharacterKnowledge }>(knowledgeDraft.id ? '/api/continuity/knowledge/' + knowledgeDraft.id : '/api/continuity/series/' + continuityDetail.series.id + '/knowledge', { method: knowledgeDraft.id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
       const refreshed = await apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + continuityDetail.series.id); setContinuityDetail(refreshed);
-      setKnowledgeDraft({ id: '', characterId: '', fact: '', learnedAt: new Date().toISOString().slice(0,16), factType: 'fact', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' }); setContinuityNotice('Figurenwissen gespeichert.');
+      setKnowledgeDraft({ id: '', characterId: '', fact: '', learnedAt: getLocalDateTimeInput(), factType: 'fact', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' }); setContinuityNotice('Figurenwissen gespeichert.');
     } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Figurenwissen konnte nicht gespeichert werden.'); } finally { setSavingContinuityItem(false); }
   }
   async function handleSaveEvent() {
