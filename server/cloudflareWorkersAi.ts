@@ -43,8 +43,11 @@ export async function generateCloudflareText(params: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          prompt,
-          max_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
+          messages: [
+            ...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt.slice(0, 8_000) }] : []),
+            { role: 'user', content: params.prompt },
+          ],
+          max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
           temperature: 0.3,
         }),
         signal: controller.signal,
@@ -53,7 +56,10 @@ export async function generateCloudflareText(params: {
 
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
-      result?: { response?: unknown };
+      result?: {
+        response?: unknown;
+        choices?: Array<{ message?: { content?: unknown } }>;
+      };
       errors?: Array<{ message?: string; code?: number }>;
     } | null;
 
@@ -68,7 +74,8 @@ export async function generateCloudflareText(params: {
       throw new CloudflareWorkersAiError(`Cloudflare Workers AI Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
     }
 
-    const text = typeof payload?.result?.response === 'string' ? payload.result.response.trim() : '';
+    const responseText = payload?.result?.response ?? payload?.result?.choices?.[0]?.message?.content;
+    const text = typeof responseText === 'string' ? responseText.trim() : '';
     if (!text) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine Textantwort geliefert.');
     return { text: text.slice(0, 20_000), modelId: CLOUDFLARE_MODEL_ID };
   } catch (error) {
