@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Clapperboard,
   Film,
@@ -39,6 +39,10 @@ export function FilmDirectorView({
   const [productionWarnings, setProductionWarnings] = useState<string[]>([]);
   const [productionVideo, setProductionVideo] = useState<VideoRenderResult | null>(null);
   const [productionVideoProjectId, setProductionVideoProjectId] = useState('');
+
+  useEffect(() => () => {
+    if (productionVideo?.videoUrl.startsWith('blob:')) URL.revokeObjectURL(productionVideo.videoUrl);
+  }, [productionVideo]);
 
   const [activeProjectId, setActiveProjectId] = useState(projects[0]?.id ?? '');
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -451,7 +455,7 @@ export function FilmDirectorView({
                         ) : (
                           <Volume2 className="w-3.5 h-3.5" />
                         )}
-                        Voiceover erzeugen (0 €)
+                        Voiceover erzeugen (Free-Tier)
                       </button>
                     </div>
                   </div>
