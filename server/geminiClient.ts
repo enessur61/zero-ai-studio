@@ -274,7 +274,7 @@ export function classifyProviderError(err: unknown): ProviderErrorKind {
   const lower = text.toLowerCase();
 
   if (
-    /\\b(?:500|502|503|504)\\b/.test(raw) ||
+    /\b(?:500|502|503|504)\b/.test(raw) ||
     lower.includes('internal server error') ||
     text.includes('UNAVAILABLE') ||
     lower.includes('high demand') ||
