@@ -66,7 +66,6 @@ export async function generateFreeCloudImage(params: {
   const result = await generateCloudflareImage({
     prompt: params.prompt,
     steps: 4,
-    ...(params.seed === undefined ? {} : { seed: params.seed }),
   });
   return {
     imageDataUrl: result.imageDataUrl,
