@@ -20,7 +20,7 @@ import type {
 import { INITIAL_MODEL_CATALOG } from './modelCatalog.ts';
 import { BackupCleanupError, createVersionedZipBackupService } from './versionedZipBackup.ts';
 import { createVerifiedZipRestoreService } from './verifiedZipRestore.ts';
-import { acquirePersistentAutoBackupLease, deleteBackupFile, inspectPersistentBackupConsistency, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
+import { acquirePersistentAutoBackupLease, acquirePersistentZipOperationLease, deleteBackupFile, inspectPersistentBackupConsistency, PersistentStateConflictError, readBackupFile, readPersistentState, withPersistentAutoBackupLease, writePersistentState, writePersistentStateWithBackupFile } from './persistence.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -870,13 +870,22 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
   });
 
   if (process.env.DATABASE_URL) {
-    // The shared wrapper releases (or destroys) the lease connection on every failure path.
-    return createAutoBackupWithoutMisreportingCommittedCleanupFailure(() =>
-      withPersistentAutoBackupLease(
-        () => acquirePersistentAutoBackupLease(),
-        () => create(true)
-      )
-    );
+    // Background auto-backups share the same two global ZIP slots as HTTP
+    // downloads, exports, restores and manual backup creation.
+    const zipLease = await acquirePersistentZipOperationLease();
+    if (!zipLease) return null;
+    try {
+      // The auto-backup wrapper releases (or destroys) its own lease connection
+      // on every failure path; this outer lease bounds total ZIP resource use.
+      return await createAutoBackupWithoutMisreportingCommittedCleanupFailure(() =>
+        withPersistentAutoBackupLease(
+          () => acquirePersistentAutoBackupLease(),
+          () => create(true)
+        )
+      );
+    } finally {
+      await zipLease.release();
+    }
   }
 
   // Local file mode has only one process; retain the local 15-minute throttle.
