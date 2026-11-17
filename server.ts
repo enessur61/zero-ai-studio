@@ -54,6 +54,7 @@ import {
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import { createContinuityRouter } from './src/routes/continuity.ts';
+import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -199,20 +200,12 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.use('/api', (req, res, next) => {
-  if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
-    return next();
-  }
-  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
-    return res.status(503).json({
-      error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
-    });
-  }
-  void hasValidSession(req).then((valid) => {
-    if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-    return next();
-  }).catch(next);
-});
+app.use('/api', createApiAuthMiddleware({
+  isProduction: IS_PRODUCTION,
+  adminPassword: ZERO_ADMIN_PASSWORD,
+  sessionSecret: ZERO_SESSION_SECRET,
+  hasValidSession,
+}));
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));

@@ -1,0 +1,151 @@
+import assert from 'node:assert/strict';
+import express from 'express';
+import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
+import { PersistentStateConflictError } from '../server/persistence.ts';
+import { createApiAuthMiddleware } from '../server/apiAuth.ts';
+import { createContinuityRouter } from '../src/routes/continuity.ts';
+import { emptyContinuityState } from '../src/types/continuity.ts';
+import type { ZeroDatabase } from '../server/store.ts';
+
+const db = {
+  characters: [{ id: 'character-a' }, { id: 'character-b' }],
+  projects: [{ id: 'project-a', scenes: [{ id: 'scene-a', title: 'Original scene', durationSec: 12 }] }],
+  continuity: emptyContinuityState(),
+} as unknown as ZeroDatabase;
+
+let forceConflict = false;
+const store = {
+  async loadDb() { return db; },
+  async saveDb() {
+    if (forceConflict) {
+      forceConflict = false;
+      throw new PersistentStateConflictError(4, 5);
+    }
+  },
+};
+
+const app = express();
+app.use(express.json());
+app.use('/api', createApiAuthMiddleware({
+  isProduction: true,
+  adminPassword: 'test-admin-password-long',
+  sessionSecret: 'test-session-secret-long-enough-for-production-check',
+  hasValidSession: async (request) => request.headers.cookie === 'zero_session=valid-test-session',
+}));
+app.use('/api/continuity', createContinuityRouter(store));
+app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+  if (error instanceof PersistentStateConflictError) {
+    response.status(409).json({
+      error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
+      code: 'PERSISTENCE_REVISION_CONFLICT',
+      expectedRevision: error.expectedRevision,
+      actualRevision: error.actualRevision,
+    });
+    return;
+  }
+  response.status(500).json({ error: 'Interner Serverfehler.' });
+});
+
+const server = createServer(app);
+await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+const address = server.address() as AddressInfo;
+const baseUrl = `http://127.0.0.1:${address.port}/api/continuity`;
+const headers = { 'content-type': 'application/json', cookie: 'zero_session=valid-test-session' };
+async function request(path: string, method = 'GET', body?: unknown, authenticated = true) {
+  return fetch(baseUrl + path, {
+    method,
+    headers: authenticated ? headers : { 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+async function json(response: Response) { return response.json() as Promise<Record<string, any>>; }
+
+try {
+  const unauthorized = await request('/series', 'GET', undefined, false);
+  assert.equal(unauthorized.status, 401, 'the shared production API auth gate must reject unauthenticated requests');
+
+  const created = await request('/series', 'POST', {
+    title: 'Testserie', logline: 'Mystery', genre: 'Thriller', bible: 'Serienbibel',
+    projectIds: ['project-a'],
+  });
+  assert.equal(created.status, 201);
+  const series = (await json(created)).series;
+  assert.equal(series.title, 'Testserie');
+  const seriesId = series.id as string;
+
+  const updated = await request(`/series/${seriesId}`, 'PUT', { title: 'Testserie 2', projectIds: ['project-a'] });
+  assert.equal(updated.status, 200);
+  assert.equal((await json(updated)).series.title, 'Testserie 2');
+
+  const eventResponse = await request(`/series/${seriesId}/events`, 'POST', {
+    title: 'Die Nachricht', occurredAt: '2026-11-17T10:00:00.000Z', characterIds: ['character-a'],
+  });
+  assert.equal(eventResponse.status, 201);
+  const event = (await json(eventResponse)).event;
+
+  const knowledgeResponse = await request(`/series/${seriesId}/knowledge`, 'POST', {
+    characterId: 'character-a', fact: 'Die Nachricht wurde empfangen.',
+    sourceEventId: event.id, learnedAt: '2026-11-17T10:01:00.000Z',
+  });
+  assert.equal(knowledgeResponse.status, 201);
+  const knowledge = (await json(knowledgeResponse)).knowledge;
+  assert.equal(knowledge.sourceEventId, event.id);
+
+  const knowledgeUpdate = await request(`/knowledge/${knowledge.id}`, 'PUT', { fact: 'Die Nachricht wurde verstanden.' });
+  assert.equal(knowledgeUpdate.status, 200);
+
+  const relationshipResponse = await request(`/series/${seriesId}/relationships`, 'POST', {
+    fromCharacterId: 'character-a', toCharacterId: 'character-b', type: 'Misstrauen',
+  });
+  assert.equal(relationshipResponse.status, 201);
+  const relationship = (await json(relationshipResponse)).relationship;
+  assert.equal((await request(`/relationships/${relationship.id}`, 'PUT', { description: 'Wächst' })).status, 200);
+
+  const locationResponse = await request(`/series/${seriesId}/locations`, 'POST', {
+    name: 'Fremdes Zimmer', description: 'Fensterlos', attributes: { lighting: 'cold' },
+  });
+  assert.equal(locationResponse.status, 201);
+  const location = (await json(locationResponse)).location;
+  assert.equal((await request(`/locations/${location.id}`, 'PUT', { name: 'Hotelzimmer' })).status, 200);
+
+  const eventUpdate = await request(`/events/${event.id}`, 'PUT', { title: 'Die unbekannte Nachricht' });
+  assert.equal(eventUpdate.status, 200);
+
+  const sceneVersionResponse = await request(`/series/${seriesId}/scene-versions`, 'POST', {
+    projectId: 'project-a', sceneId: 'scene-a', note: 'Erste Fassung',
+  });
+  assert.equal(sceneVersionResponse.status, 201);
+  const firstVersion = (await json(sceneVersionResponse)).sceneVersion;
+  assert.equal(firstVersion.version, 1);
+  const secondVersionResponse = await request(`/series/${seriesId}/scene-versions`, 'POST', {
+    projectId: 'project-a', sceneId: 'scene-a', note: 'Zweite Fassung',
+  });
+  assert.equal((await json(secondVersionResponse)).sceneVersion.version, 2);
+
+  const seriesDetail = await json(await request(`/series/${seriesId}`));
+  assert.equal(seriesDetail.knowledge.length, 1);
+  assert.equal(seriesDetail.relationships.length, 1);
+  assert.equal(seriesDetail.locations.length, 1);
+  assert.equal(seriesDetail.events.length, 1);
+  assert.equal(seriesDetail.sceneVersions.length, 2);
+
+  forceConflict = true;
+  const conflict = await request(`/series/${seriesId}/locations`, 'POST', { name: 'Must not save' });
+  assert.equal(conflict.status, 409, 'revision conflicts must surface as HTTP 409');
+  const conflictBody = await json(conflict);
+  assert.equal(conflictBody.code, 'PERSISTENCE_REVISION_CONFLICT');
+  assert.equal(conflictBody.expectedRevision, 4);
+  assert.equal(conflictBody.actualRevision, 5);
+
+  const archived = await request(`/series/${seriesId}`, 'DELETE');
+  assert.equal(archived.status, 200);
+  assert.equal((await json(archived)).archived, true);
+  assert.equal(db.continuity?.series.length, 1, 'series record must be retained');
+  assert.equal(db.continuity?.knowledge.length, 1, 'knowledge must not be cascade-deleted');
+  assert.equal(db.continuity?.sceneVersions.length, 2, 'scene snapshots must be retained');
+
+  console.log('Continuity HTTP route, shared auth gate, revision-conflict and non-destructive archive tests passed.');
+} finally {
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}

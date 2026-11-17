@@ -1,6 +1,6 @@
 export interface ContinuitySeries {
   id: string; title: string; logline: string; genre: string; bible: string;
-  projectIds: string[]; createdAt: string; updatedAt: string;
+  projectIds: string[]; createdAt: string; updatedAt: string; archivedAt?: string;
 }
 export interface CharacterKnowledge {
   id: string; seriesId: string; characterId: string; fact: string;
