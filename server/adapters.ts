@@ -14,7 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { generateCloudflareText } from './cloudflareWorkersAi.ts';
+import { generateCloudflareImage, generateCloudflareText } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -54,15 +54,26 @@ export async function generateFreeOpenText(_params: {
   );
 }
 
-export async function generateFreeCloudImage(_params: {
+export async function generateFreeCloudImage(params: {
   prompt: string;
   model?: 'flux' | 'turbo' | 'sana';
   aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3';
   seed?: number;
 }): Promise<{ imageDataUrl: string; engine: string; width: number; height: number }> {
-  throw new Error(
-    'Bildgenerierung über Pollinations ist deaktiviert: Der aktuelle API-Zugriff benötigt Authentifizierung und kann Pollen-Guthaben verbrauchen. Kein kostenpflichtiger Fallback wurde aufgerufen.'
-  );
+  if (params.model && params.model !== 'flux') {
+    throw new Error('Für ZERO ist aktuell nur FLUX.1 Schnell über Cloudflare verifiziert. SD Turbo und Sana bleiben sicher deaktiviert.');
+  }
+  const result = await generateCloudflareImage({
+    prompt: params.prompt,
+    steps: 4,
+    ...(params.seed === undefined ? {} : { seed: params.seed }),
+  });
+  return {
+    imageDataUrl: result.imageDataUrl,
+    engine: 'Cloudflare Workers AI · FLUX.1 Schnell',
+    width: 1024,
+    height: 1024,
+  };
 }
 
 export async function runLiveModelTest(
