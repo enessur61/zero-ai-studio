@@ -14,7 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { generateCloudflareImage, generateCloudflareText } from './cloudflareWorkersAi.ts';
+import { generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -232,7 +232,19 @@ export async function runLiveModelTest(
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if (model.id === 'cloudflare-glm-4.7-flash') {
+    if (model.id === 'cloudflare-whisper-large-v3-turbo') {
+      // A short silent PCM probe verifies the provider endpoint and response schema.
+      // Speech quality is confirmed by actual uploaded audio in the Transcription Studio.
+      const result = await transcribeCloudflareAudio({
+        audioBase64: createSilentWavBase64(0.5, 16000),
+        language: 'de',
+      });
+      model.testPassed = result.modelId === '@cf/openai/whisper-large-v3-turbo' && typeof result.text === 'string';
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? 'Cloudflare Whisper Live-Probe erfolgreich; echte deutsche Transkription erfolgt mit der nächsten Audioaufnahme.'
+        : 'Whisper lieferte kein gültiges Transkriptionsformat.';
+    } else if (model.id === 'cloudflare-glm-4.7-flash') {
       const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 128, enableThinking: false });
       model.testPassed = result.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
