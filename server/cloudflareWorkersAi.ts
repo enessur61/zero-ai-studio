@@ -24,7 +24,7 @@ export function isCloudflareWorkersAiFreePlanConfirmed(env: NodeJS.ProcessEnv = 
 function assertCloudflareWorkersAiFreePlanConfirmed(): void {
   if (!isCloudflareWorkersAiFreePlanConfirmed()) {
     throw new CloudflareWorkersAiError(
-      'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true darf nur gesetzt werden, wenn das Konto nachweislich auf Workers Free steht. Auf Workers Paid können Überschreitungen kostenpflichtig sein. Kein Provider-Aufruf wurde gestartet.',
+      'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true darf nur gesetzt werden, wenn das Konto nachweislich auf dem Workers Free plan läuft. Auf Workers Paid können Überschreitungen kostenpflichtig sein. Kein Provider-Aufruf wurde gestartet.',
       403,
     );
   }
