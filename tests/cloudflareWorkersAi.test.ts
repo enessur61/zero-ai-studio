@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateCloudflareText, isCloudflareWorkersAiConfigured } from '../server/cloudflareWorkersAi.ts';
+import { generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -47,6 +47,58 @@ try {
     { role: 'system', content: 'Du bist ZERO.' },
     { role: 'user', content: 'Antworte BEREIT' },
   ]);
+
+  let imageUrl = '';
+  let imageBody = '';
+  const image = await generateCloudflareImage({
+    prompt: 'Berliner Straße bei Nacht, film still',
+    steps: 4,
+    seed: 17,
+    fetchImpl: async (input, init) => {
+      imageUrl = String(input);
+      imageBody = String(init?.body);
+      return new Response(JSON.stringify({
+        success: true,
+        result: { image: 'A'.repeat(256) },
+        errors: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  assert.match(imageUrl, /@cf\\/black-forest-labs\\/flux-1-schnell$/);
+  assert.deepEqual(JSON.parse(imageBody), {
+    prompt: 'Berliner Straße bei Nacht, film still',
+    steps: 4,
+    seed: 17,
+  });
+  assert.equal(image.modelId, '@cf/black-forest-labs/flux-1-schnell');
+  assert.ok(image.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+
+  let imageTransientAttempts = 0;
+  const recoveredImage = await generateCloudflareImage({
+    prompt: 'retry test',
+    fetchImpl: async () => {
+      imageTransientAttempts += 1;
+      if (imageTransientAttempts === 1) {
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+      }
+      return new Response(JSON.stringify({ success: true, result: { image: 'B'.repeat(256) }, errors: [] }), { status: 200 });
+    },
+  });
+  assert.equal(imageTransientAttempts, 2);
+  assert.ok(recoveredImage.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+
+  let imageRateLimitAttempts = 0;
+  await assert.rejects(
+    () => generateCloudflareImage({
+      prompt: 'rate limit test',
+      fetchImpl: async () => {
+        imageRateLimitAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
+      },
+    }),
+    /kein kostenpflichtiger Fallback/i,
+  );
+  assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
   const recovered = await generateCloudflareText({
