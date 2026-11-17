@@ -8,7 +8,7 @@ import { createContinuityRouter } from '../src/routes/continuity.ts';
 import { emptyContinuityState } from '../src/types/continuity.ts';
 import type { ZeroDatabase } from '../server/store.ts';
 
-const db = {
+let db = {
   characters: [{ id: 'character-a' }, { id: 'character-b' }],
   projects: [{ id: 'project-a', scenes: [{ id: 'scene-a', title: 'Original scene', durationSec: 12 }] }],
   continuity: emptyContinuityState(),
@@ -16,12 +16,13 @@ const db = {
 
 let forceConflict = false;
 const store = {
-  async loadDb() { return db; },
-  async saveDb() {
+  async loadDb() { return structuredClone(db); },
+  async saveDb(next: ZeroDatabase) {
     if (forceConflict) {
       forceConflict = false;
       throw new PersistentStateConflictError(4, 5);
     }
+    db = next;
   },
 };
 
@@ -143,6 +144,7 @@ try {
   assert.equal((await json(archived)).archived, true);
   assert.equal(db.continuity?.series.length, 1, 'series record must be retained');
   assert.equal(db.continuity?.knowledge.length, 1, 'knowledge must not be cascade-deleted');
+  assert.equal(db.continuity?.locations.length, 1, 'failed revision writes must not leak into persisted state');
   assert.equal(db.continuity?.sceneVersions.length, 2, 'scene snapshots must be retained');
 
   console.log('Continuity HTTP route, shared auth gate, revision-conflict and non-destructive archive tests passed.');
