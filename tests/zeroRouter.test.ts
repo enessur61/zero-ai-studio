@@ -268,3 +268,25 @@ assert.equal(
   'flux-1-schnell-free',
   'a live-tested Cloudflare FLUX image model uses its provider-side shared Neuron allocation',
 );
+
+const verifiedCloudflareWhisper = {
+  ...makeMediaModel('cloudflare-whisper-large-v3-turbo', 'Sprache & Audio'),
+  executionMode: 'FREE CLOUD' as const,
+  status: 'FUNKTIONIERT' as const,
+  adapterId: 'cloudflare-workers-ai-whisper',
+  hasRealAdapter: true,
+  enabled: true,
+  testPassed: true,
+};
+assert.equal(
+  chooseZeroMediaModel(
+    [verifiedCloudflareWhisper],
+    budget,
+    'transcription',
+    [],
+    now,
+    'cloudflare-whisper-large-v3-turbo',
+  )?.modelId,
+  'cloudflare-whisper-large-v3-turbo',
+  'a live-tested Cloudflare Whisper model uses the provider-side shared Neuron allocation',
+);
