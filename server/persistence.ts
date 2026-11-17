@@ -456,8 +456,9 @@ export async function acquirePersistentZipOperationLease(database: Pool = getPos
       },
     };
   } catch (error) {
-    if (lockId === null) client.release();
-    else client.release(true);
+    // A failed advisory-lock query can have an ambiguous server-side outcome.
+    // Never return that physical connection to the pool with a possible lock.
+    client.release(true);
     throw error;
   }
 }
