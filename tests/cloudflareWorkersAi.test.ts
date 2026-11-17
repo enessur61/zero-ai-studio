@@ -93,7 +93,7 @@ try {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
   });
-  assert.match(transcriptionUrl, /@cf\\/openai\\/whisper-large-v3-turbo$/);
+  assert.ok(transcriptionUrl.endsWith('/@cf/openai/whisper-large-v3-turbo'));
   assert.deepEqual(JSON.parse(transcriptionBody), {
     audio: 'UklGRg==',
     task: 'transcribe',
