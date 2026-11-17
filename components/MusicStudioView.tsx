@@ -112,7 +112,7 @@ export function MusicStudioView({
         >
           <div className="flex items-center gap-3">
             <img
-              src="/src/assets/images/scene_studio_synth_1794745338615.jpg"
+              src="/assets/images/scene_studio_synth_1794745338615.jpg"
               alt="Analoges Mastering Studio"
               referrerPolicy="no-referrer"
               className="w-16 h-12 rounded-xl object-cover border border-white/[0.08]"

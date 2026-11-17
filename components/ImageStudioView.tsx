@@ -82,7 +82,7 @@ export function ImageStudioView({
   const [gallery, setGallery] = useState<GeneratedImageItem[]>([
     {
       id: 'seed-berlin',
-      url: '/src/assets/images/scene_berlin_rain_1794745336613.jpg',
+      url: '/assets/images/scene_berlin_rain_1794745336613.jpg',
       prompt: 'Berlin Mitte Nachtregen Szene',
       engine: 'Studio Vorlage',
       aspectRatio: '16:9',
@@ -90,7 +90,7 @@ export function ImageStudioView({
     },
     {
       id: 'seed-elena',
-      url: '/src/assets/images/char_elena_vance_1794745336698.jpg',
+      url: '/assets/images/char_elena_vance_1794745336698.jpg',
       prompt: 'Charakterreferenz Elena Vance',
       engine: 'Charakter Engine',
       aspectRatio: '1:1',
