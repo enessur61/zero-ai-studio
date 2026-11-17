@@ -217,6 +217,9 @@ export function assertZeroBudgetModelAllowed(
     );
   }
 
+  // recordBudgetAudit owns the single request-counter increment. Keep the
+  // guard itself side-effect-free apart from its audit callback to avoid
+  // counting each successful authorization twice in the persisted database.
   recordAudit({
     adapterId: 'gemini-free-tier',
     modelId,
