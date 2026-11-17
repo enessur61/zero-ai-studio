@@ -274,7 +274,8 @@ export function classifyProviderError(err: unknown): ProviderErrorKind {
   const lower = text.toLowerCase();
 
   if (
-    text.includes('503') ||
+    /\b(?:500|502|503|504)\b/.test(raw) ||
+    lower.includes('internal server error') ||
     text.includes('UNAVAILABLE') ||
     lower.includes('high demand') ||
     lower.includes('temporarily unavailable') ||
@@ -351,7 +352,7 @@ export function formatGermanApiError(err: unknown): string {
     case 'rate-limited':
       return 'Free-Tier Anfrage-Limit vorübergehend erreicht (HTTP 429, Rate-Limit). Bitte kurz warten und erneut versuchen — kein dauerhaft ausgeschöpftes Kontingent, kein kostenpflichtiger Fallback.';
     case 'transient':
-      return 'Free-Tier Server vorübergehend stark ausgelastet (HTTP 503). Bitte in wenigen Sekunden erneut versuchen (kein kostenpflichtiger Fallback).';
+      return 'KI-Provider vorübergehend mit einem Serverfehler (HTTP 5xx) nicht erreichbar. ZERO hat begrenzt erneut versucht; bitte später erneut versuchen. Kein kostenpflichtiger Fallback.';
     case 'auth':
       if (raw.toLowerCase().includes('zero_gemini_free_tier_only')) {
         return 'Gemini gesperrt: ZERO_GEMINI_FREE_TIER_ONLY=true muss erst bestätigt werden, nachdem die Abrechnung im Google-Cloud-Projekt deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.';
