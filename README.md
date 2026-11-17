@@ -75,6 +75,8 @@ Workers AI ist sowohl in Workers Free als auch in Workers Paid verfügbar, aber 
    ```
    > **Wichtig für 0 €:** Die kostenlose Gemini-Stufe hat providerseitige Tageslimits. Wenn für das Google-Cloud-Projekt Abrechnung aktiviert ist, können Anfragen nach Erreichen von Freikontingenten kostenpflichtig werden. ZERO kann den Google-Abrechnungsstatus nicht auslesen. Deshalb bleiben alle Gemini-Aufrufe standardmäßig gesperrt, bis du die Abrechnung im Google-Cloud-Projekt deaktiviert und die Einstellung `ZERO_GEMINI_FREE_TIER_ONLY=true` bewusst gesetzt hast. ZERO verwendet keinen kostenpflichtigen Fallback.
 
+> **Datenschutz im Google Free Tier:** Google weist darauf hin, dass Inhalte aus dem kostenlosen Gemini-API-Tarif zur Verbesserung seiner Produkte verwendet werden können. Sende deshalb keine sensiblen personenbezogenen oder vertraulichen Inhalte an diese Modelle. Die ZERO-Oberfläche weist im Model Hub auf diese Einschränkung hin. Ein kostenloser Tarif bedeutet nicht automatisch vertrauliche Verarbeitung.
+
 3. Entwicklungsserver starten (Port 3000):
    ```bash
    npm run dev
