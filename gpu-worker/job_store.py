@@ -6,6 +6,54 @@ from pathlib import Path
 from typing import Any
 
 
+
+_EPHEMERAL_FILESYSTEMS = {
+    "overlay", "overlayfs", "aufs", "tmpfs", "ramfs", "devtmpfs",
+    "proc", "sysfs", "cgroup", "cgroup2", "squashfs", "autofs",
+    "nsfs", "mqueue", "tracefs", "securityfs", "debugfs", "pstore",
+    "efivarfs",
+}
+
+
+def has_persistent_mount(path: str | Path, mountinfo_text: str | None = None) -> bool:
+    """Return true only when path is backed by a non-ephemeral mounted filesystem.
+
+    Docker's writable container layer (overlay) and memory-backed mounts such
+    as tmpfs are deliberately rejected. The longest matching mount point wins,
+    so a nested ephemeral mount cannot inherit a persistent parent volume.
+    """
+    target = Path(path).resolve()
+    if mountinfo_text is None:
+        try:
+            mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+    best_mount: Path | None = None
+    best_fs: str | None = None
+    for line in mountinfo_text.splitlines():
+        before, separator, after = line.partition(" - ")
+        if not separator:
+            continue
+        fields = before.split()
+        post_fields = after.split()
+        if len(fields) < 5 or not post_fields:
+            continue
+        mount_text = fields[4]
+        for escaped, actual in (("\\040", " "), ("\\011", "\\t"), ("\\012", "\\n"), ("\\134", "\\\\")):
+            mount_text = mount_text.replace(escaped, actual)
+        mount_point = Path(mount_text)
+        try:
+            target.relative_to(mount_point)
+        except ValueError:
+            continue
+        if best_mount is None or len(str(mount_point)) > len(str(best_mount)):
+            best_mount = mount_point
+            best_fs = post_fields[0].lower()
+
+    return best_mount is not None and best_fs not in _EPHEMERAL_FILESYSTEMS
+
+
 def require_persistent_storage(configured: bool) -> None:
     """Fail closed before accepting jobs when the worker volume is ephemeral."""
     if not configured:
