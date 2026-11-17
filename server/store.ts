@@ -481,6 +481,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         'sana-free',
       ].includes(def.id);
       const requiresNativeRuntimeVerification = [
+        'apple-foundation-model',
         'qwen-2.5-3b-coreml',
         'llama-3.2-1b-coreml',
         'llama-3.2-3b-coreml',
