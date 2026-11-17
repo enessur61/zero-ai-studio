@@ -113,15 +113,19 @@ function makeVideo(durationSec: number) {
 
 {
   const project = makeProject([makeScene(1, 20)]);
-  await assert.rejects(
-    () => runAutonomousFilmProduction({
-      createDraft: async () => ({ project }),
-      generateVoiceover: async () => ({ audioDataUrl: 'https://not-audio.example/file.wav' }),
-      saveProject: async (_id, scenes) => ({ ...project, scenes }),
-      renderVideo: async () => makeVideo(20),
-    }),
-    /gültige Audio-Data-URL/,
-  );
+  let rendered = false;
+  const result = await runAutonomousFilmProduction({
+    createDraft: async () => ({ project }),
+    generateVoiceover: async () => ({ audioDataUrl: 'https://not-audio.example/file.wav' }),
+    saveProject: async (_id, scenes) => ({ ...project, scenes }),
+    renderVideo: async () => {
+      rendered = true;
+      return makeVideo(20);
+    },
+  });
+  assert.equal(result.voiceoversReady, 0);
+  assert.ok(result.warnings.some((warning) => warning.includes('gültige Audio-Data-URL')));
+  assert.equal(rendered, true, 'a bad optional voiceover must not prevent the episode export');
 }
 
 {
