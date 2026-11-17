@@ -420,7 +420,8 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
   try {
     const result = await generateCloudflareText({
       prompt: 'Antworte ausschließlich mit: ZERO_CLOUDFLARE_OK',
-      maxTokens: 32,
+      maxTokens: 128,
+      enableThinking: false,
     });
     return res.json({
       ok: true,
