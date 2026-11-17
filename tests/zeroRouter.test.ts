@@ -53,6 +53,15 @@ const preferred = chooseZeroChatModel(
 );
 assert.equal(preferred?.modelId, 'gemini-3.6-flash');
 
+const cloudflareModel = makeModel('cloudflare-glm-4.7-flash');
+cloudflareModel.provider = 'Cloudflare Workers AI';
+cloudflareModel.adapterId = 'cloudflare-workers-ai';
+assert.equal(
+  chooseZeroChatModel([cloudflareModel], budget, 'cloudflare-glm-4.7-flash', now)?.modelId,
+  'cloudflare-glm-4.7-flash',
+  'a successfully tested Cloudflare model uses the provider-side daily Neuron quota and does not require a Gemini quota record',
+);
+
 const fallbackBudget: BudgetGuardState = {
   ...budget,
   freeQuotaUsage: {
@@ -75,7 +84,11 @@ const staleQuotaBudget: BudgetGuardState = {
     'gemini-3.8-flash': { requestsToday: 10, dailySoftLimit: 10, exhausted: true, lastResetDate: '2026-11-15' },
   },
 };
-assert.equal(chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now)?.modelId, 'gemini-3.8-flash');
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], staleQuotaBudget, undefined, now),
+  null,
+  'the router must not advertise stale quota metadata as available after a local date rollover',
+);
 
 const missingQuotaDateBudget: BudgetGuardState = {
   ...budget,
@@ -151,6 +164,42 @@ const invalidQuotaCountersBudget: BudgetGuardState = {
   },
 };
 assert.equal(chooseZeroChatModel([makeModel('gemini-3.8-flash')], invalidQuotaCountersBudget, undefined, now), null);
+
+const malformedExhaustedFlagBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash': {
+      requestsToday: 0,
+      dailySoftLimit: 10,
+      exhausted: 'false' as unknown as boolean,
+      lastResetDate: '2026-11-16',
+    },
+  },
+};
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], malformedExhaustedFlagBudget, undefined, now),
+  null,
+  'a non-boolean exhausted flag must fail closed instead of being treated as available quota',
+);
+
+const nonIntegerQuotaBudget: BudgetGuardState = {
+  ...budget,
+  freeQuotaUsage: {
+    ...budget.freeQuotaUsage,
+    'gemini-3.8-flash': {
+      requestsToday: 0.5,
+      dailySoftLimit: 10,
+      exhausted: false,
+      lastResetDate: '2026-11-16',
+    },
+  },
+};
+assert.equal(
+  chooseZeroChatModel([makeModel('gemini-3.8-flash')], nonIntegerQuotaBudget, undefined, now),
+  null,
+  'fractional request counters must fail closed',
+);
 
 const untested = makeModel('gemini-3.8-flash');
 untested.testPassed = false;

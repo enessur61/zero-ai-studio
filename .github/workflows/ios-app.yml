@@ -2,7 +2,6 @@ name: ZERO Native iOS App Build
 
 on:
   pull_request:
-    branches: [main]
     paths:
       - "ios/**"
       - ".github/workflows/ios-app.yml"
@@ -13,13 +12,33 @@ on:
       - ".github/workflows/ios-app.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Keep only the latest native build for each PR/ref; stale simulator/device
+# builds must not accumulate behind newer commits.
+concurrency:
+  group: zero-native-ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ios-app:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Build pinned XcodeGen 2.46.0 from verified source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODEGEN_DIR="$RUNNER_TEMP/XcodeGen"
+          git init "$XCODEGEN_DIR"
+          git -C "$XCODEGEN_DIR" remote add origin https://github.com/yonaskolb/XcodeGen.git
+          git -C "$XCODEGEN_DIR" fetch --depth 1 origin 8445e778451c7e44237b90281bde622d764b0084
+          git -C "$XCODEGEN_DIR" checkout --detach FETCH_HEAD
+          make -C "$XCODEGEN_DIR" install PREFIX="$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          test "$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)" = "2.46.0"
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml
       - name: Build unsigned iOS Simulator app

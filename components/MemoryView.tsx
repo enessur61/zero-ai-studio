@@ -16,6 +16,7 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
     null
   );
   const [semanticUsed, setSemanticUsed] = useState(false);
+  const [embeddingNotice, setEmbeddingNotice] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -30,12 +31,14 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
       const data = await apiRequest<{
         results: Array<{ memory: MemoryEntry; score: number }>;
         semanticActive: boolean;
+        embeddingNotice?: string;
       }>('/api/memory/search', {
         method: 'POST',
         body: JSON.stringify({ query: searchQuery }),
       });
       setSearchResults(data.results);
       setSemanticUsed(data.semanticActive);
+      setEmbeddingNotice(data.embeddingNotice ?? null);
     } finally {
       setSearching(false);
     }
@@ -46,11 +49,12 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
     if (!title.trim() || !content.trim() || saving) return;
     setSaving(true);
     try {
-      const data = await apiRequest<{ memory: MemoryEntry }>('/api/memory', {
+      const data = await apiRequest<{ memory: MemoryEntry; embeddingNotice?: string }>('/api/memory', {
         method: 'POST',
         body: JSON.stringify({ title, content, type, tags }),
       });
       onMemoryAdded(data.memory);
+      setEmbeddingNotice(data.embeddingNotice ?? null);
       setTitle('');
       setContent('');
       setTags('');
@@ -166,6 +170,12 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
               >
                 Zurücksetzen
               </button>
+            </div>
+          )}
+
+          {embeddingNotice && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              {embeddingNotice}
             </div>
           )}
 
