@@ -139,8 +139,11 @@ export function createPostgresConcurrencyGate(
         };
         next();
       } catch (error) {
-        if (lockId === null) client.release();
-        else client.release(true);
+        // A failed lock query has an ambiguous outcome: PostgreSQL may have
+        // acquired the session lock even if the client never received its row.
+        // Destroy the connection so an uncertain advisory lock cannot return
+        // to the pool and strand one of the global ZIP slots.
+        client.release(true);
         next(error);
       }
     })();
