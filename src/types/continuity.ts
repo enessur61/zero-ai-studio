@@ -39,6 +39,24 @@ export interface SemanticContinuityConflict {
   projectId?: string;
   characterId?: string;
 }
+
+export interface DramaturgyAnalysisVersion {
+  id: string; seriesId: string; version: number; createdAt: string;
+  modelId: string; costMode: 'confirmed-free-cloud' | 'local';
+  sourceFingerprint: string;
+  analysis: {
+    overallAssessment: string;
+    characterAnalyses: Array<{ characterId: string; psychologicalProfile: string; coreMotivation: string; emotionalArc: string; relationshipDynamics: string[]; contradictions: string[] }>;
+    findings: Array<{ id: string; category: string; severity: string; characterIds: string[]; episodeTitle: string; sceneTitle: string; evidence: string; interpretation: string; recommendation: string; confidence: string }>;
+    storyRecommendations: string[];
+  };
+  comparison?: { previousVersion: number; changedCharacters: Array<{ characterId: string; changedFields: string[] }>; newContradictions: string[]; resolvedContradictions: string[]; summary: string };
+}
+export interface DramaturgyDecision {
+  id: string; seriesId: string; analysisVersionId: string; findingId: string;
+  decision: 'approved' | 'rejected'; note: string; createdAt: string;
+}
+
 export interface ContinuityState {
   series: ContinuitySeries[];
   knowledge: CharacterKnowledge[];
@@ -46,7 +64,9 @@ export interface ContinuityState {
   locations: ContinuityLocation[];
   events: ContinuityEvent[];
   sceneVersions: SceneVersion[];
+  dramaturgyAnalyses: DramaturgyAnalysisVersion[];
+  dramaturgyDecisions: DramaturgyDecision[];
 }
 export function emptyContinuityState(): ContinuityState {
-  return { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [] };
+  return { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [] };
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildStorySupervisorAiPrompt, parseStorySupervisorAiResponse } from '../server/storySupervisorAI.ts';
+import { compareDramaturgyAnalyses, createDramaturgyAnalysisVersion } from '../server/dramaturgyVersions.ts';
 import type { ContinuityState } from '../src/types/continuity.ts';
 import type { CharacterProfile, StudioProject } from '../src/types/zero.ts';
 
@@ -30,3 +31,13 @@ assert.equal(response.findings[0].category,'subtext');
 assert.throws(()=>parseStorySupervisorAiResponse('kein JSON',built.validCharacterIds),/kein JSON/);
 assert.throws(()=>parseStorySupervisorAiResponse('{"overallAssessment":"","findings":[]}',built.validCharacterIds),/keine verwertbare Analyse/);
 console.log('Story Supervisor AI tests passed: series context, relationship/subtext prompt and strict response validation.');
+
+const versionOne = createDramaturgyAnalysisVersion({seriesId:'s1',modelId:'free-test',costMode:'confirmed-free-cloud',analysis:response,source:'episode-one'});
+const changed = {...response,characterAnalyses:[{...response.characterAnalyses[0],coreMotivation:'Schutz statt Wahrheit'}],findings:[...response.findings,{...response.findings[0],id:'f2',category:'contradiction' as const,evidence:'Sie sagt A',interpretation:'Handelt gegenteilig'}]};
+const versionTwo = createDramaturgyAnalysisVersion({seriesId:'s1',modelId:'free-test',costMode:'confirmed-free-cloud',analysis:changed,previous:versionOne,source:'episode-two'});
+assert.equal(versionTwo.version,2);
+assert.equal(versionTwo.comparison?.previousVersion,1);
+assert.ok(versionTwo.comparison?.changedCharacters.some(x=>x.characterId==='c1'&&x.changedFields.includes('coreMotivation')));
+assert.equal(versionTwo.comparison?.newContradictions.length,1);
+assert.equal(versionOne.comparison,undefined,'previous analysis versions remain immutable');
+console.log('Versioned dramaturgy comparison tests passed.');

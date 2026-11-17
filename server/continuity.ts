@@ -3,10 +3,10 @@ import type { ContinuityEvent, ContinuityState, SceneVersion } from '../src/type
 export function validateContinuityState(value: unknown): ContinuityState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Continuity-Daten sind ungültig.');
   const v=value as Partial<ContinuityState>;
-  for (const key of ['series','knowledge','relationships','locations','events','sceneVersions'] as const) {
+  for (const key of ['series','knowledge','relationships','locations','events','sceneVersions','dramaturgyAnalyses','dramaturgyDecisions'] as const) {
     if (v[key] !== undefined && !Array.isArray(v[key])) throw new Error(`Continuity-Feld ${key} muss eine Liste sein.`);
   }
-  return { series:v.series??[], knowledge:v.knowledge??[], relationships:v.relationships??[], locations:v.locations??[], events:v.events??[], sceneVersions:v.sceneVersions??[] };
+  return { series:v.series??[], knowledge:v.knowledge??[], relationships:v.relationships??[], locations:v.locations??[], events:v.events??[], sceneVersions:v.sceneVersions??[], dramaturgyAnalyses:v.dramaturgyAnalyses??[], dramaturgyDecisions:v.dramaturgyDecisions??[] };
 }
 export function eventKnowledgeConflicts(events: ContinuityEvent[], knowledge: ContinuityState['knowledge']): Array<{knowledgeId:string; eventId:string; message:string}> {
   const byId=new Map(events.map(e=>[e.id,e]));
