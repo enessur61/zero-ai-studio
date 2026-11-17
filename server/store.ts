@@ -478,7 +478,6 @@ export async function loadDb(): Promise<ZeroDatabase> {
         (prev.status === 'ADAPTER FEHLT' || prev.lastTestMessage.includes('"code":'));
       const legacyPollinationsModel = [
         'gpt-oss-20b-free',
-        'flux-1-schnell-free',
         'sd-turbo-free',
         'sana-free',
       ].includes(def.id);
