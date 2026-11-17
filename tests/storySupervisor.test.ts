@@ -16,7 +16,7 @@ state.sceneVersions.push(
  { id:'v2',seriesId:'series',projectId:'ep2',sceneId:'scene-2',version:2,snapshot:{},note:'revision',createdAt:'' },
 );
 state.knowledge.push({id:'k1',seriesId:'series',characterId:'c1',fact:'Erfährt von Mara',factType:'fact',learnedAt:'2026-01-02T12:00:00.000Z',createdAt:'',updatedAt:''});
-const scene = (id:string, characterIds:string[]) => ({id,index:1,title:id,location:'',timeOfDay:'',durationSec:10,cameraMovement:'Statisch' as const,characterIds,narrationText:'',dialogueText:'',subtitleText:'',soundCue:'',imagePrompt:'',videoPrompt:'',status:'Entwurf' as const});
+const scene = (id:string, characterIds:string[]) => ({id,index:1,title:id,location:'',timeOfDay:'',durationSec:10,cameraMovement:'Statisch' as const,characterIds,narrationText:'Elias hat Angst und will die Wahrheit finden.',dialogueText:'Ich vertraue dir nicht.',subtitleText:'',soundCue:'',imagePrompt:'',videoPrompt:'',status:'Entwurf' as const});
 const project = (id:string,title:string,createdAt:string,scenes:ReturnType<typeof scene>[]) => ({id,title,logline:'',genre:'',targetDurationSec:10,concept:'',story:'',screenplay:'',characterIds:[],scenes,assets:[],snapshots:[],status:'Konzept' as const,version:1,createdAt,updatedAt:createdAt}) as StudioProject;
 const characters = [{id:'c1',name:'Elias',role:'Lead'},{id:'c2',name:'Mara',role:'Antagonistin'}] as CharacterProfile[];
 const report = buildStorySupervisorReport(state,'series',[
@@ -30,6 +30,9 @@ assert.deepEqual(report.episodes.map((item)=>item.title),['Episode 1','Episode 2
 assert.equal(report.characterArcs.find((item)=>item.characterId==='c1')?.appearanceCount,2);
 assert.deepEqual(report.characterArcs.find((item)=>item.characterId==='c1')?.episodeTitles,['Episode 1','Episode 2']);
 assert.equal(report.revealTimeline.length,2);
+assert.ok(Array.isArray(report.dramaturgyInsights));
+assert.ok(report.dramaturgyInsights.every((insight) => insight.confidence === 'heuristic'));
+assert.ok(report.dramaturgyInsights.some((insight) => ['emotion','motivation','contradiction'].includes(insight.category)));
 assert.ok(report.conflicts.some((item)=>item.code==='STORY_CANON_DIVERGENCE' && item.characterId==='c2'));
 assert.equal(buildStorySupervisorReport(state,'missing',[],characters),null);
 console.log('Story Supervisor tests passed: cross-episode ordering, character arcs, reveal timeline and canon divergence.');

@@ -21,6 +21,15 @@ export interface StorySupervisorCharacterArc {
   knowledgeMilestones: Array<{ learnedAt: string; fact: string; factType: string }>;
   developmentSummary: string;
 }
+export interface StorySupervisorDramaturgyInsight {
+  id: string;
+  category: 'emotion' | 'motivation' | 'contradiction';
+  characterName: string;
+  episodeTitle: string;
+  evidence: string;
+  recommendation: string;
+  confidence: 'heuristic';
+}
 export interface StorySupervisorReport {
   generatedAt: string;
   episodeCount: number;
@@ -30,6 +39,7 @@ export interface StorySupervisorReport {
   revealTimeline: Array<{ eventId: string; title: string; occurredAt: string; kind: string; characterId: string; canonicalValue: string }>;
   conflicts: SemanticContinuityConflict[];
   dataWarnings: string[];
+  dramaturgyInsights: StorySupervisorDramaturgyInsight[];
 }
 const byTime = <T extends { occurredAt: string }>(a: T, b: T) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt);
 const normalizedCanon = (value: string) => value.normalize('NFKC').toLocaleLowerCase('de-DE').replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
@@ -75,6 +85,16 @@ export function buildStorySupervisorReport(
   for (const fact of knowledge) { characterIds.add(fact.characterId); if (fact.subjectCharacterId) characterIds.add(fact.subjectCharacterId); }
   for (const episode of episodes) for (const id of episode.characterIds) characterIds.add(id);
 
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const emotionLexicon = [
+    { label: 'Angst / Anspannung', words: ['angst', 'fürcht', 'zitter', 'panik', 'bedroh', 'nervös'] },
+    { label: 'Wut / Aggression', words: ['wut', 'zorn', 'hass', 'schreit', 'rasend', 'aggress'] },
+    { label: 'Trauer / Verlust', words: ['trau', 'weint', 'träne', 'verlust', 'vermisst', 'verzweif'] },
+    { label: 'Vertrauen / Nähe', words: ['vertraut', 'liebt', 'liebe', 'umarm', 'geborgen', 'offenbart'] },
+    { label: 'Misstrauen / Distanz', words: ['misstrau', 'lügt', 'verrat', 'geheim', 'verdächtig', 'meidet'] },
+    { label: 'Hoffnung / Entschlossenheit', words: ['hoff', 'kämpft', 'entschlossen', 'rett', 'schützt'] },
+  ];
+  const dramaturgyInsights: StorySupervisorDramaturgyInsight[] = [];
   const characterArcs = [...characterIds].map((characterId) => {
     const profile = characterMap.get(characterId);
     const appearances = events.filter((event) => Boolean(event.sceneId) && Array.isArray(event.characterIds) && event.characterIds.includes(characterId));
@@ -85,6 +105,41 @@ export function buildStorySupervisorReport(
     const milestones = knowledge.filter((item) => item.characterId === characterId)
       .map((item) => ({ learnedAt: item.learnedAt, fact: item.fact, factType: item.factType || 'fact' }));
     const first = appearances[0], last = appearances[appearances.length - 1];
+    for (const event of appearances) {
+      const projectId = event.sceneId ? sceneProject.get(event.sceneId) : undefined;
+      const episode = projectId ? episodeById.get(projectId) : undefined;
+      const project = projectId ? projectById.get(projectId) : undefined;
+      const scene = project?.scenes?.find((item) => item.id === event.sceneId);
+      const evidenceText = normalizedCanon([event.title, event.description, scene?.narrationText, scene?.dialogueText, scene?.subtitleText].filter(Boolean).join(' '));
+      if (!evidenceText) continue;
+      for (const signal of emotionLexicon) {
+        const hits = signal.words.filter((word) => evidenceText.includes(word));
+        if (hits.length) dramaturgyInsights.push({
+          id: `emotion:${event.id}:${signal.label}`, category: 'emotion',
+          characterName: profile?.name || characterId, episodeTitle: episode?.title || 'Unzugeordnete Szene',
+          evidence: `Emotionsmarker ${signal.label.toLowerCase()} in „${event.title}“ (${hits.slice(0, 3).join(', ')}).`,
+          recommendation: `Prüfe, ob ${profile?.name || 'die Figur'} diese Emotion vor und nach der Szene durch Handlung, Dialog oder Körpersprache entwickelt.`,
+          confidence: 'heuristic',
+        });
+      }
+      const motivationMatches = evidenceText.match(/\b(?:will|wollen|möchte|muss|müssen|sucht|versucht|braucht)\b[^.!?]{0,100}/giu) || [];
+      for (const phrase of motivationMatches.slice(0, 2)) dramaturgyInsights.push({
+        id: `motivation:${event.id}:${phrase}`, category: 'motivation',
+        characterName: profile?.name || characterId, episodeTitle: episode?.title || 'Unzugeordnete Szene',
+        evidence: `Mögliches Ziel / Bedürfnis: „${phrase.trim()}“.`,
+        recommendation: 'Mache Ziel, Hindernis und Preis der Entscheidung konkret und verknüpfe das Ergebnis mit dem nächsten Figurenauftritt.',
+        confidence: 'heuristic',
+      });
+      for (const [positive, negative] of [['vertraut', 'misstrau'], ['liebt', 'hasst'], ['lebt', 'tot'], ['verbündet', 'feind']]) {
+        if (evidenceText.includes(positive) && evidenceText.includes(negative)) dramaturgyInsights.push({
+          id: `contradiction:${event.id}:${positive}:${negative}`, category: 'contradiction',
+          characterName: profile?.name || characterId, episodeTitle: episode?.title || 'Unzugeordnete Szene',
+          evidence: `Gegensätzliche Marker „${positive}“ und „${negative}“ treten im selben Szenenkontext auf.`,
+          recommendation: 'Prüfe, ob der Gegensatz beabsichtigt ist (Lüge, Perspektivwechsel oder Wendung); andernfalls Figurenstatus und Formulierung präzisieren.',
+          confidence: 'heuristic',
+        });
+      }
+    }
     const developmentSummary = appearances.length
       ? `Auftritt in ${episodeTitles.length || 1} Episode(n) und ${appearances.length} erfassten Szenen; ${milestones.length} Wissensmeilenstein(e).`
       : `Noch keine Szenenauftritte in der Serienzeitachse erfasst; ${milestones.length} Wissensmeilenstein(e).`;
@@ -142,5 +197,6 @@ export function buildStorySupervisorReport(
   return {
     generatedAt: new Date().toISOString(), episodeCount: episodes.length, sceneCount,
     episodes, characterArcs, revealTimeline, conflicts, dataWarnings,
+    dramaturgyInsights: dramaturgyInsights.slice(0, 120),
   };
 }
