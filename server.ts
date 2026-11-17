@@ -276,7 +276,8 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
   const source = JSON.stringify({ series, projects: db.projects.filter((project) => series.projectIds.includes(project.id)), characters: db.characters, knowledge: continuity.knowledge.filter((item) => item.seriesId === series.id), relationships: continuity.relationships.filter((item) => item.seriesId === series.id), events: continuity.events.filter((item) => item.seriesId === series.id) });
   const version = createDramaturgyAnalysisVersion({ seriesId: series.id, modelId, costMode, analysis, previous: latest, source });
   continuity.dramaturgyAnalyses.push(version);
-  await saveDb({ ...db, continuity });
+  db.continuity = continuity;
+  await saveDb(db);
   return res.json({ analysis, analysisVersion: version, modelId, costMode, paidFallback: false, generatedAt: version.createdAt });
 }));
 
