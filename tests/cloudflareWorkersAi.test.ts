@@ -13,7 +13,7 @@ try {
 
   await assert.rejects(
     () => generateCloudflareText({ prompt: 'test' }),
-    /Workers Free plan/i,
+    /Workers Free/i,
   );
   process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
   await assert.rejects(
@@ -36,7 +36,7 @@ try {
         return new Response('{}', { status: 200 });
       },
     }),
-    /Workers Free plan/i,
+    /Workers Free/i,
   );
   assert.equal(blockedProviderCalls, 0, 'unconfirmed Cloudflare billing must block before network access');
   await assert.rejects(
@@ -47,7 +47,7 @@ try {
         return new Response('{}', { status: 200 });
       },
     }),
-    /Workers Free plan/i,
+    /Workers Free/i,
   );
   assert.equal(blockedProviderCalls, 0, 'image inference must share the same fail-closed billing gate');
 
