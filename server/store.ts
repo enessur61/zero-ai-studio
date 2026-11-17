@@ -517,10 +517,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       const preserveAvailabilityToggle = Boolean(
         prev &&
         (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
-        prev.adapterId === def.adapterId &&
-        prev.status === 'BROWSER TEST ERFORDERLICH' &&
-        prev.testPassed === false &&
-        prev.hasRealAdapter === false
+        prev.adapterId === def.adapterId
       );
       const merged: ModelDefinition = shouldKeepPrevState
         ? {
