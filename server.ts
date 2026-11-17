@@ -1226,10 +1226,6 @@ app.post('/api/image/generate', asyncRoute(async (req, res) => {
     const image = await generateFreeCloudImage({
       prompt,
       model: 'flux',
-      aspectRatio: ['16:9', '9:16', '1:1', '4:3'].includes(String(req.body?.aspectRatio))
-        ? req.body.aspectRatio as '16:9' | '9:16' | '1:1' | '4:3'
-        : '1:1',
-      ...(Number.isSafeInteger(req.body?.seed) ? { seed: req.body.seed as number } : {}),
     });
     res.json({ ...image, modelId: 'flux-1-schnell-free', costEur: 0 });
   } catch (err) {
@@ -1925,7 +1921,6 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
-              aspectRatio: '1:1',
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
