@@ -47,9 +47,10 @@ Für ZERO CORE mit GLM-4.7-Flash, FLUX.1 Schnell und Whisper Large-v3-Turbo müs
 ```env
 CLOUDFLARE_ACCOUNT_ID="DEINE_ACCOUNT_ID"
 CLOUDFLARE_API_TOKEN="DEIN_WORKERS_AI_API_TOKEN"
+ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED="true"
 ```
 
-Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pro Tag für Workers AI bereit. Das Kontingent wird von allen verwendeten Workers-AI-Modellen gemeinsam genutzt und providerseitig begrenzt. Bei 429/ausgeschöpftem Kontingent stoppt ZERO; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX und Whisper müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
+Der Cloudflare Workers Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pro Tag bereit. Auf Workers Paid kann Nutzung oberhalb dieser Zuteilung berechnet werden. Deshalb blockiert ZERO sämtliche Cloudflare-Inferenz standardmäßig. Setze ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true ausschließlich, nachdem du im Cloudflare-Dashboard überprüft hast, dass dieses Konto tatsächlich den Workers-Free-Plan nutzt. Auf Workers Free stoppt ZERO bei ausgeschöpftem Tageskontingent; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX und Whisper müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
 
 ### Voraussetzungen
 - **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
