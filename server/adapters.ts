@@ -160,13 +160,23 @@ export async function runLiveModelTest(
     return model;
   }
 
-  // A server-side test cannot execute browser APIs on the user's iPhone.
-  // loadDb deliberately clears persisted runtime verification for browser-only
-  // adapters, so check the explicit browser-probe state before hasRealAdapter.
-  if (
-    model.executionMode === 'LOCAL ON-DEVICE' &&
-    (model.status === 'BROWSER TEST ERFORDERLICH' || model.hasRealAdapter)
-  ) {
+  // Apple Foundation Models require native iOS installation and cannot be
+  // verified by a server-side request.
+  if (model.id === 'apple-foundation-model') {
+    model.hasRealAdapter = false;
+    model.testPassed = false;
+    model.status = 'INSTALLATION ERFORDERLICH';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage =
+      'Apple Foundation Models können nur in der nativen ZERO-iOS-App auf einem kompatiblen iPhone geprüft werden.';
+    return model;
+  }
+
+  // A server-side test cannot execute browser APIs or device-local runtimes.
+  // Never infer successful local inference from static catalog metadata.
+  if (model.executionMode === 'LOCAL ON-DEVICE') {
+    model.hasRealAdapter = false;
     model.testPassed = false;
     model.status = 'BROWSER TEST ERFORDERLICH';
     model.lastTestedAt = now;
