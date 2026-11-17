@@ -187,7 +187,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
 | `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
 | `POST` | `/api/image/generate` | Text-to-Image über FLUX.1 Schnell auf Cloudflare Workers AI Free; iPhone-Zielformate werden nach lokaler Bildgenerierung zugeschnitten |
-| `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
+| `POST` | `/api/image/analyze` | Bildanalyse über live-getestetes Cloudflare Moondream 3.1; Gemini Free-Tier bleibt optionaler Weg, wenn Moondream nicht aktiviert ist |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
 | `POST` | `/api/audio/transcribe` | Audio-Transkription über Cloudflare Whisper Large-v3-Turbo Free oder aktiviertes Gemini-Modell; VTT-/Segmentdaten werden für SRT verwendet |
 | `POST` | `/api/music/compose` | KI-Musikparameter für den lokalen WebAudio DSP-Synthesizer |
