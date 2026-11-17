@@ -2079,7 +2079,7 @@ function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
   const cleaned = raw.trim().replace(/^\u0060\u0060\u0060(?:json)?\s*/i, '').replace(/\s*\u0060\u0060\u0060$/i, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start < 0 || end < start) throw new Error('GLM hat kein gültiges JSON-Objekt geliefert. Bitte die Anfrage erneut versuchen.');
+  if (start < 0 || end < start) throw new Error('Das ZERO-Textmodell hat kein gültiges JSON-Objekt geliefert. Bitte die Anfrage erneut versuchen.');
   const parsed: unknown = JSON.parse(cleaned.slice(start, end + 1));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('GLM-Antwort hat nicht das erwartete JSON-Objektformat.');
