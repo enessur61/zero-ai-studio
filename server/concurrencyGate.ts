@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { RequestHandler } from 'express';
 
 export type ConcurrencyGate = {
@@ -64,12 +64,14 @@ export function createPostgresConcurrencyGate(
   let active = 0;
   const middleware: RequestHandler = (req, res, next) => {
     void (async () => {
-      const client = await database.connect();
+      let client: PoolClient | null = null;
       let lockId: number | null = null;
       try {
+        const acquiredClient = await database.connect();
+        client = acquiredClient;
         for (let slot = 0; slot < maxConcurrent; slot++) {
           const candidate = 3 + slot;
-          const result = await client.query<{ locked: boolean }>(
+          const result = await acquiredClient.query<{ locked: boolean }>(
             'SELECT pg_try_advisory_lock(1514480207, $1) AS locked',
             [candidate]
           );
@@ -80,7 +82,8 @@ export function createPostgresConcurrencyGate(
         }
 
         if (lockId === null) {
-          client.release();
+          acquiredClient.release();
+          client = null;
           res.setHeader('Retry-After', String(retryAfterSeconds));
           res.status(429).json({
             error: 'Zu viele gleichzeitige ZIP-Operationen. Bitte später erneut versuchen.',
@@ -100,7 +103,7 @@ export function createPostgresConcurrencyGate(
             releasePromise = (async () => {
               let destroy = false;
               try {
-                const result = await client.query<{ unlocked: boolean }>(
+                const result = await acquiredClient.query<{ unlocked: boolean }>(
                   'SELECT pg_advisory_unlock(1514480207, $1) AS unlocked',
                   [lockId]
                 );
@@ -118,7 +121,8 @@ export function createPostgresConcurrencyGate(
                   released = true;
                   active--;
                 }
-                client.release(destroy);
+                acquiredClient.release(destroy);
+                client = null;
               }
             })();
           }
@@ -143,7 +147,7 @@ export function createPostgresConcurrencyGate(
         // acquired the session lock even if the client never received its row.
         // Destroy the connection so an uncertain advisory lock cannot return
         // to the pool and strand one of the global ZIP slots.
-        client.release(true);
+        client?.release(true);
         next(error);
       }
     })();
