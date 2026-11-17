@@ -10,6 +10,18 @@ import { apiRequest } from '../lib/api.ts';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import { runAutonomousFilmProduction } from '../lib/filmProductionPipeline.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
+import type { CharacterKnowledge, ContinuityEvent, ContinuitySeries, SemanticContinuityConflict } from '../src/types/continuity.ts';
+
+interface ContinuitySeriesDetail {
+  series: ContinuitySeries;
+  knowledge: CharacterKnowledge[];
+  events: ContinuityEvent[];
+  relationships: Array<{ id: string; fromCharacterId: string; toCharacterId: string; type: string; description: string }>;
+  locations: Array<{ id: string; name: string; description: string }>;
+  sceneVersions: Array<{ id: string; sceneId: string; version: number }>;
+  conflicts: Array<{ knowledgeId: string; eventId: string; message: string }>;
+  semanticConflicts: SemanticContinuityConflict[];
+}
 
 interface FilmDirectorViewProps {
   projects: StudioProject[];
@@ -39,10 +51,38 @@ export function FilmDirectorView({
   const [productionWarnings, setProductionWarnings] = useState<string[]>([]);
   const [productionVideo, setProductionVideo] = useState<VideoRenderResult | null>(null);
   const [productionVideoProjectId, setProductionVideoProjectId] = useState('');
+  const [continuitySeries, setContinuitySeries] = useState<ContinuitySeries[]>([]);
+  const [selectedSeriesId, setSelectedSeriesId] = useState('');
+  const [continuityDetail, setContinuityDetail] = useState<ContinuitySeriesDetail | null>(null);
+  const [continuityLoading, setContinuityLoading] = useState(false);
+  const [newSeriesTitle, setNewSeriesTitle] = useState('');
+  const [seriesBibleDraft, setSeriesBibleDraft] = useState('');
+  const [savingSeriesBible, setSavingSeriesBible] = useState(false);
+  const [continuityNotice, setContinuityNotice] = useState('');
+  const [knowledgeDraft, setKnowledgeDraft] = useState({ id: '', characterId: '', fact: '', learnedAt: new Date().toISOString().slice(0, 16), factType: 'fact' as 'fact' | 'identity' | 'secret', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' });
+  const [eventDraft, setEventDraft] = useState({ id: '', title: '', description: '', occurredAt: new Date().toISOString().slice(0, 16), kind: 'fact' as 'scene' | 'fact' | 'death' | 'identity_reveal' | 'secret_reveal', subjectCharacterId: '', canonicalValue: '', timeMode: 'present' as 'present' | 'flashback' | 'dream', characterIds: [] as string[] });
+  const [savingContinuityItem, setSavingContinuityItem] = useState(false);
 
   useEffect(() => () => {
     if (productionVideo?.videoUrl.startsWith('blob:')) URL.revokeObjectURL(productionVideo.videoUrl);
   }, [productionVideo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<{ series: ContinuitySeries[] }>('/api/continuity/series').then((data) => { if (!cancelled) setContinuitySeries(data.series.filter((series) => !series.archivedAt)); }).catch((err) => { if (!cancelled) setContinuityNotice(err instanceof Error ? err.message : 'Serien konnten nicht geladen werden.'); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedSeriesId) { setContinuityDetail(null); setSeriesBibleDraft(''); return; }
+    let cancelled = false;
+    setContinuityLoading(true);
+    apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + selectedSeriesId).then((detail) => {
+      if (cancelled) return;
+      setContinuityDetail(detail); setSeriesBibleDraft(detail.series.bible || ''); setContinuityNotice('');
+    }).catch((err) => { if (!cancelled) setContinuityNotice(err instanceof Error ? err.message : 'Serienkontext konnte nicht geladen werden.'); }).finally(() => { if (!cancelled) setContinuityLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedSeriesId]);
 
   const [activeProjectId, setActiveProjectId] = useState(projects[0]?.id ?? '');
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -52,6 +92,53 @@ export function FilmDirectorView({
     'Erhöhe Spannung und emotionale Wirkung; überarbeite Erzähltext, Dialog und Untertitel.'
   );
   const [ttsSceneId, setTtsSceneId] = useState<string | null>(null);
+
+  async function handleCreateSeries() {
+    const title = newSeriesTitle.trim();
+    if (!title) return;
+    setContinuityNotice('');
+    try {
+      const created = await apiRequest<{ series: ContinuitySeries }>('/api/continuity/series', { method: 'POST', body: JSON.stringify({ title, logline: idea.trim(), genre, bible: '', projectIds: [] }) });
+      setContinuitySeries((current) => [created.series, ...current]); setSelectedSeriesId(created.series.id); setNewSeriesTitle(''); setContinuityNotice('Serie angelegt. Ergänze jetzt die Serienbibel.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Serie konnte nicht angelegt werden.'); }
+  }
+
+  async function handleSaveSeriesBible() {
+    if (!continuityDetail || savingSeriesBible) return;
+    setSavingSeriesBible(true);
+    try {
+      const updated = await apiRequest<{ series: ContinuitySeries }>('/api/continuity/series/' + continuityDetail.series.id, { method: 'PUT', body: JSON.stringify({ bible: seriesBibleDraft }) });
+      setContinuityDetail((current) => current ? { ...current, series: updated.series } : current);
+      setContinuitySeries((current) => current.map((series) => series.id === updated.series.id ? updated.series : series));
+      setContinuityNotice('Serienbibel gespeichert.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Serienbibel konnte nicht gespeichert werden.'); }
+    finally { setSavingSeriesBible(false); }
+  }
+
+  function localDateValue(value: string) { const date = new Date(value); const offset = date.getTimezoneOffset(); return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16); }
+  function isoDateValue(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(); }
+  async function handleSaveKnowledge() {
+    if (!continuityDetail || savingContinuityItem || !knowledgeDraft.characterId || !knowledgeDraft.fact.trim()) return;
+    setSavingContinuityItem(true);
+    try {
+      const payload = { characterId: knowledgeDraft.characterId, fact: knowledgeDraft.fact, learnedAt: isoDateValue(knowledgeDraft.learnedAt), factType: knowledgeDraft.factType, subjectCharacterId: knowledgeDraft.subjectCharacterId || undefined, canonicalValue: knowledgeDraft.canonicalValue || undefined, sourceEventId: knowledgeDraft.sourceEventId || undefined };
+      await apiRequest<{ knowledge: CharacterKnowledge }>(knowledgeDraft.id ? '/api/continuity/knowledge/' + knowledgeDraft.id : '/api/continuity/series/' + continuityDetail.series.id + '/knowledge', { method: knowledgeDraft.id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      const refreshed = await apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + continuityDetail.series.id); setContinuityDetail(refreshed);
+      setKnowledgeDraft({ id: '', characterId: '', fact: '', learnedAt: new Date().toISOString().slice(0,16), factType: 'fact', subjectCharacterId: '', canonicalValue: '', sourceEventId: '' }); setContinuityNotice('Figurenwissen gespeichert.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Figurenwissen konnte nicht gespeichert werden.'); } finally { setSavingContinuityItem(false); }
+  }
+  async function handleSaveEvent() {
+    if (!continuityDetail || savingContinuityItem || !eventDraft.title.trim()) return;
+    setSavingContinuityItem(true);
+    try {
+      const payload = { title: eventDraft.title, description: eventDraft.description, occurredAt: isoDateValue(eventDraft.occurredAt), kind: eventDraft.kind, subjectCharacterId: eventDraft.subjectCharacterId || undefined, canonicalValue: eventDraft.canonicalValue || undefined, timeMode: eventDraft.timeMode, characterIds: eventDraft.characterIds };
+      await apiRequest<{ event: ContinuityEvent }>(eventDraft.id ? '/api/continuity/events/' + eventDraft.id : '/api/continuity/series/' + continuityDetail.series.id + '/events', { method: eventDraft.id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      const refreshed = await apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + continuityDetail.series.id); setContinuityDetail(refreshed);
+      setEventDraft({ id: '', title: '', description: '', occurredAt: new Date().toISOString().slice(0,16), kind: 'fact', subjectCharacterId: '', canonicalValue: '', timeMode: 'present', characterIds: [] }); setContinuityNotice('Ereignis gespeichert.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Ereignis konnte nicht gespeichert werden.'); } finally { setSavingContinuityItem(false); }
+  }
+  function editKnowledge(item: CharacterKnowledge) { setKnowledgeDraft({ id: item.id, characterId: item.characterId, fact: item.fact, learnedAt: localDateValue(item.learnedAt), factType: item.factType || 'fact', subjectCharacterId: item.subjectCharacterId || '', canonicalValue: item.canonicalValue || '', sourceEventId: item.sourceEventId || '' }); }
+  function editEvent(item: ContinuityEvent) { setEventDraft({ id: item.id, title: item.title, description: item.description, occurredAt: localDateValue(item.occurredAt), kind: item.kind || 'fact', subjectCharacterId: item.subjectCharacterId || '', canonicalValue: item.canonicalValue || '', timeMode: item.timeMode || 'present', characterIds: item.characterIds || [] }); }
 
   async function handleCreateFilm(e: React.FormEvent) {
     e.preventDefault();
@@ -77,6 +164,7 @@ export function FilmDirectorView({
               targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
               characterId,
               generateImages,
+              ...(selectedSeriesId ? { seriesId: selectedSeriesId } : {}),
             }),
           });
           defaultCharacter = characters.find((item) => draft.project.characterIds.includes(item.id)) || defaultCharacter;
@@ -133,20 +221,24 @@ export function FilmDirectorView({
     }
   }
 
-  async function handleRegenerateScene(sceneId: string) {
-    if (!activeProject || regenSceneId) return;
+  async function handleRegenerateScene(sceneId: string, correction?: { conflictId: string; suggestion: string; projectId?: string }) {
+    const targetProject = correction?.projectId ? projects.find((item) => item.id === correction.projectId) : activeProject;
+    if (!targetProject || regenSceneId) return;
     setRegenSceneId(sceneId);
     setError(null);
     try {
-      const data = await apiRequest<{ project: StudioProject }>('/api/film/regenerate-scene', {
+      const data = await apiRequest<{ project: StudioProject; resolvedConflictId?: string }>('/api/film/regenerate-scene', {
         method: 'POST',
         body: JSON.stringify({
-          projectId: activeProject.id,
+          projectId: targetProject.id,
           sceneId,
-          instruction: regenInstruction,
+          instruction: correction?.suggestion || regenInstruction,
+          ...(correction ? { targetConflictId: correction.conflictId } : {}),
         }),
       });
       onProjectUpdated(data.project);
+      if (selectedSeriesId) { const detail = await apiRequest<ContinuitySeriesDetail>('/api/continuity/series/' + selectedSeriesId); setContinuityDetail(detail); }
+      if (data.resolvedConflictId) setContinuityNotice('Konflikt behoben: Szene wurde gezielt neu generiert und als neue Version gespeichert.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Szenen-Update fehlgeschlagen');
     } finally {
@@ -260,6 +352,46 @@ export function FilmDirectorView({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="rounded-xl border border-white/[0.08] bg-[#090B10] p-3 space-y-3">
+            <label className="text-xs text-slate-300 block mb-1.5">Continuity Engine · Serienkontext</label>
+            <select value={selectedSeriesId} onChange={(event) => setSelectedSeriesId(event.target.value)} className="w-full min-h-[42px] bg-[#11151E] border border-white/[0.1] rounded-lg px-3 text-xs text-white">
+              <option value="">Ohne Serienbindung produzieren</option>
+              {continuitySeries.map((series) => <option key={series.id} value={series.id}>{series.title}</option>)}
+            </select>
+            <div className="flex gap-2"><input value={newSeriesTitle} onChange={(event) => setNewSeriesTitle(event.target.value)} placeholder="Neue Serie anlegen" className="min-w-0 flex-1 min-h-[40px] bg-[#11151E] border border-white/[0.1] rounded-lg px-3 text-xs text-white" /><button type="button" onClick={handleCreateSeries} disabled={!newSeriesTitle.trim()} className="min-h-[40px] px-3 rounded-lg bg-white/[0.08] text-xs text-white disabled:opacity-40">Anlegen</button></div>
+            {continuityLoading && <p className="text-[11px] text-slate-400">Lade Serienbibel und Kontinuität...</p>}
+            {continuityDetail && <div className="space-y-2 border-t border-white/[0.08] pt-3">
+              <label className="text-[11px] text-slate-400 block">Serienbibel · wird ZERO DIRECTOR als Kanon übergeben</label>
+              <textarea rows={4} value={seriesBibleDraft} onChange={(event) => setSeriesBibleDraft(event.target.value)} placeholder="Weltregeln, Tonalität, zentrale Geheimnisse, Staffel- und Figurenbögen..." className="w-full bg-[#11151E] border border-white/[0.1] rounded-lg p-3 text-xs text-white" />
+              <button type="button" onClick={handleSaveSeriesBible} disabled={savingSeriesBible} className="min-h-[38px] px-3 rounded-lg bg-[#2563EB] text-xs text-white disabled:opacity-50">{savingSeriesBible ? "Speichert..." : "Serienbibel speichern"}</button>
+              <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.knowledge.length}</p><p className="text-[10px] text-slate-400">Wissenseinträge</p></div><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.events.length}</p><p className="text-[10px] text-slate-400">Ereignisse</p></div><div className="rounded-lg bg-white/[0.04] p-2"><p className="text-sm font-semibold text-white">{continuityDetail.relationships.length}</p><p className="text-[10px] text-slate-400">Beziehungen</p></div></div>
+              {continuityDetail.conflicts.length > 0 && <p className="text-[11px] text-rose-300">{continuityDetail.conflicts.length} Kontinuitätskonflikt(e) – Produktion wird bis zur Klärung gestoppt.</p>}
+              <div className="border-t border-white/[0.08] pt-3 space-y-3">
+                <h3 className="text-xs font-semibold text-white">Figurenwissen bearbeiten</h3>
+                <select value={knowledgeDraft.characterId} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, characterId: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Wissende Figur wählen</option>{characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                <textarea rows={2} value={knowledgeDraft.fact} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, fact: e.target.value }))} placeholder="Was weiß diese Figur?" className="w-full min-h-[72px] rounded-lg bg-[#11151E] border border-white/[0.1] p-3 text-xs text-white" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2"><select value={knowledgeDraft.factType} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, factType: e.target.value as typeof d.factType }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="fact">Allgemeines Wissen</option><option value="identity">Identitätswissen</option><option value="secret">Geheimniswissen</option></select><input type="datetime-local" value={knowledgeDraft.learnedAt} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, learnedAt: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white" /></div>
+                {knowledgeDraft.factType !== 'fact' && <><select value={knowledgeDraft.subjectCharacterId} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, subjectCharacterId: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Betroffene Figur wählen</option>{characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select><input value={knowledgeDraft.canonicalValue} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, canonicalValue: e.target.value }))} placeholder="Kanonische Identität / Geheimnis" className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white" /></>}
+                <select value={knowledgeDraft.sourceEventId} onChange={(e) => setKnowledgeDraft((d) => ({ ...d, sourceEventId: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Kein Quellereignis</option>{continuityDetail.events.map((event) => <option key={event.id} value={event.id}>{event.title}</option>)}</select>
+                <button type="button" onClick={handleSaveKnowledge} disabled={savingContinuityItem || !knowledgeDraft.characterId || !knowledgeDraft.fact.trim()} className="w-full min-h-[44px] rounded-lg bg-[#2563EB] text-xs font-medium text-white disabled:opacity-40">{savingContinuityItem ? 'Speichert...' : knowledgeDraft.id ? 'Wissenseintrag aktualisieren' : 'Wissenseintrag hinzufügen'}</button>
+                <div className="space-y-2">{continuityDetail.knowledge.map((fact) => <div key={fact.id} className="flex items-start justify-between gap-2 rounded-lg bg-white/[0.04] p-2"><div className="min-w-0"><p className="text-xs text-white">{characters.find((c) => c.id === fact.characterId)?.name || 'Figur'} · {fact.fact}</p><p className="text-[10px] text-slate-500">{fact.factType || 'Fakt'} · ab {new Date(fact.learnedAt).toLocaleString('de-DE')}</p></div><button type="button" onClick={() => editKnowledge(fact)} className="shrink-0 min-h-[40px] px-3 rounded-lg bg-white/[0.08] text-xs text-white">Bearbeiten</button></div>)}</div>
+              </div>
+              <div className="border-t border-white/[0.08] pt-3 space-y-3">
+                <h3 className="text-xs font-semibold text-white">Ereigniszeitachse bearbeiten</h3>
+                <input value={eventDraft.title} onChange={(e) => setEventDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Ereignistitel" className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white" />
+                <textarea rows={2} value={eventDraft.description} onChange={(e) => setEventDraft((d) => ({ ...d, description: e.target.value }))} placeholder="Was geschieht?" className="w-full min-h-[72px] rounded-lg bg-[#11151E] border border-white/[0.1] p-3 text-xs text-white" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2"><select value={eventDraft.kind} onChange={(e) => setEventDraft((d) => ({ ...d, kind: e.target.value as typeof d.kind }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="fact">Fakt / Ereignis</option><option value="death">Tod einer Figur</option><option value="identity_reveal">Identität enthüllt</option><option value="secret_reveal">Geheimnis enthüllt</option><option value="scene">Szenenereignis</option></select><input type="datetime-local" value={eventDraft.occurredAt} onChange={(e) => setEventDraft((d) => ({ ...d, occurredAt: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white" /></div>
+                {eventDraft.kind !== 'fact' && eventDraft.kind !== 'scene' && <><select value={eventDraft.subjectCharacterId} onChange={(e) => setEventDraft((d) => ({ ...d, subjectCharacterId: e.target.value }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Betroffene Figur wählen</option>{characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>{(eventDraft.kind === 'identity_reveal' || eventDraft.kind === 'secret_reveal') && <input value={eventDraft.canonicalValue} onChange={(e) => setEventDraft((d) => ({ ...d, canonicalValue: e.target.value }))} placeholder="Wahre Identität / Geheimnis" className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white" />}</>}
+                <label className="block text-[11px] text-slate-400">Figuren in diesem Ereignis</label><div className="flex flex-wrap gap-2">{characters.map((c) => <label key={c.id} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.04] px-3 text-xs text-slate-300"><input type="checkbox" checked={eventDraft.characterIds.includes(c.id)} onChange={(e) => setEventDraft((d) => ({ ...d, characterIds: e.target.checked ? [...d.characterIds, c.id] : d.characterIds.filter((id) => id !== c.id) }))} />{c.name}</label>)}</div>
+                <select value={eventDraft.timeMode} onChange={(e) => setEventDraft((d) => ({ ...d, timeMode: e.target.value as typeof d.timeMode }))} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="present">Gegenwart</option><option value="flashback">Rückblende</option><option value="dream">Traum / Vision</option></select>
+                <button type="button" onClick={handleSaveEvent} disabled={savingContinuityItem || !eventDraft.title.trim()} className="w-full min-h-[44px] rounded-lg bg-[#2563EB] text-xs font-medium text-white disabled:opacity-40">{savingContinuityItem ? 'Speichert...' : eventDraft.id ? 'Ereignis aktualisieren' : 'Ereignis hinzufügen'}</button>
+                <div className="space-y-2">{continuityDetail.events.slice().sort((a,b) => a.occurredAt.localeCompare(b.occurredAt)).map((event) => <div key={event.id} className="flex items-start justify-between gap-2 rounded-lg bg-white/[0.04] p-2"><div className="min-w-0"><p className="text-xs text-white">{event.title}</p><p className="text-[10px] text-slate-500">{new Date(event.occurredAt).toLocaleString('de-DE')} · {event.kind || 'Fakt'}</p></div><button type="button" onClick={() => editEvent(event)} className="shrink-0 min-h-[40px] px-3 rounded-lg bg-white/[0.08] text-xs text-white">Bearbeiten</button></div>)}</div>
+              </div>
+              {continuityDetail.semanticConflicts.length > 0 && <div className="border-t border-rose-500/20 pt-3 space-y-2"><h3 className="text-xs font-semibold text-rose-300">Story-Supervisor · {continuityDetail.semanticConflicts.length} Konflikt(e)</h3>{continuityDetail.semanticConflicts.map((conflict) => <div key={conflict.id} className="rounded-lg border border-rose-500/20 bg-rose-500/[0.05] p-3 space-y-2"><p className="text-xs text-white">{conflict.message}</p><p className="text-[11px] text-slate-400">Vorschlag: {conflict.suggestion}</p>{conflict.sceneId && <button type="button" onClick={() => handleRegenerateScene(conflict.sceneId!, { conflictId: conflict.id, suggestion: conflict.suggestion, projectId: conflict.projectId })} disabled={Boolean(regenSceneId)} className="w-full min-h-[44px] rounded-lg bg-[#2563EB] text-xs text-white disabled:opacity-40">{regenSceneId === conflict.sceneId ? 'Korrigiert Szene...' : 'Diese Szene gezielt korrigieren'}</button>}</div>)}</div>}
+            </div>}
+            {continuityNotice && <p className="text-[11px] text-slate-400">{continuityNotice}</p>}
           </div>
 
           <label className="flex items-center gap-2 text-xs text-slate-300 min-h-[40px] cursor-pointer">

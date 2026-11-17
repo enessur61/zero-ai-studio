@@ -124,11 +124,19 @@ try {
   });
   assert.equal((await json(secondVersionResponse)).sceneVersion.version, 2);
 
+  const typedEvent = await request(`/series/${seriesId}/events`, 'POST', { title: 'Wahre Identität', occurredAt: '2026-11-17T12:00:00.000Z', kind: 'identity_reveal', subjectCharacterId: 'character-a', canonicalValue: 'Mara Winter' });
+  assert.equal(typedEvent.status, 201);
+  const invalidReveal = await request(`/series/${seriesId}/events`, 'POST', { title: 'Ungültige Enthüllung', occurredAt: '2026-11-17T12:00:00.000Z', kind: 'secret_reveal', subjectCharacterId: 'character-a' });
+  assert.equal(invalidReveal.status, 400, 'reveal events must include a canonical value');
+  const typedKnowledge = await request(`/series/${seriesId}/knowledge`, 'POST', { characterId: 'character-b', fact: 'Kennt die Tarnidentität', factType: 'identity', subjectCharacterId: 'character-a', canonicalValue: 'Mara Winter', learnedAt: '2026-11-17T12:01:00.000Z' });
+  assert.equal(typedKnowledge.status, 201);
+
   const seriesDetail = await json(await request(`/series/${seriesId}`));
-  assert.equal(seriesDetail.knowledge.length, 1);
+  assert.equal(seriesDetail.knowledge.length, 2);
   assert.equal(seriesDetail.relationships.length, 1);
   assert.equal(seriesDetail.locations.length, 1);
-  assert.equal(seriesDetail.events.length, 1);
+  assert.equal(seriesDetail.events.length, 2);
+  assert.ok(Array.isArray(seriesDetail.semanticConflicts));
   assert.equal(seriesDetail.sceneVersions.length, 2);
 
   forceConflict = true;
@@ -143,7 +151,7 @@ try {
   assert.equal(archived.status, 200);
   assert.equal((await json(archived)).archived, true);
   assert.equal(db.continuity?.series.length, 1, 'series record must be retained');
-  assert.equal(db.continuity?.knowledge.length, 1, 'knowledge must not be cascade-deleted');
+  assert.equal(db.continuity?.knowledge.length, 2, 'knowledge must not be cascade-deleted');
   assert.equal(db.continuity?.locations.length, 1, 'failed revision writes must not leak into persisted state');
   assert.equal(db.continuity?.sceneVersions.length, 2, 'scene snapshots must be retained');
 
