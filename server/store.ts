@@ -520,6 +520,14 @@ export async function loadDb(): Promise<ZeroDatabase> {
         (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
         prev.adapterId === def.adapterId
       );
+      const preserveNativeClientActivation = Boolean(
+        prev &&
+        requiresNativeRuntimeVerification &&
+        prev.adapterId === def.adapterId &&
+        prev.status === 'BROWSER TEST ERFORDERLICH' &&
+        prev.testPassed === false &&
+        prev.hasRealAdapter === false
+      );
       const requiresUnverifiedLocalRuntime =
         requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification;
       const merged: ModelDefinition = shouldKeepPrevState
@@ -540,7 +548,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
               enabled: def.requiresPaidKey ? false : (preserveAvailabilityToggle ? prev!.enabled : false),
               hasRealAdapter: false,
               testPassed: false,
-              status: requiresNativeRuntimeVerification ? 'INSTALLATION ERFORDERLICH' : 'BROWSER TEST ERFORDERLICH',
+              status: requiresNativeRuntimeVerification && !preserveNativeClientActivation ? 'INSTALLATION ERFORDERLICH' : 'BROWSER TEST ERFORDERLICH',
               lastTestedAt: null,
               lastTestLatencyMs: null,
               lastTestMessage: def.lastTestMessage,
