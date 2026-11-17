@@ -51,6 +51,9 @@ export function sanitizeProjectScenes(scenes: FilmScene[]): FilmScene[] {
   if (!Array.isArray(scenes)) return [];
   return scenes.map((scene) => {
     const safeScene = { ...scene };
+    // Generated clip URLs are transient browser object URLs. Clip bytes are stored
+    // in local IndexedDB and mirrored into the owning project's durable assets.
+    delete safeScene.videoUrl;
     if (safeScene.imageUrl !== undefined && !isSafeProjectAssetUrl(safeScene.imageUrl, 'image')) {
       delete safeScene.imageUrl;
     }
