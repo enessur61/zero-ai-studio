@@ -343,3 +343,73 @@ PR #84 remains Open and Draft. No merge and no deployment.
 - CI #776 initially failed in the first version of the new concurrency test due to a race in the test's slot-reuse assertion. The test was simplified to a deterministic single-slot HTTP scenario; CI #777 then passed. No production failure was observed.
 - Non-blocking warnings: missing `go.sum` cache key, Node.js 20 action deprecation notices, `punycode` deprecation, and existing Vite chunk-size warning. PostgreSQL NOT NULL and injected ZIP publication errors are intentional negative-test fixtures.
 - Scope: tests use CI's isolated PostgreSQL database and a local Express HTTP server. No production database restart, live deployment, or production data mutation was performed.
+
+
+## Phase 1 — production foundations (2026-11-17)
+
+### Confirmed findings before the changes
+
+- Production authentication, login throttling, and Gemini quota enforcement relied on process-local state or lacked a shared atomic reservation boundary. Two server instances could disagree about sessions, attempts, or remaining quota.
+- ZIP download/restore admission was bounded per process, not across processes. A response closing before an asynchronous handler settled could release capacity too early.
+- PostgreSQL-backed application reads could return a process-local `dbCache` without observing a write committed by another instance.
+- Generated scene clips were kept in browser-local IndexedDB/object URLs and were not reliably available to another device or after browser storage loss.
+- The Wan worker kept job metadata in memory and wrote output files to its configured output directory; restart durability depended on an external persistent mount and was not enforced.
+
+### Changes on the PR branch
+
+1. **Shared authentication**
+   - Added PostgreSQL-backed session records containing SHA-256 token hashes, with HMAC-signed session cookies and expiry checks.
+   - Added atomic PostgreSQL login-attempt upserts keyed by an HMAC of the client IP; expired windows are cleaned opportunistically and indexed by `reset_at`.
+   - Serialized first-use authentication schema DDL with a transaction-scoped PostgreSQL advisory lock so simultaneous instance starts do not race table creation.
+   - Production session creation, validation, and revocation now use the shared store; logout on one instance revokes the session on another.
+
+2. **Shared Gemini quota reservations**
+   - Added an atomic per-model reservation ledger in PostgreSQL. Reservations are made before a Gemini provider call and are bounded by the configured daily limit/reset date.
+   - Provider quota exhaustion marks the shared reservation row exhausted for all instances. An explicit, persisted quota reset clears the shared row only after the application reset state is saved.
+   - Reservations are intentionally conservative: a request that fails before the provider accepts it may still consume one application reservation. No live paid-provider fallback was introduced.
+
+3. **Global ZIP operation admission**
+   - HTTP ZIP downloads/restores and background ZIP publication share PostgreSQL session-level advisory-lock slots, with a global maximum of two operations across application instances.
+   - The lock is retained until both the asynchronous handler has settled and the response has finished/closed. Client disconnect alone does not release a slot while restore work continues.
+   - Uncertain lock acquisition/unlock failures destroy the PostgreSQL connection so an ambiguous session-level lock cannot be returned to the pool. Pool acquisition errors are forwarded to Express error handling.
+   - The PostgreSQL pool maximum was raised to five to leave room for two held ZIP leases and normal request/database work.
+
+4. **Cross-instance application-state reads**
+   - When `DATABASE_URL` is configured, `loadDb()` now reads the current PostgreSQL state instead of returning the process-local cache.
+   - State normalization is persisted only when the JSON-serializable normalized shape differs from the stored payload; unchanged reads do not intentionally rewrite the full state.
+   - Concurrent writes remain revision-checked. A stale writer receives a conflict rather than silently overwriting a newer revision.
+   - Local-runtime verification metadata is reset to unverified on server reads. Only the user's availability preference is retained for matching local adapters; a server-side probe cannot certify browser/iPhone inference.
+
+5. **Project scene-media persistence**
+   - Scene clips are still cached in IndexedDB, but are now also mirrored into the owning project's persisted assets so another instance/device can retrieve them.
+   - Uploads are bounded to 8 MB per clip and 24 MB of encoded scene-clip data per project. The upload response does not echo the large data URL.
+   - The production smoke test verifies cross-instance read-after-write and that clips survive JSON backup restore and ZIP backup restore.
+   - A PostgreSQL integration test additionally opens the actual published production ZIP blob, verifies its archive integrity, extracts `data/zero-studio-db.json`, and checks the exact saved scene media URL is present.
+
+6. **GPU worker job persistence**
+   - Added a standard-library SQLite job store under `WAN_OUTPUT_DIR`; completed job metadata and output MP4 paths survive process restarts when the directory is on a persistent mounted volume.
+   - Jobs interrupted in `queued` or `running` state are marked failed after restart; they are not automatically replayed. Successful records whose MP4 is missing are marked failed.
+   - The Docker image defaults to `/data/zero-wan-jobs` and `WAN_REQUIRE_PERSISTENT_STORAGE=true`, failing closed when the configured output directory is not on a mounted volume.
+   - The SQLite job store is for a single worker instance. It is not a distributed multi-worker queue.
+
+### Reproducible verification
+
+- Production-mode CI smoke test starts two independent Node/Express server processes against the same isolated PostgreSQL service.
+- Cross-instance HTTP assertions cover: session creation on A / access on B / logout on B / revocation on A; login-attempt limits shared across A and B; project read-after-write; scene media read-after-write from the other instance; and media availability after JSON and ZIP restore.
+- PostgreSQL integration tests use independent pools and cover atomic concurrent login attempts, session expiry/revocation, simultaneous schema bootstrap, shared Gemini reservations/exhaustion/reset, shared ZIP lock capacity, response completion, client disconnect while handler work continues, background ZIP leases, uncertain connection cleanup, and pool connection acquisition failure forwarding.
+- GPU worker storage tests reopen the SQLite store after a simulated process restart, verify interrupted-job handling and completed-file retention, and test persisted job deletion.
+- CI #868 passed all 20 job steps on commit `e3c66a4267a74f270d28fa58647eb91e5fa47b05`: [full workflow run](https://github.com/enessur61/zero-ai-studio/actions/runs/43986189954). The complete job log was retrieved and reviewed (1,107 lines / 103,699 characters). Lint, npm tests, Python worker tests, PostgreSQL integration, build, production smoke test, post-job cleanup, and container stop all succeeded.
+
+### Remaining limits — not a production deployment certification
+
+- CI uses an isolated local PostgreSQL service and two local production-mode server processes. No live Render deployment, production database restart, or production data mutation was performed.
+- Scene video bytes are currently stored in project JSONB assets, not a dedicated media/blob store. The per-clip and per-project limits bound the payload, but full-state reads and project snapshots can amplify database and memory usage. A dedicated media table/object store is preferable before larger clips or high project volume.
+- Database-backed `loadDb()` reads the full JSONB state per request. Correctness across instances is improved, but a representative production load/performance test is still required.
+- Revision-checked writes prevent silent lost updates, but concurrent edits can still return a conflict; client-wide reload/retry behavior has not been proven for every mutation workflow.
+- The global ZIP gate has no explicit operation deadline/cancellation mechanism. A genuinely hung handler retains its slot until it settles or its PostgreSQL connection/process is lost.
+- The PostgreSQL pool size and total connection budget must be re-evaluated against the actual number of Render instances and database connection limits.
+- The GPU worker still requires an actual persistent disk mount in its deployment environment. No Render disk was provisioned and no GPU inference/restart was run against a live worker. SQLite job storage is single-instance only; interrupted jobs are marked failed rather than resumed.
+- Gemini reservations were tested with isolated PostgreSQL pools, not a live Gemini provider key. The application ledger is a conservative guard, not a guarantee of Google's external quota state.
+- No native iPhone device test was performed in this phase.
+
+**Safety boundary:** PR #84 remains Open and Draft. No merge and no deployment were performed.
