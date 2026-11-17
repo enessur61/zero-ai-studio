@@ -80,7 +80,7 @@ function baseBudget(): BudgetGuardState {
   const quotaMessage = formatGermanApiError(realQuota);
   assert.match(quotaMessage, /ausgeschöpft/);
   assert.match(formatGermanApiError(rateLimit), /Rate-Limit/);
-  assert.match(formatGermanApiError(new Error('503 UNAVAILABLE')), /503/);
+  assert.match(formatGermanApiError(new Error('503 UNAVAILABLE')), /HTTP 5xx/);
   assert.doesNotMatch(
     formatGermanApiError(new Error('503 UNAVAILABLE: high demand')),
     /ausgeschöpft/,
