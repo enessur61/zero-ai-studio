@@ -65,6 +65,9 @@ export function FilmDirectorView({
   const [dramaturgyAiError, setDramaturgyAiError] = useState('');
   const [dramaturgyVersions, setDramaturgyVersions] = useState<Array<any>>([]);
   const [dramaturgyDecisions, setDramaturgyDecisions] = useState<Array<any>>([]);
+  const [dramaturgyApplications, setDramaturgyApplications] = useState<Array<any>>([]);
+  const [correctionDraft, setCorrectionDraft] = useState<{ version: number; findingId: string; projectId: string; sceneId: string; field: 'narrationText' | 'dialogueText' | 'subtitleText'; replacementText: string; confirmed: boolean } | null>(null);
+  const [applyingCorrection, setApplyingCorrection] = useState(false);
   const [dramaturgyAiResult, setDramaturgyAiResult] = useState<{
     overallAssessment: string;
     characterAnalyses: Array<{ characterId: string; psychologicalProfile: string; coreMotivation: string; emotionalArc: string; relationshipDynamics: string[]; contradictions: string[] }>;
@@ -92,10 +95,10 @@ export function FilmDirectorView({
   }, []);
 
   useEffect(() => {
-    if (!selectedSeriesId) { setDramaturgyVersions([]); setDramaturgyDecisions([]); return; }
+    if (!selectedSeriesId) { setDramaturgyVersions([]); setDramaturgyDecisions([]); setDramaturgyApplications([]); setDramaturgyApplications([]); setCorrectionDraft(null); return; }
     let cancelled = false;
-    apiRequest<{ analyses: any[]; decisions: any[] }>('/api/continuity/series/' + selectedSeriesId + '/dramaturgy-analyses')
-      .then((data) => { if (!cancelled) { setDramaturgyVersions(data.analyses.sort((a,b) => b.version-a.version)); setDramaturgyDecisions(data.decisions); } })
+    apiRequest<{ analyses: any[]; decisions: any[]; applications: any[] }>('/api/continuity/series/' + selectedSeriesId + '/dramaturgy-analyses')
+      .then((data) => { if (!cancelled) { setDramaturgyVersions(data.analyses.sort((a,b) => b.version-a.version)); setDramaturgyDecisions(data.decisions); setDramaturgyApplications(data.applications ?? []); } })
       .catch(() => { if (!cancelled) { setDramaturgyVersions([]); setDramaturgyDecisions([]); } });
     return () => { cancelled = true; };
   }, [selectedSeriesId]);
@@ -140,8 +143,34 @@ export function FilmDirectorView({
         method: 'POST', body: JSON.stringify({ findingId, approved, note: approved ? 'Manuell durch Regie freigegeben' : 'Manuell durch Regie abgelehnt' }),
       });
       setDramaturgyDecisions((current) => [...current, result.decision]);
-      setContinuityNotice(approved ? 'Korrekturvorschlag freigegeben. Er wird nicht automatisch angewendet.' : 'Korrekturvorschlag abgelehnt.');
+      if (approved) setCorrectionDraft({ version, findingId, projectId: continuityDetail?.series.projectIds[0] ?? '', sceneId: '', field: 'dialogueText', replacementText: '', confirmed: false });
+      else setCorrectionDraft((current) => current?.version === version && current.findingId === findingId ? null : current);
+      setContinuityNotice(approved ? 'Freigabe gespeichert. Wähle jetzt Szene und Textfeld und prüfe die Änderung.' : 'Korrekturvorschlag abgelehnt.');
     } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Entscheidung konnte nicht gespeichert werden.'); }
+  }
+
+  async function handleApplyDramaturgyCorrection() {
+    if (!selectedSeriesId || !correctionDraft || !correctionDraft.confirmed || applyingCorrection) return;
+    const project = projects.find((item) => item.id === correctionDraft.projectId);
+    const scene = project?.scenes.find((item) => item.id === correctionDraft.sceneId);
+    if (!project || !scene) { setContinuityNotice('Bitte ein gültiges Serienprojekt und eine Szene auswählen.'); return; }
+    const latest = [...dramaturgyDecisions].reverse().find((item) => item.analysisVersionId === dramaturgyVersions.find((v) => v.version === correctionDraft.version)?.id && item.findingId === correctionDraft.findingId);
+    if (!latest || latest.decision !== 'approved') { setContinuityNotice('Keine aktuell gültige Freigabe. Bitte Analysehistorie aktualisieren.'); return; }
+    setApplyingCorrection(true);
+    try {
+      const result = await apiRequest<{ applied: boolean; application: any; sceneVersion: any }>(`/api/continuity/series/${selectedSeriesId}/dramaturgy-analyses/${correctionDraft.version}/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ decisionId: latest.id, findingId: correctionDraft.findingId, projectId: project.id, sceneId: scene.id, field: correctionDraft.field, expectedPreviousText: scene[correctionDraft.field] ?? '', replacementText: correctionDraft.replacementText }),
+      });
+      const updated = await apiRequest<{ project: StudioProject }>(`/api/projects/${project.id}`, {
+        method: 'PUT', body: JSON.stringify({ scenes: project.scenes.map((item) => item.id === scene.id ? { ...item, [correctionDraft.field]: correctionDraft.replacementText } : item), snapshotNote: 'Manuell bestätigte Dramaturgie-Korrektur' }),
+      });
+      onProjectUpdated(updated.project);
+      setDramaturgyApplications((current) => [...current, result.application]);
+      setCorrectionDraft(null);
+      setContinuityNotice('Korrektur angewendet. Der vorherige Szenenstand wurde versioniert gesichert.');
+    } catch (err) { setContinuityNotice(err instanceof Error ? err.message : 'Korrektur konnte nicht angewendet werden.'); }
+    finally { setApplyingCorrection(false); }
   }
 
   async function handleCreateSeries() {
@@ -445,9 +474,17 @@ export function FilmDirectorView({
                        {version.comparison.newSubtext.map((item:string,i:number)=><p key={'subtext'+i} className="text-[10px] text-violet-200">Neuer Subtext: {item}</p>)}
                        {version.comparison.resolvedSubtext.map((item:string,i:number)=><p key={'subtext-resolved'+i} className="text-[10px] text-slate-400">Subtext nicht mehr gemeldet: {item}</p>)}
                      </>}
-                     {version.analysis.findings.map((finding:any) => { const latest = [...dramaturgyDecisions].filter((d:any)=>d.analysisVersionId===version.id&&d.findingId===finding.id).sort((a:any,b:any)=>b.createdAt.localeCompare(a.createdAt))[0]; return <div key={finding.id} className="rounded-md border border-white/[0.06] p-2"><p className="text-[10px] text-slate-300">{finding.episodeTitle} / {finding.sceneTitle} · {finding.category}</p><p className="text-[10px] text-white">{finding.recommendation}</p><p className="text-[10px] text-slate-500">Status: {latest?.decision === 'approved' ? 'Freigegeben' : latest?.decision === 'rejected' ? 'Abgelehnt' : 'Offen'}</p>{!latest && <div className="flex gap-2 pt-1"><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,true)} className="min-h-[34px] rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-200">Freigeben</button><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,false)} className="min-h-[34px] rounded-md bg-rose-500/15 px-2 text-[10px] text-rose-200">Ablehnen</button></div>}</div>; })}
+                     {version.analysis.findings.map((finding:any) => { const latest = [...dramaturgyDecisions].filter((d:any)=>d.analysisVersionId===version.id&&d.findingId===finding.id).sort((a:any,b:any)=>b.createdAt.localeCompare(a.createdAt))[0]; return <div key={finding.id} className="rounded-md border border-white/[0.06] p-2"><p className="text-[10px] text-slate-300">{finding.episodeTitle} / {finding.sceneTitle} · {finding.category}</p><p className="text-[10px] text-white">{finding.recommendation}</p><p className="text-[10px] text-slate-500">Status: {latest?.decision === 'approved' ? 'Freigegeben' : latest?.decision === 'rejected' ? 'Abgelehnt' : 'Offen'}</p>{!latest && <div className="flex gap-2 pt-1"><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,true)} className="min-h-[34px] rounded-md bg-emerald-500/15 px-2 text-[10px] text-emerald-200">Freigeben</button><button type="button" onClick={()=>handleDramaturgyDecision(version.version,finding.id,false)} className="min-h-[34px] rounded-md bg-rose-500/15 px-2 text-[10px] text-rose-200">Ablehnen</button></div>}{latest?.decision === 'approved' && !dramaturgyApplications.some((a:any)=>a.decisionId===latest.id) && <button type="button" onClick={()=>setCorrectionDraft({version:version.version,findingId:finding.id,projectId:continuityDetail.series.projectIds[0] ?? '',sceneId:'',field:'dialogueText',replacementText:'',confirmed:false})} className="mt-2 min-h-[36px] rounded-md border border-cyan-400/30 px-3 text-[10px] text-cyan-100">Manuelle Korrektur vorbereiten</button>}{dramaturgyApplications.some((a:any)=>a.findingId===finding.id&&a.analysisVersionId===version.id) && <p className="text-[10px] text-emerald-300">Korrektur bereits angewendet · Snapshot gesichert</p>}</div>; })}
                    </div>)}
                    <p className="text-[10px] text-slate-500">Eine Freigabe allein verändert keine Szene. Die Anwendung verlangt eine konkrete manuelle Textfassung und sichert vorher den bisherigen Szenenstand.</p>
+                 </div>}
+                 {correctionDraft && <div className="space-y-3 rounded-lg border border-cyan-400/30 bg-cyan-950/10 p-3">
+                   <div><p className="text-xs font-semibold text-cyan-100">Manuelle Korrektur · Version {correctionDraft.version}</p><p className="text-[10px] text-slate-400">Freigabe liegt vor. Die Änderung wird erst nach Vorschau und deiner ausdrücklichen Bestätigung angewendet.</p></div>
+                   <label className="block space-y-1"><span className="text-[10px] text-slate-300">Serienprojekt</span><select value={correctionDraft.projectId} onChange={(e)=>setCorrectionDraft((d)=>d?{...d,projectId:e.target.value,sceneId:'',confirmed:false}:d)} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Projekt auswählen</option>{projects.filter((p)=>continuityDetail.series.projectIds.includes(p.id)).map((p)=><option key={p.id} value={p.id}>{p.title}</option>)}</select></label>
+                   <label className="block space-y-1"><span className="text-[10px] text-slate-300">Szene</span><select value={correctionDraft.sceneId} onChange={(e)=>setCorrectionDraft((d)=>d?{...d,sceneId:e.target.value,confirmed:false}:d)} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="">Szene auswählen</option>{(projects.find((p)=>p.id===correctionDraft.projectId)?.scenes ?? []).map((scene)=><option key={scene.id} value={scene.id}>{scene.index+1}. {scene.title}</option>)}</select></label>
+                   <label className="block space-y-1"><span className="text-[10px] text-slate-300">Textfeld</span><select value={correctionDraft.field} onChange={(e)=>setCorrectionDraft((d)=>d?{...d,field:e.target.value as typeof d.field,confirmed:false}:d)} className="w-full min-h-[44px] rounded-lg bg-[#11151E] border border-white/[0.1] px-3 text-xs text-white"><option value="narrationText">Erzähltext</option><option value="dialogueText">Dialog</option><option value="subtitleText">Untertitel</option></select></label>
+                   {(() => { const scene=projects.find((p)=>p.id===correctionDraft.projectId)?.scenes.find((item)=>item.id===correctionDraft.sceneId); const previous=scene?.[correctionDraft.field] ?? ''; return <><div className="space-y-1"><p className="text-[10px] text-slate-300">Vorher</p><div className="whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-[11px] text-slate-400">{previous || '— leer —'}</div></div><label className="block space-y-1"><span className="text-[10px] text-slate-300">Nachher · Textfassung selbst festlegen</span><textarea rows={5} value={correctionDraft.replacementText} onChange={(e)=>setCorrectionDraft((d)=>d?{...d,replacementText:e.target.value,confirmed:false}:d)} placeholder="Deine überarbeitete Textfassung …" className="w-full min-h-[120px] rounded-lg bg-[#11151E] border border-white/[0.1] p-3 text-xs text-white" /></label><div className="space-y-1"><p className="text-[10px] text-slate-300">Vorschau Nachher</p><div className="whitespace-pre-wrap rounded-lg border border-emerald-400/20 bg-emerald-950/10 p-3 text-[11px] text-emerald-100">{correctionDraft.replacementText || 'Noch keine neue Textfassung'}</div></div><label className="flex items-start gap-2 text-[10px] text-slate-300"><input type="checkbox" checked={correctionDraft.confirmed} onChange={(e)=>setCorrectionDraft((d)=>d?{...d,confirmed:e.target.checked}:d)} className="mt-0.5" />Ich habe Vorher/Nachher geprüft und bestätige ausdrücklich, dass diese Textfassung die ausgewählte Szene ersetzen darf.</label><button type="button" disabled={applyingCorrection||!correctionDraft.confirmed||!correctionDraft.replacementText.trim()||!scene||correctionDraft.replacementText===previous} onClick={handleApplyDramaturgyCorrection} className="w-full min-h-[44px] rounded-lg bg-cyan-500/20 px-3 text-xs font-semibold text-cyan-100 disabled:opacity-40">{applyingCorrection?'Wird angewendet …':'Bestätigen und Korrektur anwenden'}</button></>; })()}
+                   <button type="button" onClick={()=>setCorrectionDraft(null)} className="min-h-[36px] rounded-md px-3 text-[10px] text-slate-400">Abbrechen</button>
                  </div>}
                  {continuityDetail.storySupervisor.dramaturgyInsights.length > 0 && <div className="space-y-2"><p className="text-[11px] text-slate-300">Dramaturgische Signale · regelbasiert, keine KI-Gewissheit</p>{continuityDetail.storySupervisor.dramaturgyInsights.slice(0, 12).map((insight) => <div key={insight.id} className="rounded-lg bg-black/20 p-2"><p className="text-[10px] text-cyan-200">{insight.category === 'emotion' ? 'Emotion' : insight.category === 'motivation' ? 'Motivation' : 'Möglicher Widerspruch'} · {insight.characterName} · {insight.episodeTitle}</p><p className="text-[10px] text-slate-300">{insight.evidence}</p><p className="text-[10px] text-slate-500">Prüfvorschlag: {insight.recommendation}</p></div>)}</div>}
                  {continuityDetail.storySupervisor.dataWarnings.length > 0 && <p className="text-[10px] text-amber-300">{continuityDetail.storySupervisor.dataWarnings.length} Daten-/Zeitachsenhinweis(e) prüfen.</p>}

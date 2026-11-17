@@ -57,6 +57,12 @@ export interface DramaturgyDecision {
   decision: 'approved' | 'rejected'; note: string; createdAt: string;
 }
 
+export interface DramaturgyApplication {
+  id: string; seriesId: string; analysisVersionId: string; findingId: string; decisionId: string;
+  projectId: string; sceneId: string; field: 'narrationText' | 'dialogueText' | 'subtitleText';
+  previousText: string; replacementText: string; createdAt: string;
+}
+
 export interface ContinuityState {
   series: ContinuitySeries[];
   knowledge: CharacterKnowledge[];
@@ -66,7 +72,8 @@ export interface ContinuityState {
   sceneVersions: SceneVersion[];
   dramaturgyAnalyses: DramaturgyAnalysisVersion[];
   dramaturgyDecisions: DramaturgyDecision[];
+  dramaturgyApplications: DramaturgyApplication[];
 }
 export function emptyContinuityState(): ContinuityState {
-  return { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [] };
+  return { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [], dramaturgyApplications: [] };
 }

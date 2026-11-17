@@ -482,7 +482,8 @@ export async function loadDb(): Promise<ZeroDatabase> {
       sceneVersions: Array.isArray(parsed.continuity.sceneVersions) ? parsed.continuity.sceneVersions : [],
       dramaturgyAnalyses: Array.isArray(parsed.continuity.dramaturgyAnalyses) ? parsed.continuity.dramaturgyAnalyses : [],
       dramaturgyDecisions: Array.isArray(parsed.continuity.dramaturgyDecisions) ? parsed.continuity.dramaturgyDecisions : [],
-    } : { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [] };
+      dramaturgyApplications: Array.isArray(parsed.continuity.dramaturgyApplications) ? parsed.continuity.dramaturgyApplications : [],
+    } : { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [], dramaturgyApplications: [] };
     const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));

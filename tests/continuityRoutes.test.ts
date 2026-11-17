@@ -10,7 +10,7 @@ import type { ZeroDatabase } from '../server/store.ts';
 
 let db = {
   characters: [{ id: 'character-a' }, { id: 'character-b' }],
-  projects: [{ id: 'project-a', scenes: [{ id: 'scene-a', title: 'Original scene', durationSec: 12 }] }],
+  projects: [{ id: 'project-a', title: 'Testprojekt', scenes: [{ id: 'scene-a', index: 0, title: 'Original scene', durationSec: 12, narrationText: 'Alter Erzähltext', dialogueText: 'Alter Dialog', subtitleText: 'Alter Untertitel' }] }],
   continuity: emptyContinuityState(),
 } as unknown as ZeroDatabase;
 
@@ -78,6 +78,47 @@ try {
   const updated = await request(`/series/${seriesId}`, 'PUT', { title: 'Testserie 2', projectIds: ['project-a'] });
   assert.equal(updated.status, 200);
   assert.equal((await json(updated)).series.title, 'Testserie 2');
+
+  const analysis = {
+    id: 'analysis-test-1', seriesId, version: 1, createdAt: new Date().toISOString(), modelId: 'local-test-model',
+    costMode: 'local' as const, sourceFingerprint: 'test-fingerprint',
+    analysis: { overallAssessment: 'Testanalyse', characterAnalyses: [], storyRecommendations: [], findings: [
+      { id: 'finding-test-1', category: 'motivation', severity: 'warning', characterIds: ['character-a'], episodeTitle: 'Episode 1', sceneTitle: 'Original scene', evidence: 'Alter Erzähltext', interpretation: 'Motivation unklar', recommendation: 'Dialog präzisieren', confidence: 'high' },
+    ] },
+  };
+  db.continuity!.series.push({ id: seriesId, title: 'Testserie', logline: '', genre: '', bible: '', projectIds: ['project-a'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  db.continuity!.dramaturgyAnalyses.push(analysis);
+
+  const applyPath = `/series/${seriesId}/dramaturgy-analyses/1/apply`;
+  const applyBody = (decisionId: string) => ({ decisionId, findingId: 'finding-test-1', projectId: 'project-a', sceneId: 'scene-a', field: 'dialogueText', expectedPreviousText: 'Alter Dialog', replacementText: 'Neuer, manuell geprüfter Dialog' });
+  const noApproval = await request(applyPath, 'POST', applyBody('missing-approval'));
+  assert.equal(noApproval.status, 403, 'application without manual approval must be blocked');
+
+  const rejectedResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: false, note: 'Abgelehnt' });
+  assert.equal(rejectedResponse.status, 201);
+  const rejectedDecision = (await json(rejectedResponse)).decision;
+  const rejectedApply = await request(applyPath, 'POST', applyBody(rejectedDecision.id));
+  assert.equal(rejectedApply.status, 403, 'a rejected correction must never be applied');
+
+  const firstApprovalResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: true, note: 'Freigegeben' });
+  const firstApproval = (await json(firstApprovalResponse)).decision;
+  const laterRejectionResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: false, note: 'Freigabe widerrufen' });
+  assert.equal(laterRejectionResponse.status, 201);
+  const staleApply = await request(applyPath, 'POST', applyBody(firstApproval.id));
+  assert.equal(staleApply.status, 403, 'a superseded approval must not authorize application');
+
+  const finalApprovalResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: true, note: 'Erneut ausdrücklich freigegeben' });
+  const finalApproval = (await json(finalApprovalResponse)).decision;
+  const successfulApply = await request(applyPath, 'POST', applyBody(finalApproval.id));
+  assert.equal(successfulApply.status, 200);
+  const applied = await json(successfulApply);
+  assert.equal(applied.applied, true);
+  assert.equal(applied.sceneVersion.snapshot.dialogueText, 'Alter Dialog', 'snapshot must preserve the pre-change scene');
+  assert.equal(db.projects[0].scenes[0].dialogueText, 'Neuer, manuell geprüfter Dialog');
+  assert.equal(db.continuity!.sceneVersions.at(-1)?.snapshot && (db.continuity!.sceneVersions.at(-1)!.snapshot as any).dialogueText, 'Alter Dialog');
+  assert.equal(db.continuity!.dramaturgyApplications.length, 1, 'successful application must append an audit record');
+  const replay = await request(applyPath, 'POST', applyBody(finalApproval.id));
+  assert.equal(replay.status, 409, 'a decision may only be applied once');
 
   const eventResponse = await request(`/series/${seriesId}/events`, 'POST', {
     title: 'Die Nachricht', occurredAt: '2026-11-17T10:00:00.000Z', characterIds: ['character-a'],
