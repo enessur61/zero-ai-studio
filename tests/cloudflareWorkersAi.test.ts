@@ -13,8 +13,14 @@ try {
 
   await assert.rejects(
     () => generateCloudflareText({ prompt: 'test' }),
+    /Workers Free plan/i,
+  );
+  process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
+  await assert.rejects(
+    () => generateCloudflareText({ prompt: 'test' }),
     /nicht konfiguriert/,
   );
+  delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
 
   process.env.CLOUDFLARE_ACCOUNT_ID = 'account-test';
   process.env.CLOUDFLARE_API_TOKEN = 'secret-test-token';
