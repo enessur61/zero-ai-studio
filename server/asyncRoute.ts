@@ -7,7 +7,8 @@ import type { RequestHandler } from 'express';
  */
 export function asyncRoute(handler: RequestHandler): RequestHandler {
   return (req, res, next) => {
-    void Promise.resolve(handler(req, res, next))
+    void Promise.resolve()
+      .then(() => handler(req, res, next))
       .catch(next)
       .finally(async () => {
         const settle = res.locals?.zeroConcurrencyHandlerSettled;
