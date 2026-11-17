@@ -52,7 +52,7 @@ export async function generateCloudflareText(params: {
               ...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt.slice(0, 8_000) }] : []),
               { role: 'user', content: params.prompt },
             ],
-            max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
+            max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 2048),
             temperature: 0.3,
             ...(params.enableThinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: params.enableThinking } }),
           }),
