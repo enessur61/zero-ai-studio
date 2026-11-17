@@ -8,7 +8,7 @@ assert.equal(resolveFilmCameraMovement('Statisch', 5), 'Statisch');
 assert.equal(resolveFilmCameraMovement(undefined, 0), 'Statisch');
 assert.equal(resolveFilmCameraMovement(null, 1), 'Langsamer Zoom-In');
 assert.equal(resolveFilmCameraMovement('nicht erlaubt', 2), 'Sanfter Zoom-Out');
-assert.equal(resolveFilmCameraMovement('Schwenk Links', -1), 'Vertikaler Tilt');
-assert.equal(resolveFilmCameraMovement('Schwenk Links', Number.NaN), 'Statisch');
+assert.equal(resolveFilmCameraMovement('nicht erlaubt', -1), 'Vertikaler Tilt');
+assert.equal(resolveFilmCameraMovement('nicht erlaubt', Number.NaN), 'Statisch');
 
 console.log('Film direction tests passed: valid AI camera movements are preserved and invalid values safely fall back.');
