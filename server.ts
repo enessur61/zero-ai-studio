@@ -29,7 +29,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
-import { generateCloudflareText, isCloudflareWorkersAiConfigured } from './server/cloudflareWorkersAi.ts';
+import { generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -1396,7 +1396,14 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
   try {
     const database = await loadDb();
     db = database;
-    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'transcription');
+    const routeDecision = chooseZeroMediaModel(
+      database.models,
+      database.budgetGuard,
+      'transcription',
+      [],
+      new Date(),
+      'cloudflare-whisper-large-v3-turbo',
+    );
     if (!routeDecision) {
       return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Transkriptionsmodell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
     }
@@ -1421,6 +1428,34 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     if (!audio) {
       return res.status(400).json({
         error: 'Ungültige Audiodatei. Unterstützte Formate: WAV, MP3, MP4/M4A, AAC, OGG, WebM, FLAC und AIFF (maximal 18 MB).',
+      });
+    }
+
+    if (selectedTranscriptionModel === 'cloudflare-whisper-large-v3-turbo') {
+      // Workers AI enforces its shared 10,000-Neuron daily free allocation provider-side.
+      // ZERO records no local Gemini quota and never switches to a paid transcription provider.
+      const result = await transcribeCloudflareAudio({
+        audioBase64: audio.data,
+        language: 'de',
+        task: 'transcribe',
+      });
+      if (!result.text) throw new Error('Whisper hat keine Sprache im Audio erkannt.');
+      const { srt, subtitleCueCount } = buildSrtFromTimedWords(
+        result.segments.map((segment) => ({
+          word: segment.text,
+          startOffset: `${segment.start}s`,
+          endOffset: `${segment.end}s`,
+        })),
+      );
+      await saveDb(database);
+      return res.json({
+        transcript: result.text,
+        rawText: result.text,
+        srt,
+        subtitleCueCount,
+        timestampsAvailable: subtitleCueCount > 0,
+        modelUsed: result.modelId,
+        costEur: 0,
       });
     }
 
