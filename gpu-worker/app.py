@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore
+from job_store import PersistentJobStore, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
@@ -149,6 +149,10 @@ def create_job(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_auth(authorization)
+    try:
+        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
     job_id = str(uuid.uuid4())
