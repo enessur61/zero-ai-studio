@@ -140,7 +140,8 @@ export function createPostgresAuthStore(database: Pool) {
     await ensureSchema();
     const result = await database.query<{ requests_today: number }>(
       `INSERT INTO zero_gemini_quota_reservations (model_id, reset_date, requests_today, daily_limit)
-       VALUES ($1, $2::date, $3 + 1, $4)
+       SELECT $1, $2::date, $3 + 1, $4
+       WHERE $3 < $4
        ON CONFLICT (model_id) DO UPDATE SET
          reset_date = EXCLUDED.reset_date,
          requests_today = CASE
