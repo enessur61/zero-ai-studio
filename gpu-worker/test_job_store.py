@@ -4,10 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import PersistentJobStore
+from job_store import PersistentJobStore, require_persistent_storage
 
 
 class PersistentJobStoreTests(unittest.TestCase):
+    def test_ephemeral_worker_storage_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "persistent volume"):
+            require_persistent_storage(False)
+
+    def test_configured_persistent_worker_storage_is_accepted(self) -> None:
+        require_persistent_storage(True)
+
     def test_restart_preserves_completed_jobs_and_marks_interrupted_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
