@@ -352,7 +352,7 @@ jobs:
             if (result.verified !== false || result.model?.enabled !== true ||
                 result.model?.testPassed !== false || result.model?.hasRealAdapter !== false ||
                 result.model?.status !== expectedStatus) {
-              throw new Error('Client-reported local availability must not be mistaken for trusted verification: ' + path);
+              throw new Error('Client-reported local availability must not be mistaken for trusted verification: ' + path + ' ' + JSON.stringify(result));
             }
             const disabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
             const disabledPayload = await disabledResponse.json();
