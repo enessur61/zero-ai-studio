@@ -54,7 +54,7 @@ try {
         errors: [{ message: 'limit exceeded' }],
       }), { status: 429 }),
     }),
-    /kein kostenpflichtiger Fallback/,
+    /keinen kostenpflichtigen Fallback/,
   );
 
   console.log('Cloudflare Workers AI adapter tests passed.');
