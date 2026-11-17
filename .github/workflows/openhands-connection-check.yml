@@ -27,12 +27,7 @@ jobs:
             exit 1
           fi
 
-          status="$(curl --silent --show-error \\
-            --connect-timeout 10 --max-time 20 \\
-            --output /dev/null --write-out '%{http_code}' \\
-            --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" \\
-            --header 'Accept: application/json' \\
-            'https://app.all-hands.dev/api/v1/users/me')"
+          status="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output /dev/null --write-out '%{http_code}' --header "Authorization: Bearer ${OPENHANDS_CLOUD_API_KEY}" --header 'Accept: application/json' 'https://app.all-hands.dev/api/v1/users/me')"
 
           if [[ "${status}" =~ ^2[0-9][0-9]$ ]]; then
             echo "OpenHands API authentication succeeded (HTTP ${status})."
