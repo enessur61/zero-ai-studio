@@ -1316,6 +1316,67 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
   }
 }));
 
+// Free, self-hosted German TTS through the optional Wan/Piper worker.
+// The voice model runs on the user's own host; no external TTS provider is contacted.
+app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
+  const worker = getWanWorkerConfig();
+  if (!worker) {
+    return res.status(503).json({
+      error: 'Der lokale Piper-Sprachworker ist noch nicht verbunden. Verbinde den eigenen ZERO-Worker mit ZERO_VIDEO_ENGINE_URL und ZERO_VIDEO_ENGINE_TOKEN. Apple-Web-Speech bleibt direkt auf dem iPhone kostenlos verfügbar.',
+      costEur: 0,
+      paidFallback: false,
+    });
+  }
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  const rawSpeed = Number(req.body?.speed ?? 1);
+  const speed = Number.isFinite(rawSpeed) ? Math.min(1.25, Math.max(0.75, rawSpeed)) : 1;
+  if (!text) return res.status(400).json({ error: 'Text für Piper fehlt.' });
+  if (text.length > 5000) return res.status(400).json({ error: 'Piper unterstützt maximal 5.000 Zeichen pro WAV-Datei.' });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 150000);
+  try {
+    const response = await fetch(new URL('/tts', worker.baseUrl), {
+      method: 'POST',
+      headers: { ...worker.headers, 'Content-Type': 'application/json', Accept: 'audio/wav' },
+      body: JSON.stringify({ text, speed }),
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: unknown };
+      const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
+      return res.status(response.status === 400 ? 400 : 503).json({
+        error: detail.slice(0, 400),
+        costEur: 0,
+        paidFallback: false,
+      });
+    }
+    const declaredLength = Number(response.headers.get('content-length') ?? 0);
+    if (declaredLength > 20 * 1024 * 1024) return res.status(413).json({ error: 'Piper-WAV überschreitet das 20-MB-Limit.' });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < 44 || bytes.length > 20 * 1024 * 1024 ||
+        bytes.subarray(0, 4).toString('ascii') !== 'RIFF' ||
+        bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      return res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
+    }
+    return res.json({
+      audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}`,
+      modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
+      voice: 'Thorsten · Deutsch',
+      costEur: 0,
+      paidFallback: false,
+    });
+  } catch (error) {
+    const message = error instanceof Error && error.name === 'AbortError'
+      ? 'Piper-Spracherzeugung dauerte länger als 150 Sekunden und wurde abgebrochen.'
+      : 'Der eigene Piper-Sprachworker ist nicht erreichbar. Kein kostenpflichtiger Fallback wurde gestartet.';
+    return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
+  } finally {
+    clearTimeout(timeout);
+  }
+}));
+
 // === ZERO AUDIO STUDIO ===
 app.post('/api/audio/tts', asyncRoute(async (req, res) => {
   const useExpressiveModel = Boolean(req.body?.expressive);
@@ -1662,13 +1723,15 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       redirect: 'error',
     });
     if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
-    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean };
+    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean; tts_available?: boolean; tts_voice_downloaded?: boolean };
     const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
     const online = payload.ok === true && payload.cuda_available === true && engineMatches;
     return res.json({
       configured: true,
       online,
       gpuAvailable: payload.cuda_available === true,
+      ttsAvailable: payload.tts_available === true,
+      ttsVoiceDownloaded: payload.tts_voice_downloaded === true,
       engine: 'Wan 2.1',
       status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
       message: online
