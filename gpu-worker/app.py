@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
@@ -23,15 +23,6 @@ APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
 MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def has_persistent_mount(path: Path) -> bool:
-    current = path
-    while current != current.parent:
-        if current != Path('/') and current.is_mount():
-            return True
-        current = current.parent
-    return False
 
 
 PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
