@@ -138,6 +138,8 @@ export interface FilmScene {
   imagePrompt: string;
   videoPrompt: string;
   imageUrl?: string;
+  /** Temporary browser object URL for a generated scene clip; the clip itself is stored separately. */
+  videoUrl?: string;
   audioDataUrl?: string;
   status: 'Entwurf' | 'Bild bereit' | 'Audio bereit' | 'Szenenbereit' | 'Bildgenerierung nicht verfügbar';
 }
