@@ -1813,6 +1813,11 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
+    const char = characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0];
+    const charContext = char
+      ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
+      : 'Entwickle eine konsistente Hauptfigur.';
+
     requireActiveCloudflareTextModel(db);
 
     const modelResponse = await generateCloudflareText({
@@ -2028,12 +2033,14 @@ Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
       maxTokens: 500,
     });
     const updated = parseCloudflareJsonObject(response.text);
+    const stringField = (value: unknown, fallback: string): string =>
+      typeof value === 'string' && value.trim() ? value.trim() : fallback;
 
-    scene.title = updated.title || scene.title;
-    scene.narrationText = updated.narrationText || scene.narrationText;
-    scene.subtitleText = updated.subtitleText || scene.subtitleText;
-    scene.imagePrompt = updated.imagePrompt || scene.imagePrompt;
-    scene.soundCue = updated.soundCue || scene.soundCue;
+    scene.title = stringField(updated.title, scene.title);
+    scene.narrationText = stringField(updated.narrationText, scene.narrationText);
+    scene.subtitleText = stringField(updated.subtitleText, scene.subtitleText);
+    scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
+    scene.soundCue = stringField(updated.soundCue, scene.soundCue);
 
     // Text and scene direction can be revised without an unavailable cloud image provider.
     // Keep any previous image asset, but mark the scene as a draft because it no longer matches the revised prompt.
