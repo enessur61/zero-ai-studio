@@ -160,11 +160,11 @@ try {
   });
   assert.equal(sceneVersionResponse.status, 201);
   const firstVersion = (await json(sceneVersionResponse)).sceneVersion;
-  assert.equal(firstVersion.version, 1);
+  assert.equal(firstVersion.version, 2, 'the earlier correction snapshot occupies scene version 1');
   const secondVersionResponse = await request(`/series/${seriesId}/scene-versions`, 'POST', {
     projectId: 'project-a', sceneId: 'scene-a', note: 'Zweite Fassung',
   });
-  assert.equal((await json(secondVersionResponse)).sceneVersion.version, 2);
+  assert.equal((await json(secondVersionResponse)).sceneVersion.version, 3);
 
   const typedEvent = await request(`/series/${seriesId}/events`, 'POST', { title: 'Wahre Identität', occurredAt: '2026-11-17T12:00:00.000Z', kind: 'identity_reveal', subjectCharacterId: 'character-a', canonicalValue: 'Mara Winter' });
   assert.equal(typedEvent.status, 201);
