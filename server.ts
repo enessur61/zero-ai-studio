@@ -1,13 +1,17 @@
 import 'dotenv/config';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
+import { createRestoreHandlers } from './server/restoreHandlers.ts';
+import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/concurrencyGate.ts';
+import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { checkPostgresConnection } from './server/persistence.ts';
+import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
+import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -16,6 +20,7 @@ import {
   isQuotaExhaustionError,
   ThinkingLevel,
   Type,
+  ZeroQuotaExhaustedError,
   withTransientRetry,
 } from './server/geminiClient.ts';
 import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
@@ -24,6 +29,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
+import { generateCloudflareText, isCloudflareWorkersAiConfigured } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -35,6 +41,7 @@ import {
   DEVELOPMENT_ROADMAP,
   getZipBackupFilePath,
   IST_ZUSTAND_REPORT,
+  inspectZipBackupConsistency,
   loadDb,
   maybeAutoCreateZipBackup,
   recordBudgetAudit,
@@ -44,6 +51,7 @@ import {
   toggleZipBackupProtection,
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
+import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -61,6 +69,12 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
+// ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
+// Node processes. The local gate is only for development without PostgreSQL.
+export const zipOperationGate = process.env.DATABASE_URL
+  ? createPostgresConcurrencyGate(getPostgresPool(), 2, 5)
+  : createConcurrencyGate(2, 5);
+
 // Render terminates TLS and forwards one trusted proxy hop. Trusting that hop
 // makes req.ip reflect the client address for login rate limiting.
 app.set('trust proxy', 1);
@@ -72,10 +86,22 @@ const AUTH_COOKIE_NAME = 'zero_session';
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const activeSessions = new Map<string, number>();
+const postgresAuthStore = process.env.DATABASE_URL ? createPostgresAuthStore(getPostgresPool()) : null;
 
-function hasValidSession(req: express.Request): boolean {
+function authStore() {
+  if (!postgresAuthStore) throw new Error('PostgreSQL ist für die gemeinsame Produktionsanmeldung erforderlich.');
+  return postgresAuthStore;
+}
+
+function tokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function loginKeyDigest(address: string): string {
+  return createHmac('sha256', ZERO_SESSION_SECRET).update(address).digest('hex');
+}
+
+async function hasValidSession(req: express.Request): Promise<boolean> {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
@@ -83,19 +109,73 @@ function hasValidSession(req: express.Request): boolean {
   if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
-  return activeSessions.get(token) === Number(expiresAt);
+  return authStore().hasSession(tokenDigest(token));
 }
 
-function createSessionCookie(): string {
+async function createSessionCookie(): Promise<string> {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
   const nonce = randomBytes(24).toString('hex');
   const payload = expiresAt + '.' + nonce;
   const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(payload).digest('hex');
   const token = payload + '.' + signature;
-  for (const [session, expiry] of activeSessions) if (expiry <= Date.now()) activeSessions.delete(session);
-  activeSessions.set(token, Number(expiresAt));
+  await authStore().createSession(tokenDigest(token), new Date(Number(expiresAt)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   return AUTH_COOKIE_NAME + '=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + SESSION_DURATION_SECONDS + secure;
+}
+
+async function reserveZeroBudgetModelAllowed(
+  modelId: string,
+  action: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  let allowedAudit: Parameters<typeof recordBudgetAudit>[1] | null = null;
+  assertZeroBudgetModelAllowed(modelId, action, db.budgetGuard, (entry) => {
+    if (entry.decision === 'ERLAUBT_0_EUR') allowedAudit = entry;
+    else recordBudgetAudit(db, entry);
+  });
+  if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
+
+  if (process.env.DATABASE_URL) {
+    const quota = db.budgetGuard.freeQuotaUsage[modelId];
+    if (!quota) throw new Error(`Kein Kontingentdatensatz für "${modelId}".`);
+    const reservation = await authStore().reserveGeminiQuota({
+      modelId,
+      resetDate: quota.lastResetDate ?? '',
+      currentRequests: quota.requestsToday,
+      dailyLimit: quota.dailySoftLimit,
+    });
+    if (!reservation.allowed) {
+      quota.exhausted = true;
+      recordBudgetAudit(db, {
+        adapterId: 'gemini-quota-guard',
+        modelId,
+        action,
+        decision: 'GESTOPPT_KONTINGENT',
+        reason: `Globales Free-Tier-Kontingent ausgeschöpft (${reservation.requestsToday}/${quota.dailySoftLimit}). Anfrage vor dem Provider-Aufruf gestoppt.`,
+        costEur: 0,
+      });
+      throw new ZeroQuotaExhaustedError(
+        `Globales kostenloses Tageskontingent für "${modelId}" ausgeschöpft. Kein kostenpflichtiger Fallback.`
+      );
+    }
+    // recordBudgetAudit increments once; align the process-local display count
+    // with the atomic cross-instance reservation immediately before that increment.
+    quota.requestsToday = Math.max(0, reservation.requestsToday - 1);
+  }
+
+  recordBudgetAudit(db, allowedAudit);
+}
+
+async function markGeminiQuotaExhausted(
+  modelId: string,
+  db: Awaited<ReturnType<typeof loadDb>>
+): Promise<void> {
+  const quota = db.budgetGuard.freeQuotaUsage[modelId];
+  if (!quota) return;
+  quota.exhausted = true;
+  if (process.env.DATABASE_URL) {
+    await authStore().markGeminiQuotaExhausted(modelId, quota.lastResetDate ?? '');
+  }
 }
 // Baseline browser security headers. CSP starts in report-only mode so external
 // model assets and media can be audited without unexpectedly breaking the PWA.
@@ -125,46 +205,38 @@ app.use('/api', (req, res, next) => {
       error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
     });
   }
-  if (!hasValidSession(req)) {
-    return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  }
-  return next();
+  void hasValidSession(req).then((valid) => {
+    if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    return next();
+  }).catch(next);
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
 
-app.get('/api/auth/status', (_req, res) => {
+app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
     !IS_PRODUCTION ||
     (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
   res.json({
     required: IS_PRODUCTION,
     configured,
-    authenticated: !IS_PRODUCTION || (configured && hasValidSession(_req)),
+    authenticated: !IS_PRODUCTION || (configured && await hasValidSession(_req)),
   });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
   if (!IS_PRODUCTION) return res.json({ ok: true, authenticated: true });
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
     return res.status(503).json({ error: 'Serveranmeldung ist noch nicht konfiguriert.' });
   }
 
-  const now = Date.now();
-  for (const [address, entry] of loginAttempts) {
-    if (entry.resetAt <= now) loginAttempts.delete(address);
-  }
-  const ip = req.ip || 'unknown';
-  const attempt = loginAttempts.get(ip);
-  const current = !attempt || attempt.resetAt <= now
-    ? { count: 0, resetAt: now + LOGIN_WINDOW_MS }
-    : attempt;
-  if (current.count >= MAX_LOGIN_ATTEMPTS) {
+  const ipKey = loginKeyDigest(req.ip || 'unknown');
+  const attempt = await authStore().consumeLoginAttempt(ipKey, new Date(), LOGIN_WINDOW_MS, MAX_LOGIN_ATTEMPTS);
+  if (!attempt.allowed) {
+    res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
     return res.status(429).json({ error: 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.' });
   }
-  current.count += 1;
-  loginAttempts.set(ip, current);
 
   const supplied = Buffer.from(String(req.body?.password ?? ''));
   const expected = Buffer.from(ZERO_ADMIN_PASSWORD);
@@ -173,19 +245,19 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Passwort ist nicht korrekt.' });
   }
 
-  loginAttempts.delete(ip);
-  res.setHeader('Set-Cookie', createSessionCookie());
+  await authStore().clearLoginAttempts(ipKey);
+  res.setHeader('Set-Cookie', await createSessionCookie());
   return res.json({ ok: true, authenticated: true });
-});
+}));
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token) activeSessions.delete(decodeURIComponent(token));
+  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
-});
+}));
 
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -271,9 +343,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
     db = await loadDb();
-    assertZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db.budgetGuard, (entry) =>
-      recordBudgetAudit(db!, entry)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -313,6 +383,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
     });
   } catch (err) {
     if (db) {
+      if (isQuotaExhaustionError(err)) await markGeminiQuotaExhausted(modelId, db).catch(() => undefined);
       await saveDb(db).catch(() => undefined);
     }
     return res.json({
@@ -324,6 +395,82 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
       modelId,
       paidFallback: false,
       message: formatGermanApiError(err),
+    });
+  }
+}));
+
+// === CLOUDFLARE WORKERS AI CONNECTION DIAGNOSTIC ===
+app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const configured = isCloudflareWorkersAiConfigured();
+  const modelId = '@cf/zai-org/glm-4.7-flash';
+  if (!configured) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
+      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      cloudflareConnection: 'NOT_TESTED',
+      modelResponse: 'NOT_TESTED',
+      modelId,
+      paidFallback: false,
+      message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
+    });
+  }
+  try {
+    const result = await generateCloudflareText({
+      prompt: 'Antworte ausschließlich mit: ZERO_CLOUDFLARE_OK',
+      maxTokens: 32,
+    });
+    return res.json({
+      ok: true,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'CONNECTED',
+      modelResponse: 'RECEIVED',
+      modelId: result.modelId,
+      responseVerified: result.text.length > 0,
+      paidFallback: false,
+      message: 'Cloudflare Workers AI hat erfolgreich geantwortet.',
+    });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      accountIdConfigured: true,
+      apiTokenConfigured: true,
+      cloudflareConnection: 'FAILED',
+      modelResponse: 'NOT_RECEIVED',
+      modelId,
+      paidFallback: false,
+      message: err instanceof Error ? err.message : 'Cloudflare-Verbindung fehlgeschlagen.',
+    });
+  }
+}));
+
+app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res) => {
+  const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : '';
+  const confirmedProviderReset = req.body?.confirmedProviderReset === true;
+  const db = await loadDb();
+
+  try {
+    const quota = applyManualFreeQuotaReset({
+      modelId,
+      confirmedProviderReset,
+      budgetGuard: db.budgetGuard,
+    });
+    recordBudgetAudit(db, {
+      adapterId: 'manual-quota-reset',
+      modelId,
+      action: 'PROVIDER_QUOTA_RESET_CONFIRMED',
+      decision: 'RESET_BESTAETIGT_MANUELL',
+      reason: 'Ein angemeldeter ZERO-Administrator hat ausdrücklich bestätigt, dass das Free-Tier-Kontingent beim Provider tatsächlich zurückgesetzt wurde. ZERO hat den Provider-Reset nicht selbst verifiziert.',
+      costEur: 0,
+    });
+    await saveDb(db);
+    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
+    return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : 'Manuelle Kontingentfreigabe fehlgeschlagen.',
     });
   }
 }));
@@ -349,17 +496,14 @@ app.post('/api/system/backup', asyncRoute(async (req, res) => {
   }
 }));
 
-app.post('/api/system/restore', asyncRoute(async (req, res) => {
-  try {
-    const backupId = String(req.body?.backupId ?? '');
-    const restored = await restoreSystemBackup(backupId);
-    res.json({ ok: true, restoredProjects: restored.projects.length, restoredMemories: restored.memories.length });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
-  }
-}));
+const restoreHandlers = createRestoreHandlers({
+  restoreSystemBackup,
+  restoreZipBackup: restoreFromVerifiedZipBackup,
+});
 
-app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
+app.post('/api/system/restore', restoreHandlers.json);
+
+app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -379,7 +523,7 @@ app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
   }
 }));
 
-app.get('/api/system/export-zip', asyncRoute(async (_req, res) => {
+app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -402,6 +546,21 @@ app.get('/api/system/export-zip', asyncRoute(async (_req, res) => {
 }));
 
 // === VERSIONED ZIP BACKUP & RESTORE SYSTEM ===
+app.get('/api/system/zip-backups/reconciliation', asyncRoute(async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(409).json({
+      error: 'Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.',
+    });
+  }
+  const result = await inspectZipBackupConsistency();
+  res.json({
+    ok: true,
+    orphanedBlobIds: result.orphanedBlobIds,
+    missingBlobIds: result.missingBlobIds,
+    orphanedCount: result.orphanedBlobIds.length,
+    missingCount: result.missingBlobIds.length,
+  });
+}));
 app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   const db = await loadDb();
   const totalStorageBytes = db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0);
@@ -412,7 +571,7 @@ app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   });
 }));
 
-app.post('/api/system/zip-backups', asyncRoute(async (req, res) => {
+app.post('/api/system/zip-backups', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const changelog =
       typeof req.body?.changelog === 'string' && req.body.changelog.trim()
@@ -430,6 +589,17 @@ app.post('/api/system/zip-backups', asyncRoute(async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      const db = await loadDb();
+      return res.status(202).json({
+        ok: true,
+        backup: err.backup,
+        backupConfig: db.backupConfig,
+        totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(500).json({ error: err instanceof Error ? err.message : 'ZIP-Backup fehlgeschlagen' });
   }
 }));
@@ -441,7 +611,7 @@ app.post('/api/system/zip-backups/settings', asyncRoute(async (req, res) => {
   res.json({ backupConfig: db.backupConfig });
 }));
 
-app.get('/api/system/zip-backups/:id/download', asyncRoute(async (req, res) => {
+app.get('/api/system/zip-backups/:id/download', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const { record, buffer } = await getZipBackupFilePath(req.params.id);
     res.setHeader('Content-Type', 'application/zip');
@@ -471,23 +641,19 @@ app.delete('/api/system/zip-backups/:id', asyncRoute(async (req, res) => {
       totalStorageBytes: db.backupConfig.zipBackups.reduce((s, b) => s + b.sizeBytes, 0),
     });
   } catch (err) {
+    if (err instanceof BackupCleanupError) {
+      return res.status(202).json({
+        ok: true,
+        deleted: true,
+        cleanupPending: true,
+        orphanedBlobIds: err.orphanedBlobIds,
+      });
+    }
     res.status(400).json({ error: err instanceof Error ? err.message : 'Löschen blockiert' });
   }
 }));
 
-app.post('/api/system/zip-backups/:id/restore', asyncRoute(async (req, res) => {
-  try {
-    const restored = await restoreFromVerifiedZipBackup(req.params.id);
-    res.json({
-      ok: true,
-      restoredVersion: restored.restoredVersion,
-      safetyBackup: restored.safetyBackup,
-      backupConfig: restored.db.backupConfig,
-    });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Wiederherstellung fehlgeschlagen' });
-  }
-}));
+app.post('/api/system/zip-backups/:id/restore', zipOperationGate.middleware, restoreHandlers.zip);
 
 // === ZERO MODEL HUB ===
 app.get('/api/models', asyncRoute(async (_req, res) => {
@@ -594,10 +760,10 @@ app.post('/api/models/native/activate', asyncRoute(async (req, res) => {
   // Enabled means the user has a client-reported local runtime available.
   // It does not certify the adapter or count as a trusted test.
   model.enabled = true;
-  model.status = 'BROWSER TEST ERFORDERLICH';
+  model.status = 'INSTALLATION ERFORDERLICH';
   model.lastTestedAt = null;
   model.lastTestLatencyMs = null;
-  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Das Modell bleibt deaktiviert.';
+  model.lastTestMessage = 'Eine native Probe wurde gemeldet, kann vom Server aber nicht unabhängig verifiziert werden. Signierte iOS-Installation und echte Geräte-Inferenz bleiben erforderlich.';
   await saveDb(db);
   res.status(202).json({ model, verified: false });
 }));
@@ -718,8 +884,13 @@ app.post('/api/models/:id/toggle', asyncRoute(async (req, res) => {
   ]);
   const isUnverifiedClientLocalRuntime =
     model.executionMode === 'LOCAL ON-DEVICE' &&
-    clientLocalRuntimeIds.has(model.id) &&
-    model.status === 'BROWSER TEST ERFORDERLICH' &&
+    (
+      (
+        (clientLocalRuntimeIds.has(model.id) || model.adapterId === 'webllm') &&
+        model.status === 'BROWSER TEST ERFORDERLICH'
+      ) ||
+      (model.id === 'apple-foundation-model' && model.status === 'INSTALLATION ERFORDERLICH')
+    ) &&
     !model.hasRealAdapter &&
     !model.testPassed;
 
@@ -822,10 +993,10 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       });
     }
 
-      assertZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database.budgetGuard, (e) =>
-        recordBudgetAudit(database, e)
-      );
-      const ai = getGeminiClient();
+      if (selectedModel !== 'cloudflare-glm-4.7-flash') {
+        await reserveZeroBudgetModelAllowed(selectedModel, 'BRAIN_CHAT', database);
+      }
+      const ai = selectedModel === 'cloudflare-glm-4.7-flash' ? null : getGeminiClient();
       const recentHistory = (needsFullContext ? database.chatHistory.slice(-4) : [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => `${m.role === 'user' ? 'Nutzer' : 'ZERO BRAIN'}: ${m.content}`)
@@ -835,15 +1006,12 @@ Langzeitgedächtnis:\n${relevantMemories}`;
       let groundingContext = '';
 
       if (useWebSearch) {
+        if (!ai) throw new Error('ZERO Websuche benötigt derzeit ein aktiviertes Gemini-Free-Tier-Modell; Cloudflare-Chat selbst bleibt kostenlos und ohne Fallback.');
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        assertZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
-        assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database.budgetGuard, (e) =>
-          recordBudgetAudit(database, e)
-        );
+        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
+        await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
@@ -880,20 +1048,33 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         res.flushHeaders();
         res.write('data: ' + JSON.stringify({ type: 'start', modelUsed: selectedModel }) + '\n\n');
       }
-      const responseStream = await ai.models.generateContentStream({
-        model: selectedModel,
-        contents: streamContents,
-        config: streamConfig,
-      });
-      for await (const chunk of responseStream) {
-        const piece = chunk.text ?? '';
-        if (!piece) continue;
-        replyText += piece;
-        if (wantsStream) {
-          res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+      if (selectedModel === 'cloudflare-glm-4.7-flash') {
+        const cloudflareResult = await generateCloudflareText({
+          prompt: streamContents,
+          systemPrompt: systemInstruction,
+          maxTokens: 1200,
+        });
+        replyText = cloudflareResult.text;
+        if (wantsStream && replyText) {
+          res.write('data: ' + JSON.stringify({ type: 'delta', text: replyText }) + '\n\n');
         }
+      } else {
+        if (!ai) throw new Error('Kein KI-Provider verfügbar.');
+        const responseStream = await ai.models.generateContentStream({
+          model: selectedModel,
+          contents: streamContents,
+          config: streamConfig,
+        });
+        for await (const chunk of responseStream) {
+          const piece = chunk.text ?? '';
+          if (!piece) continue;
+          replyText += piece;
+          if (wantsStream) {
+            res.write('data: ' + JSON.stringify({ type: 'delta', text: piece }) + '\n\n');
+          }
+        }
+        replyText = replyText.trim() || 'Keine Antwort erhalten.';
       }
-      replyText = replyText.trim() || 'Keine Antwort erhalten.';
 
       routingSteps = [
         `ZERO CORE Auto-Router -> ${selectedModel}: ${routeDecision.reason}`,
@@ -942,7 +1123,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
     if (db && isQuotaExhaustionError(err)) {
       for (const quotaKey of quotaKeys) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
@@ -980,12 +1161,8 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     const query = String(req.body?.query ?? '').trim();
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
-    assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
+    await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1016,7 +1193,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     if (isQuotaExhaustionError(err)) {
       for (const quotaKey of ['gemini-web-grounding', 'gemini-2.5-flash-lite']) {
         if (db.budgetGuard.freeQuotaUsage[quotaKey]) {
-          db.budgetGuard.freeQuotaUsage[quotaKey].exhausted = true;
+          await markGeminiQuotaExhausted(quotaKey, db);
         }
       }
       await saveDb(db);
@@ -1061,9 +1238,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
     }
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1086,7 +1261,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
-      db.budgetGuard.freeQuotaUsage['gemini-3.8-flash'].exhausted = true;
+      await markGeminiQuotaExhausted('gemini-3.8-flash', db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1125,9 +1300,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
       return res.status(400).json({ error: 'Der Text ist zu lang. Bitte maximal 5.000 Zeichen verwenden.' });
     }
 
-    assertZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1171,7 +1344,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
-      db.budgetGuard.freeQuotaUsage[modelId].exhausted = true;
+      await markGeminiQuotaExhausted(modelId, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1221,9 +1394,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
       });
     }
 
-    assertZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database.budgetGuard, (e) =>
-      recordBudgetAudit(database, e)
-    );
+    await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1281,7 +1452,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     });
   } catch (err) {
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel]) {
-      db.budgetGuard.freeQuotaUsage[selectedTranscriptionModel].exhausted = true;
+      await markGeminiQuotaExhausted(selectedTranscriptionModel, db);
       try {
         await saveDb(db);
       } catch (persistError) {
@@ -1303,9 +1474,7 @@ app.post('/api/music/compose', asyncRoute(async (req, res) => {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
     const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -1549,9 +1718,7 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db);
 
     const char = characterId ? db.characters.find((c) => c.id === characterId) : db.characters[0];
     const charContext = char
@@ -1763,9 +1930,7 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db);
 
     const ai = getGeminiClient();
     const response = await withTransientRetry(() =>
@@ -2010,6 +2175,63 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
 }));
 
+app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const scene = project.scenes.find((item) => item.id === req.params.sceneId);
+  if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+
+  const dataUrl = typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '';
+  if (!isSafeProjectAssetUrl(dataUrl, 'video') || dataUrl.length > 12 * 1024 * 1024) {
+    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 8 MB.' });
+  }
+  const assetKey = `zero-scene-video:${scene.id}`;
+  const existing = project.assets.find((asset) => asset.type === 'video' && asset.modelId === assetKey);
+  const storedSceneVideoChars = project.assets
+    .filter((asset) => asset.type === 'video' && asset.modelId.startsWith('zero-scene-video:'))
+    .reduce((total, asset) => total + asset.url.length, 0);
+  const nextSceneVideoChars = storedSceneVideoChars - (existing?.url.length ?? 0) + dataUrl.length;
+  if (nextSceneVideoChars > 24 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Die Szenenclips dieses Projekts überschreiten zusammen das 24-MB-Synchronisationslimit. Bitte ältere Clips entfernen.' });
+  }
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.url = dataUrl;
+    existing.title = `Szenenclip: ${scene.title}`.slice(0, 120);
+    existing.durationSec = Math.min(60, scene.durationSec);
+    existing.createdAt = now;
+  } else {
+    if (project.assets.length >= 200) {
+      return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
+    }
+    project.assets.unshift({
+      id: `asset-${Date.now()}-${randomBytes(4).toString('hex')}`,
+      type: 'video',
+      title: `Szenenclip: ${scene.title}`.slice(0, 120),
+      url: dataUrl,
+      modelId: assetKey,
+      durationSec: Math.min(60, scene.durationSec),
+      createdAt: now,
+    });
+  }
+  project.updatedAt = now;
+  await saveDb(db);
+  return res.json({ ok: true, serverPersisted: true });
+}));
+
+app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === req.params.id);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  const assetKey = `zero-scene-video:${req.params.sceneId}`;
+  const asset = project.assets.find((item) => item.type === 'video' && item.modelId === assetKey);
+  if (!asset || !isSafeProjectAssetUrl(asset.url, 'video')) {
+    return res.status(404).json({ error: 'Für diese Szene ist kein dauerhaft gespeicherter Videoclip vorhanden.' });
+  }
+  return res.json({ dataUrl: asset.url, serverPersisted: true });
+}));
+
 app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((p) => p.id === req.params.id);
@@ -2159,12 +2381,13 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
       action: 'MEMORY_EMBED',
       contents: [`${title}\n${content}`],
       recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_EMBED', db),
       embed: async (modelId, contents) => {
         const ai = getGeminiClient();
         const response = await ai.models.embedContent({ model: modelId, contents });
         return response.embeddings?.[0]?.values;
       },
-      persistExhausted: () => saveDb(db),
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
     });
     embedding = result.vector;
     embeddingNotice = result.notice;
@@ -2205,12 +2428,13 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
       action: 'MEMORY_SEARCH',
       contents: [query],
       recordAudit: (entry) => recordBudgetAudit(db, entry),
+      reserveQuota: () => reserveZeroBudgetModelAllowed('gemini-embedding-2', 'MEMORY_SEARCH', db),
       embed: async (modelId, contents) => {
         const ai = getGeminiClient();
         const response = await ai.models.embedContent({ model: modelId, contents });
         return response.embeddings?.[0]?.values;
       },
-      persistExhausted: () => saveDb(db),
+      persistExhausted: async () => { await markGeminiQuotaExhausted('gemini-embedding-2', db); await saveDb(db); },
     });
     queryVec = result.vector ?? null;
     embeddingNotice = result.notice;
@@ -2254,9 +2478,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     const includeExternalPublishGate = Boolean(req.body?.includeExternalPublishGate);
     if (!goal) return res.status(400).json({ error: 'Automatisierungsziel fehlt.' });
 
-    assertZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db.budgetGuard, (e) =>
-      recordBudgetAudit(db, e)
-    );
+    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
     const planRes = await withTransientRetry(() =>
@@ -2359,6 +2581,14 @@ app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[ZERO API] Unhandled route error:', error);
   if (res.headersSent) return;
+  if (error instanceof PersistentStateConflictError) {
+    return res.status(409).json({
+      error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
+      code: 'PERSISTENCE_REVISION_CONFLICT',
+      expectedRevision: error.expectedRevision,
+      actualRevision: error.actualRevision,
+    });
+  }
   res.status(500).json({ error: 'Interner Serverfehler.' });
 });
 
