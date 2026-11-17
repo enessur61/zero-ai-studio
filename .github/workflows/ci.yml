@@ -247,10 +247,12 @@ jobs:
           }
           const crossInstanceProjects = await fetch(baseB + '/api/projects', { headers: { cookie } });
           const crossInstanceProjectPayload = await crossInstanceProjects.json();
+          const projectAfterMediaWrite = crossInstanceProjectPayload.projects?.find((project) =>
+            project.id === durationProject.id
+          );
           if (!crossInstanceProjects.ok ||
-              !crossInstanceProjectPayload.projects?.some((project) =>
-                project.id === durationProject.id &&
-                project.assets?.some((asset) => asset.modelId === 'zero-scene-video:' + durationProject.scenes[0].id)
+              !projectAfterMediaWrite?.assets?.some((asset) =>
+                asset.modelId === 'zero-scene-video:' + durationProject.scenes[0].id
               )) {
             throw new Error('Project/asset reads on instance B returned stale PostgreSQL state');
           }
@@ -281,7 +283,7 @@ jobs:
               editedProject.version !== durationProject.version + 1 ||
               editedProject.targetDurationSec > 60 ||
               editedProject.status !== durationProject.status ||
-              editedProject.assets.length !== durationProject.assets.length ||
+              editedProject.assets.length !== projectAfterMediaWrite.assets.length ||
               editedProject.snapshots.length === 0 ||
               editedProject.updatedAt === '2000-01-01T00:00:00.000Z' ||
               editedProject.scenes[0]?.imageUrl !== undefined ||
