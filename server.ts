@@ -6,6 +6,7 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { buildStorySupervisorAiPrompt, parseStorySupervisorAiResponse } from './server/storySupervisorAI.ts';
 import { buildContinuityDirectorContext, recordFilmProductionContinuity, recordFilmSceneRevision, detectSemanticContinuityConflicts, resolveFilmCameraMovement } from './server/filmDirection.ts';
 import { validateContinuityState } from './server/continuity.ts';
 import { emptyContinuityState } from './src/types/continuity.ts';
@@ -214,6 +215,64 @@ app.use(express.json({ limit: '26mb' }));
 
 // Continuity routes reuse the existing JSONB state store and revision/advisory-lock writes.
 app.use('/api/continuity', createContinuityRouter({ loadDb, saveDb }));
+
+app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const db = await loadDb();
+  const continuity = validateContinuityState(db.continuity ?? emptyContinuityState());
+  const series = continuity.series.find((item) => item.id === req.params.seriesId && !item.archivedAt);
+  if (!series) return res.status(404).json({ error: 'Serie nicht gefunden oder archiviert.' });
+  const input = buildStorySupervisorAiPrompt({ series, state: continuity, projects: db.projects ?? [], characters: db.characters ?? [] });
+  if (input.prompt.length < 80) return res.status(422).json({ error: 'Zu wenig Serienmaterial für eine belastbare dramaturgische Analyse.' });
+
+  let raw = '';
+  let modelId = '';
+  let costMode: 'confirmed-free-cloud' | 'blocked' = 'blocked';
+  const cloudflareFree = isCloudflareWorkersAiConfigured() && isCloudflareWorkersAiFreePlanConfirmed();
+  const cloudflareRoute = cloudflareFree
+    ? chooseZeroChatModel(db.models, db.budgetGuard, 'cloudflare-glm-4.7-flash')
+    : null;
+  if (cloudflareRoute?.modelId === 'cloudflare-glm-4.7-flash') {
+    const result = await generateCloudflareText({
+      systemPrompt: input.systemPrompt,
+      prompt: input.prompt,
+      maxTokens: 1800,
+      enableThinking: true,
+    });
+    raw = result.text;
+    modelId = result.modelId;
+    costMode = 'confirmed-free-cloud';
+  } else {
+    if (process.env.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
+      return res.status(503).json({
+        error: 'KI-Analyse sicher blockiert: Kein bestätigtes kostenloses Modell verfügbar. Cloudflare benötigt den bestätigten Workers-Free-Plan; Gemini benötigt ZERO_GEMINI_FREE_TIER_ONLY=true. Kein Provider-Aufruf und kein kostenpflichtiger Fallback.',
+        paidFallback: false,
+      });
+    }
+    const geminiModels = db.models.filter((model) => model.id.startsWith('gemini-'));
+    const route = chooseZeroChatModel(geminiModels, db.budgetGuard, 'gemini-3.8-flash');
+    if (!route) return res.status(503).json({ error: 'Kein verifiziertes Gemini-Free-Tier-Modell mit gültigem Restkontingent. Sicher gestoppt.', paidFallback: false });
+    await reserveZeroBudgetModelAllowed(route.modelId, 'STORY_SUPERVISOR_DRAMATURGY', db);
+    try {
+      const ai = getGeminiClient();
+      const response = await withTransientRetry(() => ai.models.generateContent({
+        model: route.modelId,
+        contents: input.prompt,
+        config: { systemInstruction: input.systemPrompt, responseMimeType: 'application/json', maxOutputTokens: 1800, temperature: 0.2 },
+      }));
+      raw = response.text ?? '';
+      modelId = route.modelId;
+      await saveDb(db);
+    } catch (error) {
+      if (isQuotaExhaustionError(error)) await markGeminiQuotaExhausted(route.modelId, db).catch(() => undefined);
+      await saveDb(db).catch(() => undefined);
+      throw error;
+    }
+    costMode = 'confirmed-free-cloud';
+  }
+  const analysis = parseStorySupervisorAiResponse(raw, input.validCharacterIds);
+  return res.json({ analysis, modelId, costMode, paidFallback: false, generatedAt: new Date().toISOString() });
+}));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =

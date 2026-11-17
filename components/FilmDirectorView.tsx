@@ -61,6 +61,16 @@ export function FilmDirectorView({
   const [selectedSeriesId, setSelectedSeriesId] = useState('');
   const [continuityDetail, setContinuityDetail] = useState<ContinuitySeriesDetail | null>(null);
   const [continuityLoading, setContinuityLoading] = useState(false);
+  const [dramaturgyAiLoading, setDramaturgyAiLoading] = useState(false);
+  const [dramaturgyAiError, setDramaturgyAiError] = useState('');
+  const [dramaturgyAiResult, setDramaturgyAiResult] = useState<{
+    overallAssessment: string;
+    characterAnalyses: Array<{ characterId: string; psychologicalProfile: string; coreMotivation: string; emotionalArc: string; relationshipDynamics: string[]; contradictions: string[] }>;
+    findings: Array<{ id: string; category: string; severity: string; characterIds: string[]; episodeTitle: string; sceneTitle: string; evidence: string; interpretation: string; recommendation: string; confidence: string }>;
+    storyRecommendations: string[];
+    modelId: string;
+    generatedAt: string;
+  } | null>(null);
   const [newSeriesTitle, setNewSeriesTitle] = useState('');
   const [seriesBibleDraft, setSeriesBibleDraft] = useState('');
   const [savingSeriesBible, setSavingSeriesBible] = useState(false);
@@ -98,6 +108,19 @@ export function FilmDirectorView({
     'Erhöhe Spannung und emotionale Wirkung; überarbeite Erzähltext, Dialog und Untertitel.'
   );
   const [ttsSceneId, setTtsSceneId] = useState<string | null>(null);
+
+  async function handleAiDramaturgyAnalysis() {
+    if (!selectedSeriesId || dramaturgyAiLoading) return;
+    setDramaturgyAiLoading(true); setDramaturgyAiError(''); setDramaturgyAiResult(null);
+    try {
+      const response = await apiRequest<{ analysis: NonNullable<typeof dramaturgyAiResult> extends infer T ? Omit<NonNullable<typeof dramaturgyAiResult>, 'modelId' | 'generatedAt'> : never; modelId: string; generatedAt: string; paidFallback: false }>(
+        '/api/continuity/series/' + selectedSeriesId + '/analyze-dramaturgy',
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      setDramaturgyAiResult({ ...response.analysis, modelId: response.modelId, generatedAt: response.generatedAt });
+    } catch (err) { setDramaturgyAiError(err instanceof Error ? err.message : 'KI-Analyse konnte nicht ausgeführt werden.'); }
+    finally { setDramaturgyAiLoading(false); }
+  }
 
   async function handleCreateSeries() {
     const title = newSeriesTitle.trim();
@@ -379,6 +402,16 @@ export function FilmDirectorView({
                    {continuityDetail.storySupervisor.characterArcs.length === 0 ? <p className="text-[11px] text-slate-500">Noch keine Figurenauftritte erfasst.</p> : continuityDetail.storySupervisor.characterArcs.map((arc) => <div key={arc.characterId} className="rounded-lg bg-black/20 p-2"><div className="flex justify-between gap-2"><span className="text-xs text-white">{arc.name}</span><span className="text-[10px] text-slate-400">{arc.appearanceCount} Szenen</span></div><p className="text-[10px] text-slate-400">{arc.developmentSummary}</p>{arc.episodeTitles.length > 0 && <p className="text-[10px] text-cyan-200/70">{arc.episodeTitles.join(' · ')}</p>}{arc.knowledgeMilestones.slice(-2).map((milestone,index) => <p key={index} className="text-[10px] text-slate-500">{new Date(milestone.learnedAt).toLocaleDateString('de-DE')} · {milestone.fact}</p>)}</div>)}
                  </div>
                  <div className="space-y-1"><p className="text-[11px] text-slate-300">Enthüllungszeitachse</p>{continuityDetail.storySupervisor.revealTimeline.length === 0 ? <p className="text-[10px] text-slate-500">Keine Identitäts- oder Geheimnisenthüllungen festgelegt.</p> : continuityDetail.storySupervisor.revealTimeline.map((reveal) => <p key={reveal.eventId} className="text-[10px] text-slate-400">{new Date(reveal.occurredAt).toLocaleString('de-DE')} · {reveal.kind === 'identity_reveal' ? 'Identität' : 'Geheimnis'}: {reveal.canonicalValue}</p>)}</div>
+                 <div className="space-y-2 rounded-lg border border-violet-500/20 bg-violet-500/[0.04] p-3">
+                   <div className="flex items-center justify-between gap-2"><p className="text-[11px] font-semibold text-violet-200">KI-DRAMATURGIE · episodenübergreifend</p><button type="button" onClick={handleAiDramaturgyAnalysis} disabled={dramaturgyAiLoading} className="min-h-[40px] rounded-lg bg-violet-500/20 px-3 text-[11px] font-semibold text-violet-100 disabled:opacity-50">{dramaturgyAiLoading ? 'Analysiere…' : 'Serie mit KI analysieren'}</button></div>
+                   <p className="text-[10px] text-slate-400">Analysiert Psychologie, Motivation, Gefühlsbögen, Beziehungen, Subtext und widersprüchliche Handlungen. Nur bestätigte Free-Tier-Modelle; kein kostenpflichtiger Fallback.</p>
+                   {dramaturgyAiError && <p role="alert" className="text-[11px] text-amber-300">{dramaturgyAiError}</p>}
+                   {dramaturgyAiResult && <div className="space-y-3"><p className="text-xs text-white">{dramaturgyAiResult.overallAssessment}</p><p className="text-[10px] text-slate-500">Modell: {dramaturgyAiResult.modelId} · {new Date(dramaturgyAiResult.generatedAt).toLocaleString('de-DE')} · 0-€-Route</p>
+                     {dramaturgyAiResult.characterAnalyses.map((arc) => <div key={arc.characterId} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] font-semibold text-cyan-100">{characters.find((c) => c.id === arc.characterId)?.name || arc.characterId}</p><p className="text-[10px] text-slate-300">Psychologie: {arc.psychologicalProfile}</p><p className="text-[10px] text-slate-300">Motivation: {arc.coreMotivation}</p><p className="text-[10px] text-slate-300">Emotionaler Bogen: {arc.emotionalArc}</p>{arc.relationshipDynamics.map((item,i) => <p key={'r'+i} className="text-[10px] text-slate-400">Beziehung: {item}</p>)}{arc.contradictions.map((item,i) => <p key={'c'+i} className="text-[10px] text-amber-300">Spannung: {item}</p>)}</div>)}
+                     {dramaturgyAiResult.findings.map((finding) => <div key={finding.id} className="rounded-lg border border-white/[0.06] bg-black/20 p-2"><p className="text-[10px] text-violet-200">{finding.category} · {finding.severity} · {finding.confidence}</p><p className="text-[11px] text-white">{finding.episodeTitle} / {finding.sceneTitle}</p><p className="text-[10px] text-slate-300">Beleg: {finding.evidence}</p><p className="text-[10px] text-slate-300">Subtext / Deutung: {finding.interpretation}</p><p className="text-[10px] text-cyan-100">Vorschlag: {finding.recommendation}</p></div>)}
+                     {dramaturgyAiResult.storyRecommendations.map((item,i) => <p key={i} className="text-[10px] text-cyan-100">• {item}</p>)}
+                   </div>}
+                 </div>
                  {continuityDetail.storySupervisor.dramaturgyInsights.length > 0 && <div className="space-y-2"><p className="text-[11px] text-slate-300">Dramaturgische Signale · regelbasiert, keine KI-Gewissheit</p>{continuityDetail.storySupervisor.dramaturgyInsights.slice(0, 12).map((insight) => <div key={insight.id} className="rounded-lg bg-black/20 p-2"><p className="text-[10px] text-cyan-200">{insight.category === 'emotion' ? 'Emotion' : insight.category === 'motivation' ? 'Motivation' : 'Möglicher Widerspruch'} · {insight.characterName} · {insight.episodeTitle}</p><p className="text-[10px] text-slate-300">{insight.evidence}</p><p className="text-[10px] text-slate-500">Prüfvorschlag: {insight.recommendation}</p></div>)}</div>}
                  {continuityDetail.storySupervisor.dataWarnings.length > 0 && <p className="text-[10px] text-amber-300">{continuityDetail.storySupervisor.dataWarnings.length} Daten-/Zeitachsenhinweis(e) prüfen.</p>}
                </div>}
