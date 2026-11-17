@@ -40,7 +40,9 @@ jobs:
           # Set it explicitly because make -C alone does not update that environment variable.
           PWD="$XCODEGEN_DIR" make -C "$XCODEGEN_DIR" install PREFIX="$RUNNER_TEMP/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
-          test "$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)" = "2.46.0"
+          VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
+          printf '%s\\n' "$VERSION_OUTPUT"
+          [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml
       - name: Build unsigned iOS Simulator app
