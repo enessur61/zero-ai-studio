@@ -16,8 +16,8 @@ export interface ZeroRouteDecision {
 }
 
 /**
- * Select only a Gemini text model that has passed a real adapter test and is
- * enabled, free-key, zero-cost, and still within its locally tracked quota.
+ * Select only a verified free-cloud text model. Gemini uses ZERO's local quota
+ * guard; Cloudflare uses its own provider-side daily Neuron limit.
  * Local models are deliberately excluded: this server route cannot execute
  * browser/iOS-local inference.
  */
