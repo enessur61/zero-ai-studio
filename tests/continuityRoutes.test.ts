@@ -115,7 +115,7 @@ try {
   assert.equal(applied.applied, true);
   assert.equal(applied.sceneVersion.snapshot.dialogueText, 'Alter Dialog', 'snapshot must preserve the pre-change scene');
   assert.equal(db.projects[0].scenes[0].dialogueText, 'Neuer, manuell geprüfter Dialog');
-  assert.equal(db.continuity!.sceneVersions.at(-1)?.snapshot && (db.continuity!.sceneVersions.at(-1)!.snapshot as any).dialogueText, 'Alter Dialog');
+  assert.equal(db.continuity!.sceneVersions[0]?.snapshot && (db.continuity!.sceneVersions[0]!.snapshot as any).dialogueText, 'Alter Dialog');
   assert.equal(db.continuity!.dramaturgyApplications.length, 1, 'successful application must append an audit record');
   const replay = await request(applyPath, 'POST', applyBody(finalApproval.id));
   assert.equal(replay.status, 409, 'a decision may only be applied once');
@@ -178,7 +178,7 @@ try {
   assert.equal(seriesDetail.locations.length, 1);
   assert.equal(seriesDetail.events.length, 2);
   assert.ok(Array.isArray(seriesDetail.semanticConflicts));
-  assert.equal(seriesDetail.sceneVersions.length, 2);
+  assert.equal(seriesDetail.sceneVersions.length, 3, 'the manual correction must append a third scene snapshot');
 
   forceConflict = true;
   const conflict = await request(`/series/${seriesId}/locations`, 'POST', { name: 'Must not save' });
@@ -194,7 +194,7 @@ try {
   assert.equal(db.continuity?.series.length, 1, 'series record must be retained');
   assert.equal(db.continuity?.knowledge.length, 2, 'knowledge must not be cascade-deleted');
   assert.equal(db.continuity?.locations.length, 1, 'failed revision writes must not leak into persisted state');
-  assert.equal(db.continuity?.sceneVersions.length, 2, 'scene snapshots must be retained');
+  assert.equal(db.continuity?.sceneVersions.length, 3, 'all original and correction snapshots must be retained');
 
   console.log('Continuity HTTP route, shared auth gate, revision-conflict and non-destructive archive tests passed.');
 } finally {

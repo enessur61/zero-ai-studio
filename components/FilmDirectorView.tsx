@@ -162,10 +162,7 @@ export function FilmDirectorView({
         method: 'POST',
         body: JSON.stringify({ decisionId: latest.id, findingId: correctionDraft.findingId, projectId: project.id, sceneId: scene.id, field: correctionDraft.field, expectedPreviousText: scene[correctionDraft.field] ?? '', replacementText: correctionDraft.replacementText }),
       });
-      const updated = await apiRequest<{ project: StudioProject }>(`/api/projects/${project.id}`, {
-        method: 'PUT', body: JSON.stringify({ scenes: project.scenes.map((item) => item.id === scene.id ? { ...item, [correctionDraft.field]: correctionDraft.replacementText } : item), snapshotNote: 'Manuell bestätigte Dramaturgie-Korrektur' }),
-      });
-      onProjectUpdated(updated.project);
+      onProjectUpdated({ ...project, scenes: project.scenes.map((item) => item.id === scene.id ? { ...item, [correctionDraft.field]: correctionDraft.replacementText } : item) });
       setDramaturgyApplications((current) => [...current, result.application]);
       setCorrectionDraft(null);
       setContinuityNotice('Korrektur angewendet. Der vorherige Szenenstand wurde versioniert gesichert.');
