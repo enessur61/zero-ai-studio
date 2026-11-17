@@ -1533,7 +1533,8 @@ app.post('/api/music/compose', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim().slice(0, 1200);
-    const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
+    const rawDurationSec = Number(req.body?.durationSec ?? 30);
+    const durationSec = Math.min(60, Math.max(10, Number.isFinite(rawDurationSec) ? Math.round(rawDurationSec) : 30));
     requireActiveCloudflareTextModel(db);
 
     const response = await generateCloudflareText({
@@ -1805,7 +1806,8 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
   try {
     const idea = String(req.body?.idea ?? '').trim();
     const genre = String(req.body?.genre ?? 'Thriller / Neo-Noir').trim();
-    const targetDurationSec = Math.min(60, Math.max(20, Number(req.body?.targetDurationSec ?? 58)));
+    const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
+    const targetDurationSec = Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
     const generateImages = Boolean(req.body?.generateImages);
 
@@ -1880,7 +1882,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       'Vertikaler Tilt',
     ];
 
-    let mappedScenes: FilmScene[] = (parsed.scenes || []).slice(0, 5).map((s, idx) => ({
+    let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
       title: s.title,
@@ -1898,6 +1900,12 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       status: 'Entwurf',
     }));
 
+    // Keep the requested total duration exact and guarantee four valid 5–15-second scenes.
+    const baseSceneDuration = Math.floor(targetDurationSec / 4);
+    const extraSceneSeconds = targetDurationSec % 4;
+    mappedScenes.forEach((scene, idx) => {
+      scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
+    });
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
 
     const imageGenerationWarnings: string[] = [];
