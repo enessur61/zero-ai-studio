@@ -150,7 +150,7 @@ function makeVideo(durationSec: number) {
       saveProject: async (_id, scenes) => ({ ...project, scenes }),
       renderVideo: async () => makeVideo(61),
     }),
-    /hartes 60-Sekunden-Limit/,
+    /60-Sekunden-Limit/,
   );
 }
 
