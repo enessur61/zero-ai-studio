@@ -12,13 +12,32 @@ export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process
   return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
+/**
+ * Workers AI is only allowed when the operator explicitly confirms that this
+ * account is on the Workers Free plan. On Workers Paid, usage above the daily
+ * free allocation is billable, so credentials alone are never proof of €0.
+ */
+export function isCloudflareWorkersAiFreePlanConfirmed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED?.trim().toLowerCase() === 'true';
+}
+
+function assertCloudflareWorkersAiFreePlanConfirmed(): void {
+  if (!isCloudflareWorkersAiFreePlanConfirmed()) {
+    throw new CloudflareWorkersAiError(
+      'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true darf nur gesetzt werden, wenn das Konto nachweislich auf Workers Free steht. Auf Workers Paid können Überschreitungen kostenpflichtig sein. Kein Provider-Aufruf wurde gestartet.',
+      403,
+    );
+  }
+}
+
 export async function generateCloudflareText(params: {
   prompt: string;
   systemPrompt?: string;
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
-}): Promise<{ text: string; modelId: string }> {
+}): Promise<{
+  assertCloudflareWorkersAiFreePlanConfirmed(); text: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -106,7 +125,8 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
-}): Promise<{ imageDataUrl: string; modelId: string }> {
+}): Promise<{
+  assertCloudflareWorkersAiFreePlanConfirmed(); imageDataUrl: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -182,6 +202,7 @@ export async function transcribeCloudflareAudio(params: {
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
 }): Promise<{
+  assertCloudflareWorkersAiFreePlanConfirmed();
   text: string;
   vtt: string | null;
   segments: Array<{ start: number; end: number; text: string }>;
@@ -276,7 +297,8 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ answer: string; modelId: string }> {
+}): Promise<{
+  assertCloudflareWorkersAiFreePlanConfirmed(); answer: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
