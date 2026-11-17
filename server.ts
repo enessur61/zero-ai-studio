@@ -455,7 +455,7 @@ const restoreHandlers = createRestoreHandlers({
 
 app.post('/api/system/restore', restoreHandlers.json);
 
-app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
+app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -475,7 +475,7 @@ app.get('/api/system/export-manifest', asyncRoute(async (_req, res) => {
   }
 }));
 
-app.get('/api/system/export-zip', asyncRoute(async (_req, res) => {
+app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
     const result = await buildFullProjectZip(process.cwd(), {
@@ -523,7 +523,7 @@ app.get('/api/system/zip-backups', asyncRoute(async (_req, res) => {
   });
 }));
 
-app.post('/api/system/zip-backups', asyncRoute(async (req, res) => {
+app.post('/api/system/zip-backups', zipOperationGate.middleware, asyncRoute(async (req, res) => {
   try {
     const changelog =
       typeof req.body?.changelog === 'string' && req.body.changelog.trim()
