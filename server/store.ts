@@ -581,7 +581,8 @@ export async function loadDb(): Promise<ZeroDatabase> {
     }
     dbCache = parsed;
     if (process.env.DATABASE_URL) {
-      const needsPersistence = !stored || !isDeepStrictEqual(parsed, stored.payload);
+      const persistedShape = JSON.parse(JSON.stringify(parsed)) as ZeroDatabase;
+      const needsPersistence = !stored || !isDeepStrictEqual(persistedShape, stored.payload);
       if (needsPersistence) {
         try {
           const nextRevision = await writePersistentState(parsed, stored?.revision ?? 0);
