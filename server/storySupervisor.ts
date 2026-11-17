@@ -50,17 +50,20 @@ export function buildStorySupervisorReport(
   const versions = state.sceneVersions.filter((item) => item.seriesId === seriesId);
   const linkedIds = new Set([...series.projectIds, ...versions.map((item) => item.projectId)]);
   const episodes = projects.filter((project) => linkedIds.has(project.id))
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-    .map((project) => ({
-      projectId: project.id,
-      title: project.title,
-      createdAt: project.createdAt,
-      sceneCount: project.scenes.length,
-      characterIds: [...new Set(project.scenes.flatMap((scene) => scene.characterIds))],
-    }));
+    .sort((a, b) => Date.parse(a.createdAt || '') - Date.parse(b.createdAt || ''))
+    .map((project) => {
+      const scenes = Array.isArray(project.scenes) ? project.scenes : [];
+      return {
+        projectId: project.id,
+        title: project.title || project.id,
+        createdAt: project.createdAt || '',
+        sceneCount: scenes.length,
+        characterIds: [...new Set(scenes.flatMap((scene) => Array.isArray(scene.characterIds) ? scene.characterIds : []))],
+      };
+    });
   const episodeById = new Map(episodes.map((episode) => [episode.projectId, episode]));
   const sceneProject = new Map<string, string>();
-  for (const project of projects) for (const scene of project.scenes) sceneProject.set(scene.id, project.id);
+  for (const project of projects) for (const scene of Array.isArray(project.scenes) ? project.scenes : []) sceneProject.set(scene.id, project.id);
   for (const version of versions) sceneProject.set(version.sceneId, version.projectId);
 
   const events = state.events.filter((event) => event.seriesId === seriesId).sort(byTime);
@@ -74,7 +77,7 @@ export function buildStorySupervisorReport(
 
   const characterArcs = [...characterIds].map((characterId) => {
     const profile = characterMap.get(characterId);
-    const appearances = events.filter((event) => Boolean(event.sceneId) && event.characterIds.includes(characterId));
+    const appearances = events.filter((event) => Boolean(event.sceneId) && Array.isArray(event.characterIds) && event.characterIds.includes(characterId));
     const episodeTitles = [...new Set(appearances.map((event) => {
       const projectId = event.sceneId ? sceneProject.get(event.sceneId) : undefined;
       return projectId ? episodeById.get(projectId)?.title : undefined;
@@ -86,7 +89,7 @@ export function buildStorySupervisorReport(
       ? `Auftritt in ${episodeTitles.length || 1} Episode(n) und ${appearances.length} erfassten Szenen; ${milestones.length} Wissensmeilenstein(e).`
       : `Noch keine Szenenauftritte in der Serienzeitachse erfasst; ${milestones.length} Wissensmeilenstein(e).`;
     return {
-      characterId, name: profile?.name || characterId, role: profile?.role || '',
+      characterId, name: profile?.name || String(characterId), role: profile?.role || '',
       episodeTitles, appearanceCount: appearances.length,
       ...(first ? { firstAppearanceAt: first.occurredAt } : {}),
       ...(last ? { lastAppearanceAt: last.occurredAt } : {}),
