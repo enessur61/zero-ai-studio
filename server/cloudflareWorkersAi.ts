@@ -1,3 +1,5 @@
+import { assertCloudflareWorkersAiAllowed, isCloudflareWorkersAiAllowed } from './cloudflareBudgetGate.ts';
+
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 
@@ -9,7 +11,7 @@ export class CloudflareWorkersAiError extends Error {
 }
 
 export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
+  return isCloudflareWorkersAiAllowed(env) && Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
 export async function generateCloudflareText(params: {
@@ -19,6 +21,7 @@ export async function generateCloudflareText(params: {
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -38,7 +41,7 @@ export async function generateCloudflareText(params: {
     let response: Response | undefined;
     // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
     // those server failures; never retry 401/403/429 or switch to a paid provider.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -59,8 +62,6 @@ export async function generateCloudflareText(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine HTTP-Antwort geliefert.');
 
@@ -107,6 +108,7 @@ export async function generateCloudflareImage(params: {
   steps?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -122,7 +124,7 @@ export async function generateCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -138,8 +140,6 @@ export async function generateCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
     const payload = await response.json().catch(() => null) as {
@@ -187,6 +187,7 @@ export async function transcribeCloudflareAudio(params: {
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -200,7 +201,7 @@ export async function transcribeCloudflareAudio(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -217,8 +218,6 @@ export async function transcribeCloudflareAudio(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine HTTP-Antwort geliefert.');
     const payload = await response.json().catch(() => null) as {
@@ -277,6 +276,7 @@ export async function analyzeCloudflareImage(params: {
   question: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ answer: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -296,7 +296,7 @@ export async function analyzeCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
@@ -316,8 +316,6 @@ export async function analyzeCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine HTTP-Antwort geliefert.');
     const payload = await response.json().catch(() => null) as {
