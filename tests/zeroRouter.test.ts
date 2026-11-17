@@ -253,3 +253,18 @@ assert.equal(
 
 const unverifiedImage = makeMediaModel('flux-1-schnell-free', 'Bildgenerierung');
 assert.equal(chooseZeroMediaModel([unverifiedImage], budget, 'image', [], now), null);
+
+const verifiedFluxImage = {
+  ...unverifiedImage,
+  executionMode: 'FREE CLOUD' as const,
+  status: 'FUNKTIONIERT' as const,
+  adapterId: 'cloudflare-workers-ai-image',
+  hasRealAdapter: true,
+  enabled: true,
+  testPassed: true,
+};
+assert.equal(
+  chooseZeroMediaModel([verifiedFluxImage], budget, 'image', [], now, 'flux-1-schnell-free')?.modelId,
+  'flux-1-schnell-free',
+  'a live-tested Cloudflare FLUX image model uses its provider-side shared Neuron allocation',
+);
