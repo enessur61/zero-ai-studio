@@ -32,10 +32,10 @@ interface GeneratedImageItem {
 async function cropImageToAspectRatio(dataUrl: string, aspectRatio: '16:9' | '9:16' | '1:1' | '4:3'): Promise<string> {
   if (aspectRatio === '1:1') return dataUrl;
   const image = new Image();
-  image.src = dataUrl;
   await new Promise<void>((resolve, reject) => {
     image.onload = () => resolve();
     image.onerror = () => reject(new Error('Das generierte Bild konnte nicht für das Zielformat geöffnet werden.'));
+    image.src = dataUrl;
   });
 
   const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
