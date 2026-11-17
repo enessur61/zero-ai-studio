@@ -355,11 +355,12 @@ jobs:
               throw new Error('Client-reported local availability must not be mistaken for trusted verification: ' + path);
             }
             const disabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
-            const disabledModel = (await disabledResponse.json()).model;
+            const disabledPayload = await disabledResponse.json();
+            const disabledModel = disabledPayload.model;
             if (!disabledResponse.ok || disabledModel?.enabled !== false ||
                 disabledModel?.testPassed !== false || disabledModel?.hasRealAdapter !== false ||
                 disabledModel?.status !== 'BROWSER TEST ERFORDERLICH') {
-              throw new Error('Local availability toggle changed trusted verification state: ' + path + ' ' + JSON.stringify({ disabledModel, expectedStatus: 'BROWSER TEST ERFORDERLICH' }));
+              throw new Error('Local availability toggle changed trusted verification state: ' + path + ' ' + JSON.stringify({ status: disabledResponse.status, error: disabledPayload.error, disabledModel, expectedStatus: 'BROWSER TEST ERFORDERLICH' }));
             }
             const enabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
             const enabledModel = (await enabledResponse.json()).model;
