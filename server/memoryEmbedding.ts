@@ -21,22 +21,27 @@ export async function runMemoryEmbedding(params: {
   recordAudit: (entry: Omit<BudgetAuditEvent, 'id' | 'timestamp'>) => void;
   embed: (modelId: string, contents: string[]) => Promise<number[] | undefined>;
   persistExhausted?: () => Promise<void> | void;
+  reserveQuota?: () => Promise<void>;
 }): Promise<MemoryEmbeddingResult> {
-  const { budgetGuard, action, contents, recordAudit, embed, persistExhausted } = params;
+  const { budgetGuard, action, contents, recordAudit, embed, persistExhausted, reserveQuota } = params;
 
   // The guard may already audit a blocked request. Track that so malformed
   // metadata is audited here without duplicating the guard's own audit event.
   let guardAudited = false;
   try {
-    assertZeroBudgetModelAllowed(
-      MEMORY_EMBEDDING_MODEL_ID,
-      action,
-      budgetGuard,
-      (entry) => {
-        guardAudited = true;
-        recordAudit(entry);
-      },
-    );
+    if (reserveQuota) {
+      await reserveQuota();
+    } else {
+      assertZeroBudgetModelAllowed(
+        MEMORY_EMBEDDING_MODEL_ID,
+        action,
+        budgetGuard,
+        (entry) => {
+          guardAudited = true;
+          recordAudit(entry);
+        },
+      );
+    }
   } catch (err) {
     if (!guardAudited) {
       recordAudit({

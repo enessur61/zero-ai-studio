@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/asyncRoute.test.ts && tsx tests/safeProjectAssetUrl.test.ts && tsx tests/zipExporterSecurity.test.ts && tsx tests/filmLimits.test.ts && tsx tests/audioUtils.test.ts && tsx tests/mediaUtils.test.ts && tsx tests/pwa.test.ts && tsx tests/zeroRouter.test.ts && tsx tests/geminiClient.test.ts && tsx tests/quotaGuardHardening.test.ts && tsx tests/srt.test.ts && tsx tests/webgpuPersistedState.test.ts && tsx tests/memoryEmbedding.test.ts && tsx tests/manualQuotaReset.test.ts",
+    "test": "tsx tests/asyncRoute.test.ts && tsx tests/concurrencyGate.test.ts && tsx tests/safeProjectAssetUrl.test.ts && tsx tests/zipExporterSecurity.test.ts && tsx tests/filmLimits.test.ts && tsx tests/audioUtils.test.ts && tsx tests/mediaUtils.test.ts && tsx tests/pwa.test.ts && tsx tests/zeroRouter.test.ts && tsx tests/geminiClient.test.ts && tsx tests/quotaGuardHardening.test.ts && tsx tests/srt.test.ts && tsx tests/webgpuPersistedState.test.ts && tsx tests/memoryEmbedding.test.ts && tsx tests/manualQuotaReset.test.ts && tsx tests/sceneVideoStore.test.ts && tsx tests/cloudflareWorkersAi.test.ts",
     "ci:verify": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
