@@ -7,7 +7,7 @@ const ROUTABLE_GEMINI_TEXT_MODELS = [
   'gemini-3.1-flash-lite',
 ] as const;
 
-const ROUTABLE_MODEL_SET = new Set<string>(ROUTABLE_GEMINI_TEXT_MODELS);
+const ROUTABLE_MODEL_SET = new Set<string>([...ROUTABLE_GEMINI_TEXT_MODELS, 'cloudflare-glm-4.7-flash']);
 
 export interface ZeroRouteDecision {
   modelId: string;
@@ -35,6 +35,7 @@ export function chooseZeroChatModel(
     if (!model.enabled || !model.hasRealAdapter || !model.testPassed) return false;
     if (model.requiresPaidKey || model.requiresExternalGpu || model.costEur !== 0) return false;
     if (model.status !== 'FUNKTIONIERT') return false;
+    if (model.id === 'cloudflare-glm-4.7-flash') return true; // Cloudflare enforces its own daily Neuron cap; no paid fallback.
     return hasAvailableQuota(budget, model.id, today);
   });
 
