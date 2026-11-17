@@ -521,7 +521,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
         prev.status === 'BROWSER TEST ERFORDERLICH' &&
         prev.testPassed === false &&
         prev.hasRealAdapter === false;
-      const merged = shouldKeepPrevState
+      const merged: ModelDefinition = shouldKeepPrevState
         ? {
             ...def,
             enabled: def.requiresPaidKey ? false : prev.enabled,
