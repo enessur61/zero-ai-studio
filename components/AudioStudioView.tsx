@@ -34,6 +34,8 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   const [expressive, setExpressive] = useState(false);
   const [ttsLoading, setTtsLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioModelId, setAudioModelId] = useState('gemini-3.8-flash-lite-tts');
+  const [audioVoiceLabel, setAudioVoiceLabel] = useState('Kore');
   const [ttsError, setTtsError] = useState<string | null>(null);
   const [targetProjectId, setTargetProjectId] = useState(projects[0]?.id ?? '');
   const [savingAudio, setSavingAudio] = useState(false);
@@ -62,8 +64,32 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         body: JSON.stringify({ text, voiceName, style, expressive }),
       });
       setAudioUrl(data.audioDataUrl);
+      setAudioModelId(expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts');
+      setAudioVoiceLabel(voiceName);
     } catch (err) {
       setTtsError(err instanceof Error ? err.message : 'TTS fehlgeschlagen');
+    } finally {
+      setTtsLoading(false);
+    }
+  }
+
+  async function handleGeneratePiperTts() {
+    if (!text.trim() || ttsLoading) return;
+    setTtsLoading(true);
+    setTtsError(null);
+    try {
+      const data = await apiRequest<{ audioDataUrl: string; modelUsed: string }>('/api/audio/tts/piper', {
+        method: 'POST',
+        body: JSON.stringify({ text, speed: 0.96 }),
+      });
+      setAudioUrl(data.audioDataUrl);
+      setAudioModelId('piper-tts-de-worker');
+      setAudioVoiceLabel('Thorsten Deutsch');
+      setSavedAudioMsg(null);
+    } catch (err) {
+      setTtsError(err instanceof Error
+        ? err.message
+        : 'Piper-WAV konnte nicht erstellt werden. Verbinde den eigenen ZERO-Worker.');
     } finally {
       setTtsLoading(false);
     }
@@ -308,7 +334,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
             >
               {ttsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
-              WAV generieren (Free Tier)
+              Gemini WAV (Free Tier · eigener API-Key)
             </button>
 
             <button
@@ -316,7 +342,17 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               onClick={handleAppleWebSpeech}
               className="min-h-[44px] px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-white whitespace-nowrap"
             >
-              iOS / Lokal vorlesen
+              iPhone lokal vorlesen · kostenlos
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleGeneratePiperTts()}
+              disabled={ttsLoading || !text.trim()}
+              className="min-h-[44px] px-3.5 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 disabled:opacity-50 text-xs font-medium text-teal-300 whitespace-nowrap"
+            >
+              {ttsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
+              Piper Deutsch WAV · eigener Worker
             </button>
 
             {nativeIOSActive && (
@@ -336,7 +372,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               <div className="flex flex-wrap items-center gap-2">
                 <a
                   href={audioUrl}
-                  download={`zero-voice-${voiceName.toLowerCase()}.wav`}
+                  download={`zero-voice-${audioVoiceLabel.toLowerCase().replace(/[^a-z0-9-]+/g, '-')}.wav`}
                   className="min-h-[40px] px-3.5 rounded-xl bg-[#090B10] border border-white/[0.1] text-xs text-slate-200 inline-flex items-center gap-1.5"
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -370,11 +406,9 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                               method: 'POST',
                               body: JSON.stringify({
                                 type: 'audio',
-                                title: `Voiceover (${voiceName}): ${text.slice(0, 36)}`,
+                                title: `Voiceover (${audioVoiceLabel}): ${text.slice(0, 36)}`,
                                 url: audioUrl,
-                                modelId: expressive
-                                  ? 'gemini-3.8-flash-tts'
-                                  : 'gemini-3.8-flash-lite-tts',
+                                modelId: audioModelId,
                               }),
                             }
                           );
