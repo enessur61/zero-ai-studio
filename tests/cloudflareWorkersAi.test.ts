@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
+const originalFreePlan = process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
+  delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
   assert.equal(isCloudflareWorkersAiConfigured(), false);
 
   await assert.rejects(
@@ -17,6 +19,23 @@ try {
   process.env.CLOUDFLARE_ACCOUNT_ID = 'account-test';
   process.env.CLOUDFLARE_API_TOKEN = 'secret-test-token';
   assert.equal(isCloudflareWorkersAiConfigured(), true);
+
+  assert.equal(isCloudflareWorkersAiFreePlanConfirmed(), false);
+  let blockedProviderCalls = 0;
+  await assert.rejects(
+    () => generateCloudflareText({
+      prompt: 'must not leave ZERO without a confirmed free plan',
+      fetchImpl: async () => {
+        blockedProviderCalls += 1;
+        return new Response('{}', { status: 200 });
+      },
+    }),
+    /Workers Free plan/i,
+  );
+  assert.equal(blockedProviderCalls, 0, 'unconfirmed Cloudflare billing must block before network access');
+
+  process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
+  assert.equal(isCloudflareWorkersAiFreePlanConfirmed(), true);
 
   let requestUrl = '';
   let requestInit: RequestInit | undefined;
@@ -240,4 +259,6 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
+  if (originalFreePlan === undefined) delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
+  else process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = originalFreePlan;
 }
