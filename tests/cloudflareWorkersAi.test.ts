@@ -39,7 +39,12 @@ try {
   assert.equal(result.modelId, '@cf/zai-org/glm-4.7-flash');
   assert.match(requestUrl, /accounts\/account-test\/ai\/run\/@cf\/zai-org\/glm-4\.7-flash$/);
   assert.equal((requestInit?.headers as Record<string, string>).Authorization, 'Bearer secret-test-token');
-  assert.equal(JSON.parse(String(requestInit?.body)).max_completion_tokens, 24);
+  const requestBody = JSON.parse(String(requestInit?.body));
+  assert.equal(requestBody.max_completion_tokens, 24);
+  assert.deepEqual(requestBody.messages, [
+    { role: 'system', content: 'Du bist ZERO.' },
+    { role: 'user', content: 'Antworte BEREIT' },
+  ]);
 
   await assert.rejects(
     () => generateCloudflareText({
