@@ -27,9 +27,9 @@ export async function generateCloudflareText(params: {
     throw new CloudflareWorkersAiError('Cloudflare-Eingabe ist leer oder überschreitet das sichere 24.000-Zeichen-Limit.');
   }
 
-  const prompt = params.systemPrompt
-    ? `Systemanweisung:\n${params.systemPrompt.slice(0, 8_000)}\n\nNutzeranfrage:\n${params.prompt}`
-    : params.prompt;
+  if (params.systemPrompt && params.systemPrompt.length > 8_000) {
+    throw new CloudflareWorkersAiError('Systemanweisung überschreitet das sichere 8.000-Zeichen-Limit.');
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
