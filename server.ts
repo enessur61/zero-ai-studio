@@ -1316,13 +1316,29 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
   }
 }));
 
+function getPiperTtsWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
+  const configuredUrl = process.env.ZERO_TTS_WORKER_URL?.trim();
+  const token = process.env.ZERO_TTS_WORKER_TOKEN?.trim();
+  if (!configuredUrl || !token) return null;
+  try {
+    const baseUrl = new URL(configuredUrl);
+    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    baseUrl.pathname = '/';
+    baseUrl.search = '';
+    baseUrl.hash = '';
+    return { baseUrl, headers: { Accept: 'audio/wav, application/json', Authorization: `Bearer ${token}` } };
+  } catch {
+    return null;
+  }
+}
+
 // Free, self-hosted German TTS through the optional Wan/Piper worker.
 // The voice model runs on the user's own host; no external TTS provider is contacted.
 app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
-  const worker = getWanWorkerConfig();
+  const worker = getPiperTtsWorkerConfig();
   if (!worker) {
     return res.status(503).json({
-      error: 'Der lokale Piper-Sprachworker ist noch nicht verbunden. Verbinde den eigenen ZERO-Worker mit ZERO_VIDEO_ENGINE_URL und ZERO_VIDEO_ENGINE_TOKEN. Apple-Web-Speech bleibt direkt auf dem iPhone kostenlos verfügbar.',
+      error: 'Der kostenlose deutsche Piper-Sprachdienst ist noch nicht verbunden. ZERO_TTS_WORKER_URL und ZERO_TTS_WORKER_TOKEN müssen in Render gesetzt sein. iPhone-Web-Speech bleibt direkt lokal verfügbar.',
       costEur: 0,
       paidFallback: false,
     });
