@@ -29,7 +29,7 @@ export interface SceneVersion {
 }
 export interface SemanticContinuityConflict {
   id: string;
-  code: 'DEAD_CHARACTER_ON_SCREEN' | 'IDENTITY_REVEALED_EARLY' | 'IDENTITY_KNOWLEDGE_EARLY' | 'IDENTITY_CANON_MISMATCH' | 'SECRET_REVEALED_EARLY' | 'SECRET_KNOWN_EARLY';
+  code: 'DEAD_CHARACTER_ON_SCREEN' | 'IDENTITY_REVEALED_EARLY' | 'IDENTITY_KNOWLEDGE_EARLY' | 'IDENTITY_CANON_MISMATCH' | 'SECRET_REVEALED_EARLY' | 'SECRET_KNOWN_EARLY' | 'STORY_CANON_DIVERGENCE';
   severity: 'error' | 'warning';
   message: string;
   suggestion: string;
