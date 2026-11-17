@@ -35,8 +35,8 @@ def has_persistent_mount(path: Path) -> bool:
 
 
 PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
-if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true" and not PERSISTENT_MOUNT_CONFIGURED:
-    raise RuntimeError("WAN_REQUIRE_PERSISTENT_STORAGE=true but WAN_OUTPUT_DIR is not on a mounted persistent volume")
+if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true":
+    require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
 
