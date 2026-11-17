@@ -66,8 +66,7 @@ const MEDIA_TASKS: Record<ZeroMediaTask, {
 }> = {
   image: {
     category: 'Bildgenerierung',
-    // No image cloud endpoint is currently verified as safely free and executable.
-    cloudModelIds: [],
+    cloudModelIds: ['flux-1-schnell-free'],
     localModelIds: ['zero-canvas-img2img'],
   },
   video: {
@@ -82,7 +81,7 @@ const MEDIA_TASKS: Record<ZeroMediaTask, {
   },
   transcription: {
     category: 'Sprache & Audio',
-    cloudModelIds: ['gemini-3.5-transcribe'],
+    cloudModelIds: ['cloudflare-whisper-large-v3-turbo', 'gemini-3.5-transcribe'],
     localModelIds: ['whisper-cpp-small'],
   },
 };
@@ -146,6 +145,10 @@ export function chooseZeroMediaModel(
     if (model.status !== 'FUNKTIONIERT' && model.status !== 'LOKAL INSTALLIERT') return false;
 
     if (spec.cloudModelIds.includes(model.id)) {
+      // Cloudflare enforces its shared Workers AI daily Neuron allocation provider-side.
+      if (model.id === 'flux-1-schnell-free' || model.id === 'cloudflare-whisper-large-v3-turbo') {
+        return model.executionMode === 'FREE CLOUD';
+      }
       return model.executionMode === 'FREE CLOUD' && hasAvailableQuota(budget, model.id, today);
     }
     return false;

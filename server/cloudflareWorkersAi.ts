@@ -52,7 +52,7 @@ export async function generateCloudflareText(params: {
               ...(params.systemPrompt ? [{ role: 'system', content: params.systemPrompt.slice(0, 8_000) }] : []),
               { role: 'user', content: params.prompt },
             ],
-            max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 1200),
+            max_completion_tokens: Math.min(Math.max(params.maxTokens ?? 700, 1), 2048),
             temperature: 0.3,
             ...(params.enableThinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: params.enableThinking } }),
           }),
@@ -94,6 +94,176 @@ export async function generateCloudflareText(params: {
       throw new CloudflareWorkersAiError('Cloudflare-Anfrage nach 45 Sekunden abgebrochen (Timeout).');
     }
     throw new CloudflareWorkersAiError('Cloudflare Workers AI ist momentan nicht erreichbar.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+
+const CLOUDFLARE_IMAGE_MODEL_ID = '@cf/black-forest-labs/flux-1-schnell';
+
+export async function generateCloudflareImage(params: {
+  prompt: string;
+  steps?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<{ imageDataUrl: string; modelId: string }> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !token) {
+    throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
+  }
+  const prompt = params.prompt.trim();
+  if (!prompt || prompt.length > 2_048) {
+    throw new CloudflareWorkersAiError('Bild-Prompt muss zwischen 1 und 2.048 Zeichen lang sein.');
+  }
+  const steps = Math.min(Math.max(Math.floor(params.steps ?? 4), 1), 8);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+  try {
+    const fetcher = params.fetchImpl ?? fetch;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetcher(
+        `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prompt,
+            steps,
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+    if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
+    const payload = await response.json().catch(() => null) as {
+      success?: boolean;
+      result?: { image?: unknown };
+      errors?: Array<{ message?: string }>;
+    } | null;
+    if (!response.ok || payload?.success === false) {
+      const providerMessage = payload?.errors?.[0]?.message;
+      if (response.status === 429) {
+        throw new CloudflareWorkersAiError('Cloudflare Workers AI Free-Kontingent oder Rate-Limit erreicht (HTTP 429). Kein kostenpflichtiger Fallback.', 429);
+      }
+      if (response.status === 403) {
+        throw new CloudflareWorkersAiError('Cloudflare verweigert FLUX den Zugriff (HTTP 403). Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang.', 403);
+      }
+      throw new CloudflareWorkersAiError(`Cloudflare FLUX Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
+    }
+    const image = payload?.result?.image;
+    if (typeof image !== 'string' || image.length < 100) {
+      throw new CloudflareWorkersAiError('Cloudflare FLUX hat kein gültiges Base64-Bild zurückgegeben.');
+    }
+    return { imageDataUrl: `data:image/jpeg;base64,${image}`, modelId: CLOUDFLARE_IMAGE_MODEL_ID };
+  } catch (error) {
+    if (error instanceof CloudflareWorkersAiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new CloudflareWorkersAiError('Cloudflare FLUX Bildgenerierung nach 90 Sekunden abgebrochen (Timeout).');
+    }
+    throw new CloudflareWorkersAiError('Cloudflare FLUX Bildgenerierung ist momentan nicht erreichbar.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+
+const CLOUDFLARE_TRANSCRIPTION_MODEL_ID = '@cf/openai/whisper-large-v3-turbo';
+
+export async function transcribeCloudflareAudio(params: {
+  audioBase64: string;
+  language?: string;
+  task?: 'transcribe' | 'translate';
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  text: string;
+  vtt: string | null;
+  segments: Array<{ start: number; end: number; text: string }>;
+  modelId: string;
+}> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !token) {
+    throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
+  }
+  if (!params.audioBase64 || params.audioBase64.length > 24_000_000) {
+    throw new CloudflareWorkersAiError('Audiodaten fehlen oder überschreiten das sichere 18-MB-Eingabelimit.');
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+  try {
+    const fetcher = params.fetchImpl ?? fetch;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetcher(
+        `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            audio: params.audioBase64,
+            task: params.task ?? 'transcribe',
+            ...(params.language ? { language: params.language } : {}),
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+    if (!response) throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine HTTP-Antwort geliefert.');
+    const payload = await response.json().catch(() => null) as {
+      success?: boolean;
+      result?: {
+        text?: unknown;
+        vtt?: unknown;
+        segments?: Array<{ start?: unknown; end?: unknown; text?: unknown }>;
+      };
+      errors?: Array<{ message?: string }>;
+    } | null;
+    if (!response.ok || payload?.success === false) {
+      const providerMessage = payload?.errors?.[0]?.message;
+      if (response.status === 429) {
+        throw new CloudflareWorkersAiError('Cloudflare Workers AI Free-Kontingent oder Rate-Limit erreicht (HTTP 429). Kein kostenpflichtiger Fallback.', 429);
+      }
+      if (response.status === 403) {
+        throw new CloudflareWorkersAiError('Cloudflare verweigert Whisper den Zugriff (HTTP 403). Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang.', 403);
+      }
+      throw new CloudflareWorkersAiError(`Cloudflare Whisper Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
+    }
+    if (!payload?.result || typeof payload.result !== 'object' || typeof payload.result.text !== 'string') {
+      throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine gültige Transkriptionsantwort geliefert.');
+    }
+    const text = payload.result.text.trim();
+    const segments = (payload.result.segments ?? []).flatMap((segment) => {
+      const start = Number(segment.start);
+      const end = Number(segment.end);
+      const segmentText = typeof segment.text === 'string' ? segment.text.trim() : '';
+      return Number.isFinite(start) && Number.isFinite(end) && end >= start && segmentText
+        ? [{ start, end, text: segmentText }]
+        : [];
+    });
+    return {
+      text,
+      vtt: typeof payload?.result?.vtt === 'string' ? payload.result.vtt : null,
+      segments,
+      modelId: CLOUDFLARE_TRANSCRIPTION_MODEL_ID,
+    };
+  } catch (error) {
+    if (error instanceof CloudflareWorkersAiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new CloudflareWorkersAiError('Cloudflare Whisper Transkription nach 90 Sekunden abgebrochen (Timeout).');
+    }
+    throw new CloudflareWorkersAiError('Cloudflare Whisper ist momentan nicht erreichbar.');
   } finally {
     clearTimeout(timeout);
   }

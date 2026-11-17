@@ -79,15 +79,14 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
     }
   } else if (
     def.id === 'gpt-oss-20b-free' ||
-    def.id === 'flux-1-schnell-free' ||
     def.id === 'sd-turbo-free' ||
     def.id === 'sana-free'
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
-  } else if (def.id === 'cloudflare-glm-4.7-flash') {
+  } else if (['cloudflare-glm-4.7-flash', 'flux-1-schnell-free', 'cloudflare-whisper-large-v3-turbo'].includes(def.id)) {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
-    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem Server. Cloudflare Free stellt 10.000 Neurons pro Tag bereit; kein kostenpflichtiger Fallback.';
+    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem ZERO-Server. Cloudflare Workers AI Free stellt 10.000 Neurons pro Tag für alle Modelle gemeinsam bereit; kein kostenpflichtiger Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';
@@ -479,7 +478,6 @@ export async function loadDb(): Promise<ZeroDatabase> {
         (prev.status === 'ADAPTER FEHLT' || prev.lastTestMessage.includes('"code":'));
       const legacyPollinationsModel = [
         'gpt-oss-20b-free',
-        'flux-1-schnell-free',
         'sd-turbo-free',
         'sana-free',
       ].includes(def.id);

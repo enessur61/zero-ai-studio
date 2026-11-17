@@ -293,6 +293,7 @@ export function classifyProviderError(err: unknown): ProviderErrorKind {
     lower.includes('per minute') ||
     lower.includes('per second') ||
     lower.includes('rate limit') ||
+    lower.includes('rate-limit') ||
     lower.includes('rate_limit') ||
     lower.includes('ratelimit') ||
     lower.includes('too many requests') ||

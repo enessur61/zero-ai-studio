@@ -371,7 +371,21 @@ jobs:
               throw new Error('Local availability could not be re-enabled without false verification: ' + path);
             }
           }
-          for (const id of ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free']) {
+          const fluxImageModel = models.find((entry) => entry.id === 'flux-1-schnell-free');
+          if (!fluxImageModel || fluxImageModel.enabled || !fluxImageModel.hasRealAdapter ||
+              fluxImageModel.testPassed || fluxImageModel.freeTierType !== 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)') {
+            throw new Error('Cloudflare FLUX must have a real adapter but stay disabled until a real live test succeeds.');
+          }
+          const fluxToggle = await authFetch('/api/models/flux-1-schnell-free/toggle', { method: 'POST' });
+          if (fluxToggle.status !== 409) throw new Error('Untested Cloudflare FLUX must not be activated.');
+          const whisperModel = models.find((entry) => entry.id === 'cloudflare-whisper-large-v3-turbo');
+          if (!whisperModel || whisperModel.enabled || !whisperModel.hasRealAdapter ||
+              whisperModel.testPassed || whisperModel.freeTierType !== 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)') {
+            throw new Error('Cloudflare Whisper must have a real adapter but stay disabled until a live test succeeds.');
+          }
+          const whisperToggle = await authFetch('/api/models/cloudflare-whisper-large-v3-turbo/toggle', { method: 'POST' });
+          if (whisperToggle.status !== 409) throw new Error('Untested Cloudflare Whisper must not be activated.');
+          for (const id of ['gpt-oss-20b-free', 'sd-turbo-free', 'sana-free']) {
             const model = models.find((entry) => entry.id === id);
             if (!model || model.enabled || model.hasRealAdapter || model.freeTierType !== 'DERZEIT NICHT VERFÜGBAR') {
               throw new Error('Unsafe/unverified model state: ' + id);

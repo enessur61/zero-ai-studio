@@ -29,7 +29,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
-import { generateCloudflareText, isCloudflareWorkersAiConfigured } from './server/cloudflareWorkersAi.ts';
+import { generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -1206,11 +1206,35 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
 
 // === ZERO IMAGE STUDIO ===
 app.post('/api/image/generate', asyncRoute(async (req, res) => {
-  const rawPrompt = String(req.body?.prompt ?? '').trim();
-  if (!rawPrompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
-  return res.status(503).json({
-    error: 'Bildgenerierung ist vorübergehend deaktiviert: Es gibt aktuell keinen verifizierten, dauerhaft kostenlosen Bild-Provider. Kein kostenpflichtiger Fallback.',
-  });
+  const prompt = String(req.body?.prompt ?? '').trim();
+  if (!prompt) return res.status(400).json({ error: 'Bild-Prompt fehlt.' });
+  if (prompt.length > 2_048) return res.status(400).json({ error: 'Der Bild-Prompt darf maximal 2.048 Zeichen lang sein.' });
+  const requestedModel = String(req.body?.model ?? 'flux');
+  if (requestedModel !== 'flux') {
+    return res.status(400).json({ error: 'Aktuell ist nur FLUX.1 Schnell als kostenloser Cloud-Bildadapter verifiziert. SD Turbo und Sana bleiben deaktiviert.' });
+  }
+
+  let db: Awaited<ReturnType<typeof loadDb>> | null = null;
+  try {
+    db = await loadDb();
+    const routeDecision = chooseZeroMediaModel(db.models, db.budgetGuard, 'image', [], new Date(), 'flux-1-schnell-free');
+    if (!routeDecision) {
+      return res.status(503).json({
+        error: 'FLUX ist noch nicht aktiviert. Bitte im Model Hub einen erfolgreichen Live-Test für FLUX.1 Schnell (Cloudflare Workers AI) durchführen. Kein kostenpflichtiger Fallback.',
+      });
+    }
+    const image = await generateFreeCloudImage({
+      prompt,
+      model: 'flux',
+    });
+    res.json({ ...image, modelId: 'flux-1-schnell-free', costEur: 0 });
+  } catch (err) {
+    const message = db
+      ? formatGermanApiError(err)
+      : 'ZERO-Datenbank ist vorübergehend nicht erreichbar. Bitte erneut versuchen.';
+    console.error('[ZERO IMAGE] Cloudflare FLUX request failed:', err instanceof Error ? err.message : 'unknown error');
+    res.status(503).json({ error: message, costEur: 0, paidFallback: false });
+  }
 }));
 
 app.post('/api/image/analyze', asyncRoute(async (req, res) => {
@@ -1368,7 +1392,14 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
   try {
     const database = await loadDb();
     db = database;
-    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'transcription');
+    const routeDecision = chooseZeroMediaModel(
+      database.models,
+      database.budgetGuard,
+      'transcription',
+      [],
+      new Date(),
+      'cloudflare-whisper-large-v3-turbo',
+    );
     if (!routeDecision) {
       return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses Transkriptionsmodell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
     }
@@ -1393,6 +1424,34 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     if (!audio) {
       return res.status(400).json({
         error: 'Ungültige Audiodatei. Unterstützte Formate: WAV, MP3, MP4/M4A, AAC, OGG, WebM, FLAC und AIFF (maximal 18 MB).',
+      });
+    }
+
+    if (selectedTranscriptionModel === 'cloudflare-whisper-large-v3-turbo') {
+      // Workers AI enforces its shared 10,000-Neuron daily free allocation provider-side.
+      // ZERO records no local Gemini quota and never switches to a paid transcription provider.
+      const result = await transcribeCloudflareAudio({
+        audioBase64: audio.data,
+        language: 'de',
+        task: 'transcribe',
+      });
+      if (!result.text) throw new Error('Whisper hat keine Sprache im Audio erkannt.');
+      const { srt, subtitleCueCount } = buildSrtFromTimedWords(
+        result.segments.map((segment) => ({
+          word: segment.text,
+          startOffset: `${segment.start}s`,
+          endOffset: `${segment.end}s`,
+        })),
+      );
+      await saveDb(database);
+      return res.json({
+        transcript: result.text,
+        rawText: result.text,
+        srt,
+        subtitleCueCount,
+        timestampsAvailable: subtitleCueCount > 0,
+        modelUsed: result.modelId,
+        costEur: 0,
       });
     }
 
@@ -1473,53 +1532,67 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
 app.post('/api/music/compose', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
-    const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim();
-    const durationSec = Math.min(60, Math.max(10, Number(req.body?.durationSec ?? 30)));
+    const prompt = String(req.body?.prompt ?? 'Dunkler Berliner Thriller Soundtrack mit tiefer Spannung').trim().slice(0, 1200);
+    const rawDurationSec = Number(req.body?.durationSec ?? 30);
+    const durationSec = Math.min(60, Math.max(10, Number.isFinite(rawDurationSec) ? Math.round(rawDurationSec) : 30));
+    requireActiveCloudflareTextModel(db);
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'MUSIC_COMPOSE_PARAMS', db);
+    const response = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO MUSIC DIRECTOR, ein Filmkomponist und Sounddesigner. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext. Werte und Tonhöhen müssen innerhalb der angegebenen Grenzen liegen.',
+      prompt: `Entwirf musikalische Synthese-Parameter für einen lokalen WebAudio DSP-Synthesizer.
+Stimmung und Einsatz: ${prompt}
+Dauer: ${durationSec} Sekunden.
 
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Entwirf musikalische Synthese-Parameter für ein prozedurales Web-Audio-Synthesizer-Stück zu: "${prompt}" (Dauer: ${durationSec} Sekunden).`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              mood: { type: Type.STRING },
-              bpm: { type: Type.INTEGER },
-              rootMidi: { type: Type.INTEGER, description: 'MIDI root note between 33 and 57' },
-              scaleIntervals: {
-                type: Type.ARRAY,
-                items: { type: Type.INTEGER },
-              },
-              padBrightness: { type: Type.NUMBER, description: '0.1 to 1.0' },
-              pulseIntensity: { type: Type.NUMBER, description: '0.0 to 1.0' },
-              subBassLevel: { type: Type.NUMBER, description: '0.2 to 1.0' },
-              arrangementNotes: { type: Type.STRING },
-            },
-            required: ['title', 'mood', 'bpm', 'rootMidi', 'scaleIntervals', 'padBrightness', 'pulseIntensity', 'subBassLevel', 'arrangementNotes'],
-          },
-        },
-      })
-    );
+Gib ausschließlich dieses JSON-Objekt zurück:
+{
+  "title": "Kurzer Tracktitel",
+  "mood": "Atmosphäre in wenigen Worten",
+  "bpm": 84,
+  "rootMidi": 40,
+  "scaleIntervals": [0, 2, 3, 7, 8, 10],
+  "padBrightness": 0.4,
+  "pulseIntensity": 0.6,
+  "subBassLevel": 0.7,
+  "arrangementNotes": "Kurze Hinweise zum musikalischen Verlauf"
+}
+Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11, padBrightness 0.1-1.0, pulseIntensity 0.0-1.0, subBassLevel 0.2-1.0.`,
+      maxTokens: 500,
+    });
 
-    const composition = JSON.parse((response.text ?? '{}').trim());
+    const raw = parseCloudflareJsonObject(response.text);
+    const bounded = (value: unknown, fallback: number, min: number, max: number) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+    };
+    const scaleIntervals = Array.isArray(raw.scaleIntervals)
+      ? raw.scaleIntervals.map(Number).filter((value) => Number.isInteger(value) && value >= 0 && value <= 11).slice(0, 8)
+      : [];
+    const composition = {
+      title: String(raw.title || 'ZERO Original Soundtrack').slice(0, 120),
+      mood: String(raw.mood || prompt).slice(0, 240),
+      bpm: Math.round(bounded(raw.bpm, 84, 55, 160)),
+      rootMidi: Math.round(bounded(raw.rootMidi, 40, 33, 57)),
+      scaleIntervals: scaleIntervals.length >= 5 ? scaleIntervals : [0, 2, 3, 7, 8, 10],
+      padBrightness: bounded(raw.padBrightness, 0.4, 0.1, 1),
+      pulseIntensity: bounded(raw.pulseIntensity, 0.6, 0, 1),
+      subBassLevel: bounded(raw.subBassLevel, 0.7, 0.2, 1),
+      arrangementNotes: String(raw.arrangementNotes || 'Langsamer Aufbau, tiefer Bass und atmosphärischer Ausklang.').slice(0, 1200),
+    };
     await saveDb(db);
     res.json({
       composition: {
         ...composition,
         durationSec,
-        engine: 'Gemini 3.8 Flash Komposition + ZERO WebAudio DSP',
+        engine: 'GLM-4.7-Flash + ZERO WebAudio DSP',
         costEur: 0,
       },
     });
   } catch (err) {
-    res.status(400).json({ error: formatGermanApiError(err) });
+    res.status(503).json({
+      error: formatGermanApiError(err),
+      costEur: 0,
+      paidFallback: false,
+    });
   }
 }));
 
@@ -1709,83 +1782,80 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
 }));
 
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
+function requireActiveCloudflareTextModel(db: Awaited<ReturnType<typeof loadDb>>): void {
+  const model = db.models.find((item) => item.id === 'cloudflare-glm-4.7-flash');
+  if (!model || !model.enabled || !model.testPassed || model.status !== 'FUNKTIONIERT' || !model.hasRealAdapter) {
+    throw new Error('GLM-4.7-Flash ist nicht freigegeben. Bitte das Modell im Model Hub erfolgreich live testen und aktivieren.');
+  }
+}
+
+function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
+  const cleaned = raw.trim().replace(/^\u0060\u0060\u0060(?:json)?\s*/i, '').replace(/\s*\u0060\u0060\u0060$/i, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('GLM hat kein gültiges JSON-Objekt geliefert. Bitte die Anfrage erneut versuchen.');
+  const parsed: unknown = JSON.parse(cleaned.slice(start, end + 1));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('GLM-Antwort hat nicht das erwartete JSON-Objektformat.');
+  }
+  return parsed as Record<string, unknown>;
+}
+
 app.post('/api/film/direct', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
     const idea = String(req.body?.idea ?? '').trim();
     const genre = String(req.body?.genre ?? 'Thriller / Neo-Noir').trim();
-    const targetDurationSec = Math.min(60, Math.max(20, Number(req.body?.targetDurationSec ?? 58)));
+    const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
+    const targetDurationSec = Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
     const generateImages = Boolean(req.body?.generateImages);
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_DIRECTOR', db);
-
-    const char = characterId ? db.characters.find((c) => c.id === characterId) : db.characters[0];
+    const char = characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0];
     const charContext = char
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
 
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Erstelle eine komplette Kurzfilm-Produktion auf Deutsch (Ausnahme: imagePrompt und videoPrompt auf Englisch für FLUX).
+    requireActiveCloudflareTextModel(db);
+
+    const modelResponse = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
+      prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
 Genre: ${genre}
-Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden (NIEMALS über 60 Sekunden!).
+Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
 ${charContext}
-Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetDurationSec} Sekunden ergibt.`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              logline: { type: Type.STRING },
-              concept: { type: Type.STRING },
-              story: { type: Type.STRING },
-              screenplay: { type: Type.STRING },
-              scenes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    location: { type: Type.STRING },
-                    timeOfDay: { type: Type.STRING },
-                    durationSec: { type: Type.INTEGER },
-                    cameraMovement: { type: Type.STRING },
-                    narrationText: { type: Type.STRING },
-                    subtitleText: { type: Type.STRING },
-                    soundCue: { type: Type.STRING },
-                    imagePrompt: { type: Type.STRING },
-                    videoPrompt: { type: Type.STRING },
-                  },
-                  required: [
-                    'title',
-                    'location',
-                    'timeOfDay',
-                    'durationSec',
-                    'cameraMovement',
-                    'narrationText',
-                    'subtitleText',
-                    'soundCue',
-                    'imagePrompt',
-                    'videoPrompt',
-                  ],
-                },
-              },
-            },
-            required: ['title', 'logline', 'concept', 'story', 'screenplay', 'scenes'],
-          },
-        },
-      })
-    );
+Erstelle exakt 4 Szenen, deren Dauer zusammen exakt ${targetDurationSec} Sekunden ergibt. Jede Szene muss mindestens 5 Sekunden haben. Halte die Felder kompakt, aber konkret.
 
-    const parsed = JSON.parse((response.text ?? '{}').trim()) as {
+Gib ausschließlich dieses JSON-Schema zurück:
+{
+  "title": "Kurzer Filmtitel",
+  "logline": "Ein-Satz-Prämisse",
+  "concept": "Visuelles und dramaturgisches Konzept",
+  "story": "Zusammenhängende Inhaltsangabe",
+  "screenplay": "Kurzes Drehbuch mit Dialog und Handlung",
+  "scenes": [
+    {
+      "title": "Szenentitel",
+      "location": "Drehort",
+      "timeOfDay": "Tageszeit",
+      "durationSec": 14,
+      "cameraMovement": "Statisch",
+      "narrationText": "Deutsche Sprecherzeile",
+      "subtitleText": "Deutscher Untertitel/Dialog",
+      "soundCue": "Musik- und Geräuschhinweis",
+      "imagePrompt": "English cinematic still-image prompt with consistent character appearance",
+      "videoPrompt": "English cinematic motion prompt"
+    }
+  ]
+}
+cameraMovement muss einer dieser Werte sein: Statisch, Langsamer Zoom-In, Sanfter Zoom-Out, Schwenk Links, Schwenk Rechts, Vertikaler Tilt.
+Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
+      maxTokens: 1800,
+    });
+    const parsed = parseCloudflareJsonObject(modelResponse.text) as {
       title: string;
       logline: string;
       concept: string;
@@ -1804,6 +1874,9 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
         videoPrompt: string;
       }>;
     };
+    if (!Array.isArray(parsed.scenes) || parsed.scenes.length < 4) {
+      throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
+    }
 
     const validMoves: FilmScene['cameraMovement'][] = [
       'Statisch',
@@ -1814,7 +1887,7 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
       'Vertikaler Tilt',
     ];
 
-    let mappedScenes: FilmScene[] = (parsed.scenes || []).slice(0, 5).map((s, idx) => ({
+    let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
       title: s.title,
@@ -1832,30 +1905,46 @@ Teile den Film in genau 4 präzise Szenen auf, deren Summendauer exakt ${targetD
       status: 'Entwurf',
     }));
 
+    // Keep the requested total duration exact and guarantee four valid 5–15-second scenes.
+    const baseSceneDuration = Math.floor(targetDurationSec / 4);
+    const extraSceneSeconds = targetDurationSec % 4;
+    mappedScenes.forEach((scene, idx) => {
+      scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
+    });
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
 
     const imageGenerationWarnings: string[] = [];
     if (generateImages) {
-      await Promise.all(
-        mappedScenes.map(async (scene, idx) => {
+      const imageModel = db.models.find((item) => item.id === 'flux-1-schnell-free');
+      const imageReady = Boolean(
+        imageModel?.enabled &&
+        imageModel.testPassed &&
+        imageModel.status === 'FUNKTIONIERT' &&
+        imageModel.hasRealAdapter
+      );
+      if (!imageReady) {
+        imageGenerationWarnings.push(
+          'FLUX-Szenenbilder sind noch nicht freigegeben. Bitte FLUX.1 Schnell im Model Hub live testen und aktivieren. Der Filmtext wurde trotzdem erstellt.'
+        );
+        mappedScenes.forEach((scene) => { scene.status = 'Bildgenerierung nicht verfügbar'; });
+      } else {
+        // Sequential requests reduce burst load on the shared Cloudflare Free Neuron allocation.
+        for (const [idx, scene] of mappedScenes.entries()) {
           try {
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
-              aspectRatio: '9:16',
-              seed: 1000 + idx * 37,
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
           } catch (imageError) {
-            // Never label a film as being in production when no scene artwork exists.
             scene.status = 'Bildgenerierung nicht verfügbar';
             imageGenerationWarnings.push(
-              imageError instanceof Error ? imageError.message : 'Szenenbild konnte nicht generiert werden.'
+              imageError instanceof Error ? imageError.message : `Szenenbild ${idx + 1} konnte nicht generiert werden.`
             );
           }
-        })
-      );
+        }
+      }
     }
 
     const totalSec = mappedScenes.reduce((acc, s) => acc + s.durationSec, 0);
@@ -1932,39 +2021,26 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
 
-    await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'FILM_REGENERATE_SCENE', db);
-
-    const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Überarbeite Szene ${scene.index} ("${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
+    requireActiveCloudflareTextModel(db);
+    const response = await generateCloudflareText({
+      systemPrompt: 'Du bist ZERO FILM DIRECTOR. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext.',
+      prompt: `Überarbeite Szene ${scene.index} (" ${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
 Bisherige Erzählung: ${scene.narrationText}
-Bisheriger Bild-Prompt: ${scene.imagePrompt}`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              narrationText: { type: Type.STRING },
-              subtitleText: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING },
-              soundCue: { type: Type.STRING },
-            },
-            required: ['title', 'narrationText', 'subtitleText', 'imagePrompt', 'soundCue'],
-          },
-        },
-      })
-    );
+Bisheriger Bild-Prompt: ${scene.imagePrompt}
 
-    const updated = JSON.parse((response.text ?? '{}').trim());
-    scene.title = updated.title || scene.title;
-    scene.narrationText = updated.narrationText || scene.narrationText;
-    scene.subtitleText = updated.subtitleText || scene.subtitleText;
-    scene.imagePrompt = updated.imagePrompt || scene.imagePrompt;
-    scene.soundCue = updated.soundCue || scene.soundCue;
+Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
+{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","soundCue":"..."}`,
+      maxTokens: 500,
+    });
+    const updated = parseCloudflareJsonObject(response.text);
+    const stringField = (value: unknown, fallback: string): string =>
+      typeof value === 'string' && value.trim() ? value.trim() : fallback;
+
+    scene.title = stringField(updated.title, scene.title);
+    scene.narrationText = stringField(updated.narrationText, scene.narrationText);
+    scene.subtitleText = stringField(updated.subtitleText, scene.subtitleText);
+    scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
+    scene.soundCue = stringField(updated.soundCue, scene.soundCue);
 
     // Text and scene direction can be revised without an unavailable cloud image provider.
     // Keep any previous image asset, but mark the scene as a draft because it no longer matches the revised prompt.

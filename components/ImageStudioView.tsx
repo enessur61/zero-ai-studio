@@ -29,6 +29,39 @@ interface GeneratedImageItem {
   createdAt: string;
 }
 
+async function cropImageToAspectRatio(dataUrl: string, aspectRatio: '16:9' | '9:16' | '1:1' | '4:3'): Promise<string> {
+  if (aspectRatio === '1:1') return dataUrl;
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Das generierte Bild konnte nicht für das Zielformat geöffnet werden.'));
+    image.src = dataUrl;
+  });
+
+  const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
+  const targetRatio = ratioWidth / ratioHeight;
+  const sourceRatio = image.naturalWidth / image.naturalHeight;
+  let sx = 0;
+  let sy = 0;
+  let sw = image.naturalWidth;
+  let sh = image.naturalHeight;
+  if (sourceRatio > targetRatio) {
+    sw = Math.round(sh * targetRatio);
+    sx = Math.round((image.naturalWidth - sw) / 2);
+  } else {
+    sh = Math.round(sw / targetRatio);
+    sy = Math.round((image.naturalHeight - sh) / 2);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Lokaler Bildzuschnitt ist auf diesem Gerät nicht verfügbar.');
+  context.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+  return canvas.toDataURL('image/jpeg', 0.94);
+}
+
 export function ImageStudioView({
   characters,
   projects,
@@ -69,10 +102,43 @@ export function ImageStudioView({
   const [analysisText, setAnalysisText] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [processingLocal, setProcessingLocal] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
-  function handleGenerate(e: React.FormEvent) {
+  async function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
-    setError('Cloud-Bildgenerierung ist derzeit deaktiviert. Upload und lokale Bildbearbeitung bleiben verfügbar.');
+    if (generating || !prompt.trim()) return;
+    setGenerating(true);
+    setError(null);
+    setAnalysisText(null);
+    try {
+      const character = characters.find((item) => item.id === characterId);
+      const fullPrompt = [
+        prompt.trim(),
+        style.trim(),
+        character ? `Character continuity: ${character.consistencyPrompt || character.appearance || character.name}` : '',
+        character ? `Face and clothing consistency: ${character.faceFeatures}; ${character.clothing}` : '',
+      ].filter(Boolean).join(', ');
+      const data = await apiRequest<{ imageDataUrl: string; engine: string }>('/api/image/generate', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: fullPrompt, model, aspectRatio: '1:1' }),
+      });
+      const outputDataUrl = await cropImageToAspectRatio(data.imageDataUrl, aspectRatio);
+      const item: GeneratedImageItem = {
+        id: `img-${Date.now()}`,
+        url: outputDataUrl,
+        prompt: prompt.trim(),
+        engine: aspectRatio === '1:1' ? data.engine : `${data.engine} + lokaler ${aspectRatio}-Zuschnitt`,
+        aspectRatio,
+        createdAt: new Date().toISOString(),
+      };
+      setGallery((previous) => [item, ...previous]);
+      setActiveImage(item);
+      setSavedNotice(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'FLUX-Bildgenerierung fehlgeschlagen');
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function handleLocalEdit(preset: ImageFilterPreset) {
@@ -168,7 +234,7 @@ export function ImageStudioView({
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO IMAGE STUDIO</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Cloud-Text-to-Image pausiert · Bild-Upload, Charakterreferenzen, lokale Bildbearbeitung & 2x Upscaling verfügbar
+          FLUX.1 Schnell über Cloudflare · Bildgenerierung, Upload, Charakterreferenzen & lokale Bildbearbeitung
         </p>
       </div>
 
@@ -192,16 +258,15 @@ export function ImageStudioView({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Cloud-Modell (derzeit deaktiviert)</label>
+              <label className="text-xs text-slate-400 block mb-1">Cloud-Modell</label>
               <select
-                disabled
                 value={model}
                 onChange={(e) => setModel(e.target.value as 'flux' | 'turbo' | 'sana')}
                 className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white focus:outline-none focus:border-[#2563EB]"
               >
-                <option value="flux">FLUX.1 Schnell (nicht verfügbar)</option>
-                <option value="turbo">SD Turbo (nicht verfügbar)</option>
-                <option value="sana">Sana (nicht verfügbar)</option>
+                <option value="flux">FLUX.1 Schnell · Cloudflare Free</option>
+                <option value="turbo" disabled>SD Turbo · nicht verfügbar</option>
+                <option value="sana" disabled>Sana · nicht verfügbar</option>
               </select>
             </div>
 
@@ -248,7 +313,7 @@ export function ImageStudioView({
             />
           </div>
 
-          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-amber-200">Cloud-Bildmodelle sind deaktiviert, bis ein verlässlich kostenloser Provider verfügbar ist. Kein kostenpflichtiger Fallback. Upload und lokale Bildbearbeitung funktionieren weiterhin.</div>
+          <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/25 text-xs text-sky-200">FLUX.1 Schnell läuft über Cloudflare Workers AI. Das tägliche Free-Kontingent von 10.000 Neurons wird mit anderen Cloudflare-Modellen geteilt. Bei erschöpftem Kontingent stoppt ZERO ohne kostenpflichtigen Fallback.</div>
 
           {error && (
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
@@ -259,11 +324,11 @@ export function ImageStudioView({
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="submit"
-              disabled
+              disabled={generating || !prompt.trim()}
               className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
             >
-              <Wand2 className="w-4 h-4" />
-              Cloud-Bildgenerierung pausiert
+              {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+              {generating ? 'FLUX erstellt Bild…' : 'Bild generieren'}
             </button>
 
             <label className="min-h-[44px] px-3.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap">

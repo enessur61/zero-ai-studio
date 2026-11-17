@@ -14,7 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { generateCloudflareText } from './cloudflareWorkersAi.ts';
+import { generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -54,15 +54,25 @@ export async function generateFreeOpenText(_params: {
   );
 }
 
-export async function generateFreeCloudImage(_params: {
+export async function generateFreeCloudImage(params: {
   prompt: string;
   model?: 'flux' | 'turbo' | 'sana';
   aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3';
   seed?: number;
 }): Promise<{ imageDataUrl: string; engine: string; width: number; height: number }> {
-  throw new Error(
-    'Bildgenerierung über Pollinations ist deaktiviert: Der aktuelle API-Zugriff benötigt Authentifizierung und kann Pollen-Guthaben verbrauchen. Kein kostenpflichtiger Fallback wurde aufgerufen.'
-  );
+  if (params.model && params.model !== 'flux') {
+    throw new Error('Für ZERO ist aktuell nur FLUX.1 Schnell über Cloudflare verifiziert. SD Turbo und Sana bleiben sicher deaktiviert.');
+  }
+  const result = await generateCloudflareImage({
+    prompt: params.prompt,
+    steps: 4,
+  });
+  return {
+    imageDataUrl: result.imageDataUrl,
+    engine: 'Cloudflare Workers AI · FLUX.1 Schnell',
+    width: 1024,
+    height: 1024,
+  };
 }
 
 export async function runLiveModelTest(
@@ -76,7 +86,7 @@ export async function runLiveModelTest(
 
   if (
     !model.enabled &&
-    ['gpt-oss-20b-free', 'flux-1-schnell-free', 'sd-turbo-free', 'sana-free'].includes(model.id)
+    ['gpt-oss-20b-free', 'sd-turbo-free', 'sana-free'].includes(model.id)
   ) {
     model.testPassed = false;
     model.status = 'ADAPTER FEHLT';
@@ -221,7 +231,19 @@ export async function runLiveModelTest(
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if (model.id === 'cloudflare-glm-4.7-flash') {
+    if (model.id === 'cloudflare-whisper-large-v3-turbo') {
+      // A short silent PCM probe verifies the provider endpoint and response schema.
+      // Speech quality is confirmed by actual uploaded audio in the Transcription Studio.
+      const result = await transcribeCloudflareAudio({
+        audioBase64: createSilentWavBase64(0.5, 16000),
+        language: 'de',
+      });
+      model.testPassed = result.modelId === '@cf/openai/whisper-large-v3-turbo' && typeof result.text === 'string';
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? 'Cloudflare Whisper Live-Probe erfolgreich; echte deutsche Transkription erfolgt mit der nächsten Audioaufnahme.'
+        : 'Whisper lieferte kein gültiges Transkriptionsformat.';
+    } else if (model.id === 'cloudflare-glm-4.7-flash') {
       const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 128, enableThinking: false });
       model.testPassed = result.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -368,8 +390,6 @@ export async function runLiveModelTest(
       const result = await generateFreeCloudImage({
         prompt: 'minimalist dark studio probe',
         model: model.id === 'sd-turbo-free' ? 'turbo' : model.id === 'sana-free' ? 'sana' : 'flux',
-        aspectRatio: '1:1',
-        seed: 42,
       });
       model.testPassed = result.imageDataUrl.startsWith('data:image/');
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -457,7 +477,6 @@ export async function runAllModelTests(db: ZeroDatabase): Promise<{
 
   for (const model of db.models) {
     const isPollinationsImage =
-      model.id === 'flux-1-schnell-free' ||
       model.id === 'sd-turbo-free' ||
       model.id === 'sana-free';
 
