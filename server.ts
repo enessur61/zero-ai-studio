@@ -6,7 +6,9 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
-import { resolveFilmCameraMovement } from './server/filmDirection.ts';
+import { buildContinuityDirectorContext, recordFilmProductionContinuity, recordFilmSceneRevision, detectSemanticContinuityConflicts, resolveFilmCameraMovement } from './server/filmDirection.ts';
+import { validateContinuityState } from './server/continuity.ts';
+import { emptyContinuityState } from './src/types/continuity.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -2100,6 +2102,11 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
     const charContext = char
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
+    const continuityState = validateContinuityState(db.continuity ?? emptyContinuityState());
+    const seriesId = typeof req.body?.seriesId === 'string' ? req.body.seriesId.trim() : '';
+    const continuityContext = seriesId ? buildContinuityDirectorContext(continuityState, seriesId, char ? [char.id] : [], db.characters) : null;
+    if (seriesId && !continuityContext) return res.status(404).json({ error: 'Die ausgewählte Serie existiert nicht oder ist archiviert.' });
+    if (continuityContext && (continuityContext.conflicts.length || continuityContext.semanticConflicts.length)) return res.status(409).json({ error: 'Die Serienkontinuität enthält Widersprüche. Bitte zuerst die Konflikte im Continuity-Bereich beheben.', code: 'CONTINUITY_CONFLICT', conflicts: continuityContext.conflicts, semanticConflicts: continuityContext.semanticConflicts });
 
     const modelResponse = await generateFreeFilmDirectorText({
       db,
@@ -2109,6 +2116,7 @@ Idee: ${idea}
 Genre: ${genre}
 Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
 ${charContext}
+${continuityContext?.promptText ?? ''}
 Erstelle exakt 4 Szenen, deren Dauer zusammen exakt ${targetDurationSec} Sekunden ergibt. Jede Szene muss mindestens 5 Sekunden haben. Halte die Felder kompakt, aber konkret.
 
 Gib ausschließlich dieses JSON-Schema zurück:
@@ -2275,10 +2283,12 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       createdAt: now,
       updatedAt: now,
     });
+    const continuityResult = continuityContext && seriesId ? recordFilmProductionContinuity(continuityState, seriesId, newProject) : null;
+    if (continuityResult) db.continuity = continuityState;
     await saveDb(db);
     await maybeAutoCreateZipBackup(`Filmprojekt "${newProject.title}" generiert (${totalSec}s)`);
 
-    res.json({ project: newProject, imageGenerationWarnings });
+    res.json({ project: newProject, imageGenerationWarnings, ...(continuityResult ? { continuity: continuityResult } : {}) });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
@@ -2294,6 +2304,10 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+    const continuityState = validateContinuityState(db.continuity ?? emptyContinuityState());
+    const linkedSeries = continuityState.series.find((item) => !item.archivedAt && item.projectIds.includes(project.id));
+    const continuityContext = linkedSeries ? buildContinuityDirectorContext(continuityState, linkedSeries.id, scene.characterIds, db.characters) : null;
+    const targetConflictId = typeof req.body?.targetConflictId === 'string' ? req.body.targetConflictId : ''; const targetedConflict = targetConflictId ? continuityContext?.semanticConflicts.find((item) => item.id === targetConflictId && item.sceneId === scene.id) : undefined; if (targetConflictId && !targetedConflict) return res.status(404).json({ error: 'Der ausgewählte Konflikt gehört nicht zu dieser Szene oder ist nicht mehr aktuell.' }); if (!targetedConflict && continuityContext && (continuityContext.conflicts.length || continuityContext.semanticConflicts.length)) return res.status(409).json({ error: 'Szenen-Neugenerierung gestoppt: Bitte einen konkreten Kontinuitätskonflikt zur gezielten Korrektur auswählen.', code: 'CONTINUITY_CONFLICT', conflicts: continuityContext.conflicts, semanticConflicts: continuityContext.semanticConflicts });
 
     const response = await generateFreeFilmDirectorText({
       db,
@@ -2301,10 +2315,12 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
       prompt: `Überarbeite Szene ${scene.index} (" ${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
 Bisherige Erzählung: ${scene.narrationText}
 Bisheriger Bild-Prompt: ${scene.imagePrompt}
+${continuityContext?.promptText ?? ''}
+${targetedConflict ? '\nZIELKONFLIKT: ' + targetedConflict.message + '\nVERBINDLICHE KORREKTUR: ' + targetedConflict.suggestion : ''}
 
-Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
-{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","soundCue":"..."}`,
-      maxTokens: 500,
+Gib ausschließlich ein JSON-Objekt mit genau diesen Feldern zurück:
+{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","videoPrompt":"...","soundCue":"...","characterIds":["bestehende Figuren-IDs"]}`,
+      maxTokens: 750,
     });
     const updated = parseCloudflareJsonObject(response.text);
     const stringField = (value: unknown, fallback: string): string =>
@@ -2315,14 +2331,24 @@ Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
     scene.subtitleText = stringField(updated.subtitleText, scene.subtitleText);
     scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
     scene.soundCue = stringField(updated.soundCue, scene.soundCue);
+    scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
+    scene.videoPrompt = stringField(updated.videoPrompt, scene.videoPrompt);
+    if (Array.isArray(updated.characterIds) && updated.characterIds.every((id: unknown) => typeof id === 'string' && db.characters.some((character) => character.id === id))) scene.characterIds = [...new Set(updated.characterIds as string[])];
+    if (targetedConflict?.code === 'DEAD_CHARACTER_ON_SCREEN' && targetedConflict.characterId) scene.characterIds = scene.characterIds.filter((id) => id !== targetedConflict.characterId);
 
     // Text and scene direction can be revised without an unavailable cloud image provider.
     // Keep any previous image asset, but mark the scene as a draft because it no longer matches the revised prompt.
     scene.status = 'Entwurf';
     project.updatedAt = new Date().toISOString();
+    if (linkedSeries) {
+      recordFilmSceneRevision(continuityState, linkedSeries.id, project, scene);
+      const remaining = detectSemanticContinuityConflicts(continuityState, linkedSeries.id, db.characters).filter((item) => item.id === targetConflictId);
+      if (targetedConflict && remaining.length) return res.status(422).json({ error: 'Die gezielte Korrektur hat den Kontinuitätskonflikt noch nicht behoben. Es wurde nichts gespeichert.', code: 'CONTINUITY_CORRECTION_INCOMPLETE', conflicts: remaining });
+      db.continuity = continuityState;
+    }
     await saveDb(db);
 
-    res.json({ scene, project });
+    res.json({ scene, project, ...(targetedConflict ? { resolvedConflictId: targetedConflict.id } : {}) });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
