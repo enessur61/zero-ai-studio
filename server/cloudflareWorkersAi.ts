@@ -39,8 +39,7 @@ export async function generateCloudflareText(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
-    // those server failures; never retry 401/403/429 or switch to a paid provider.
+    // Never retry provider errors: a 5xx may still have processed or billed the request.
     for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
