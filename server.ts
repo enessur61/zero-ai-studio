@@ -68,6 +68,7 @@ import type {
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
+app.disable('x-powered-by');
 
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
 // Node processes. The local gate is only for development without PostgreSQL.
