@@ -518,7 +518,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
         prev &&
         (requiresNativeRuntimeVerification || requiresBrowserRuntimeVerification) &&
         prev.adapterId === def.adapterId &&
-        prev.hasRealAdapter === def.hasRealAdapter;
+        prev.status === 'BROWSER TEST ERFORDERLICH' &&
+        prev.testPassed === false &&
+        prev.hasRealAdapter === false;
       const merged = shouldKeepPrevState
         ? {
             ...def,
@@ -530,7 +532,16 @@ export async function loadDb(): Promise<ZeroDatabase> {
             status: def.requiresPaidKey ? 'GESPERRT' : prev.status,
           }
         : preserveAvailabilityToggle
-          ? { ...def, enabled: def.requiresPaidKey ? false : prev.enabled }
+          ? {
+              ...def,
+              enabled: def.requiresPaidKey ? false : prev.enabled,
+              hasRealAdapter: false,
+              testPassed: false,
+              status: 'BROWSER TEST ERFORDERLICH',
+              lastTestedAt: null,
+              lastTestLatencyMs: null,
+              lastTestMessage: def.lastTestMessage,
+            }
           : def;
       return enrichModelMetadata(merged);
     });
