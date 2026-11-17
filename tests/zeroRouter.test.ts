@@ -53,6 +53,15 @@ const preferred = chooseZeroChatModel(
 );
 assert.equal(preferred?.modelId, 'gemini-3.6-flash');
 
+const cloudflareModel = makeModel('cloudflare-glm-4.7-flash');
+cloudflareModel.provider = 'Cloudflare Workers AI';
+cloudflareModel.adapterId = 'cloudflare-workers-ai';
+assert.equal(
+  chooseZeroChatModel([cloudflareModel], budget, 'cloudflare-glm-4.7-flash', now)?.modelId,
+  'cloudflare-glm-4.7-flash',
+  'a successfully tested Cloudflare model uses the provider-side daily Neuron quota and does not require a Gemini quota record',
+);
+
 const fallbackBudget: BudgetGuardState = {
   ...budget,
   freeQuotaUsage: {
