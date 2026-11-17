@@ -405,6 +405,63 @@ export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: numbe
   return getStateStore().acquireAutoBackupLease(minimumIntervalMs);
 }
 
+/**
+ * Acquire one of the same cross-process ZIP slots used by HTTP ZIP routes.
+ * Background automatic backups must share the global memory/CPU budget too.
+ */
+export async function acquirePersistentZipOperationLease(): Promise<{
+  release: () => Promise<void>;
+} | null> {
+  const client = await getPostgresPool().connect();
+  let lockId: number | null = null;
+  try {
+    for (let slot = 0; slot < 2; slot++) {
+      const candidate = 3 + slot;
+      const result = await client.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_lock(1514480207, $1) AS locked',
+        [candidate]
+      );
+      if (result.rows[0]?.locked === true) {
+        lockId = candidate;
+        break;
+      }
+    }
+    if (lockId === null) {
+      client.release();
+      return null;
+    }
+
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        let destroy = false;
+        try {
+          const result = await client.query<{ unlocked: boolean }>(
+            'SELECT pg_advisory_unlock(1514480207, $1) AS unlocked',
+            [lockId]
+          );
+          if (result.rows[0]?.unlocked !== true) {
+            destroy = true;
+            throw new Error('PostgreSQL ZIP operation lease could not be confirmed as released.');
+          }
+          released = true;
+        } catch (error) {
+          destroy = true;
+          throw error;
+        } finally {
+          if (!released) released = true;
+          client.release(destroy);
+        }
+      },
+    };
+  } catch (error) {
+    if (lockId === null) client.release();
+    else client.release(true);
+    throw error;
+  }
+}
+
 export async function inspectPersistentBackupConsistency(): Promise<{
   orphanedBlobIds: string[];
   missingBlobIds: string[];
