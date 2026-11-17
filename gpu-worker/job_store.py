@@ -40,7 +40,7 @@ def has_persistent_mount(path: str | Path, mountinfo_text: str | None = None) ->
         if len(fields) < 5 or not post_fields:
             continue
         mount_text = fields[4]
-        for escaped, actual in (("\\040", " "), ("\\011", "\\t"), ("\\012", "\\n"), ("\\134", "\\\\")):
+        for escaped, actual in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
             mount_text = mount_text.replace(escaped, actual)
         mount_point = Path(mount_text)
         try:
