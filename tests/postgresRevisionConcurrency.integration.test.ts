@@ -1460,10 +1460,44 @@ try {
   assert.equal(
     recoveredMediaState?.payload.projects[0].assets[0].url,
     mediaDataUrl,
-    'server-persisted scene media must survive independent-pool reloads and be present in the JSON snapshot used by backups'
+    'server-persisted scene media must survive independent-pool reloads'
   );
 
-  console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, and atomic-backup tests passed using two independent pools.');
+  // Exercise the actual production ZIP service: a saved scene clip must be
+  // embedded in the verified backup JSON and survive reading the published blob.
+  const mediaBackupDb = makeRestoreDb('durable-media-backup-project');
+  mediaBackupDb.projects[0].assets.push({
+    id: 'durable-media-backup-asset',
+    type: 'video',
+    title: 'Durable scene clip',
+    url: mediaDataUrl,
+    modelId: 'zero-scene-video:durable-media-scene',
+    durationSec: 5,
+    createdAt: new Date().toISOString(),
+  });
+  const mediaBackupRevision = await storeA.write(mediaBackupDb, recoveredMediaState!.revision);
+  assert.ok(mediaBackupRevision > recoveredMediaState!.revision);
+  const mediaBackupRecord = await productionZipBackup({
+    changelog: 'Verify durable scene media in production ZIP snapshot',
+    trigger: 'manual',
+  });
+  const mediaBackupBlob = await poolB.query<{ payload: Buffer }>(
+    'SELECT payload FROM zero_backup_files WHERE id = $1',
+    [mediaBackupRecord.id]
+  );
+  assert.equal(mediaBackupBlob.rowCount, 1, 'published media backup blob must be available from the second pool');
+  const mediaBackupVerification = verifyZipBuffer(mediaBackupBlob.rows[0].payload);
+  assert.equal(mediaBackupVerification.result.valid, true, 'the published media backup must pass the production ZIP verifier');
+  const mediaBackupJson = mediaBackupVerification.extractedFiles.get('data/zero-studio-db.json');
+  assert.ok(mediaBackupJson, 'the verified ZIP must contain the PostgreSQL project snapshot');
+  const restoredMediaDb = JSON.parse(mediaBackupJson.toString('utf8')) as ZeroDatabase;
+  assert.equal(
+    restoredMediaDb.projects[0].assets.find((asset) => asset.id === 'durable-media-backup-asset')?.url,
+    mediaDataUrl,
+    'the actual production ZIP snapshot must retain the exact saved scene video data URL'
+  );
+
+  console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, media ZIP snapshot, and atomic-backup tests passed using two independent pools.');
 } finally {
   await Promise.all([poolA.end(), poolB.end(), gatePoolA.end(), gatePoolB.end()]);
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
