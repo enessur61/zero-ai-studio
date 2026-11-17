@@ -86,7 +86,6 @@ try {
       { id: 'finding-test-1', category: 'motivation', severity: 'warning', characterIds: ['character-a'], episodeTitle: 'Episode 1', sceneTitle: 'Original scene', evidence: 'Alter Erzähltext', interpretation: 'Motivation unklar', recommendation: 'Dialog präzisieren', confidence: 'high' },
     ] },
   };
-  db.continuity!.series.push({ id: seriesId, title: 'Testserie', logline: '', genre: '', bible: '', projectIds: ['project-a'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   db.continuity!.dramaturgyAnalyses.push(analysis);
 
   const applyPath = `/series/${seriesId}/dramaturgy-analyses/1/apply`;
@@ -109,6 +108,8 @@ try {
 
   const finalApprovalResponse = await request(`/series/${seriesId}/dramaturgy-analyses/1/decisions`, 'POST', { findingId: 'finding-test-1', approved: true, note: 'Erneut ausdrücklich freigegeben' });
   const finalApproval = (await json(finalApprovalResponse)).decision;
+  const staleTextPreview = await request(applyPath, 'POST', { ...applyBody(finalApproval.id), expectedPreviousText: 'Zwischenzeitlich geändert' });
+  assert.equal(staleTextPreview.status, 409, 'a changed scene must invalidate the before/after preview');
   const successfulApply = await request(applyPath, 'POST', applyBody(finalApproval.id));
   assert.equal(successfulApply.status, 200);
   const applied = await json(successfulApply);
