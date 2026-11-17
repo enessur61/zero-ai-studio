@@ -36,6 +36,7 @@ export function createPostgresAuthStore(database: Pool) {
               reset_at TIMESTAMPTZ NOT NULL
             )
           `);
+          await client.query('CREATE INDEX IF NOT EXISTS zero_login_attempts_reset_idx ON zero_login_attempts (reset_at)');
           await client.query(`
             CREATE TABLE IF NOT EXISTS zero_gemini_quota_reservations (
               model_id TEXT PRIMARY KEY,
