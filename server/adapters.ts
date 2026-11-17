@@ -468,7 +468,6 @@ export async function runAllModelTests(db: ZeroDatabase): Promise<{
 
   for (const model of db.models) {
     const isPollinationsImage =
-      model.id === 'flux-1-schnell-free' ||
       model.id === 'sd-turbo-free' ||
       model.id === 'sana-free';
 
