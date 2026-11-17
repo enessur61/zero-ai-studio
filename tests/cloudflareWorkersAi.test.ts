@@ -39,6 +39,17 @@ try {
     /Workers Free plan/i,
   );
   assert.equal(blockedProviderCalls, 0, 'unconfirmed Cloudflare billing must block before network access');
+  await assert.rejects(
+    () => generateCloudflareImage({
+      prompt: 'blocked image test',
+      fetchImpl: async () => {
+        blockedProviderCalls += 1;
+        return new Response('{}', { status: 200 });
+      },
+    }),
+    /Workers Free plan/i,
+  );
+  assert.equal(blockedProviderCalls, 0, 'image inference must share the same fail-closed billing gate');
 
   process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
   assert.equal(isCloudflareWorkersAiFreePlanConfirmed(), true);
