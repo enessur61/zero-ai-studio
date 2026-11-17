@@ -22,6 +22,7 @@ import {
   createPostgresStateStore,
   PersistentStateConflictError,
   withPersistentAutoBackupLease,
+  acquirePersistentZipOperationLease,
   readBackupFile,
 } from '../server/persistence.ts';
 
@@ -120,6 +121,22 @@ try {
   });
   assert.equal(overLimitAfterLastSlot.allowed, false, 'a stale snapshot must not admit a request after the final slot is reserved');
   await authA.clearGeminiQuota(quotaParams.modelId);
+
+  // Background automatic ZIP backups must consume the exact same two
+  // PostgreSQL advisory slots as HTTP ZIP operations across independent pools.
+  const backgroundZipLeaseA = await acquirePersistentZipOperationLease(gatePoolA);
+  const backgroundZipLeaseB = await acquirePersistentZipOperationLease(gatePoolB);
+  assert.ok(backgroundZipLeaseA && backgroundZipLeaseB, 'two background ZIP operations may occupy the two global slots');
+  assert.equal(
+    await acquirePersistentZipOperationLease(gatePoolA),
+    null,
+    'a third background ZIP operation must be rejected while both global slots are occupied'
+  );
+  await backgroundZipLeaseA.release();
+  const reusedBackgroundZipLease = await acquirePersistentZipOperationLease(gatePoolA);
+  assert.ok(reusedBackgroundZipLease, 'a released background ZIP slot must be reusable from another process');
+  await backgroundZipLeaseB.release();
+  await reusedBackgroundZipLease.release();
 
   // Production ZIP middleware must enforce one shared limit across two pools.
   const gateA = createPostgresConcurrencyGate(gatePoolA, 2, 5);
