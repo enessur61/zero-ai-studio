@@ -136,6 +136,20 @@ try {
   );
   assert.equal(visionRateLimitAttempts, 1);
 
+  let visionServerErrorAttempts = 0;
+  await assert.rejects(
+    () => analyzeCloudflareImage({
+      imageDataUrl: 'data:image/png;base64,AAAA',
+      question: '5xx test',
+      fetchImpl: async () => {
+        visionServerErrorAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+      },
+    }),
+    /Fehler \(500\)/,
+  );
+  assert.equal(visionServerErrorAttempts, 1, '5xx vision requests must not be retried');
+
   let transcriptionUrl = '';
   let transcriptionBody = '';
   const transcription = await transcribeCloudflareAudio({
