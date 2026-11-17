@@ -359,7 +359,7 @@ jobs:
             if (!disabledResponse.ok || disabledModel?.enabled !== false ||
                 disabledModel?.testPassed !== false || disabledModel?.hasRealAdapter !== false ||
                 disabledModel?.status !== 'BROWSER TEST ERFORDERLICH') {
-              throw new Error('Local availability toggle changed trusted verification state: ' + path);
+              throw new Error('Local availability toggle changed trusted verification state: ' + path + ' ' + JSON.stringify({ disabledModel, expectedStatus: 'BROWSER TEST ERFORDERLICH' }));
             }
             const enabledResponse = await authFetch('/api/models/' + result.model.id + '/toggle', { method: 'POST' });
             const enabledModel = (await enabledResponse.json()).model;
