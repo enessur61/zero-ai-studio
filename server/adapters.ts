@@ -391,7 +391,6 @@ export async function runLiveModelTest(
         prompt: 'minimalist dark studio probe',
         model: model.id === 'sd-turbo-free' ? 'turbo' : model.id === 'sana-free' ? 'sana' : 'flux',
         aspectRatio: '1:1',
-        seed: 42,
       });
       model.testPassed = result.imageDataUrl.startsWith('data:image/');
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
