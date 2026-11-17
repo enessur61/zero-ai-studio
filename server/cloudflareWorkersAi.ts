@@ -268,3 +268,83 @@ export async function transcribeCloudflareAudio(params: {
     clearTimeout(timeout);
   }
 }
+
+
+const CLOUDFLARE_VISION_MODEL_ID = '@cf/moondream/moondream3.1-9B-A2B';
+
+export async function analyzeCloudflareImage(params: {
+  imageDataUrl: string;
+  question: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ answer: string; modelId: string }> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !token) {
+    throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
+  }
+  if (!/^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(params.imageDataUrl) ||
+      params.imageDataUrl.length > 16_000_000) {
+    throw new CloudflareWorkersAiError('Moondream benötigt ein gültiges Bild als Base64 Data-URL (max. 12 MB Bildgröße).');
+  }
+  const question = params.question.trim();
+  if (!question || question.length > 2_000) {
+    throw new CloudflareWorkersAiError('Die Bildanalysefrage muss zwischen 1 und 2.000 Zeichen lang sein.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const fetcher = params.fetchImpl ?? fetch;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetcher(
+        `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            task: 'query',
+            image: params.imageDataUrl,
+            question,
+            reasoning: false,
+            max_tokens: 512,
+            stream: false,
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    }
+    if (!response) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine HTTP-Antwort geliefert.');
+    const payload = await response.json().catch(() => null) as {
+      success?: boolean;
+      result?: { answer?: unknown };
+      errors?: Array<{ message?: string }>;
+    } | null;
+    if (!response.ok || payload?.success === false) {
+      const providerMessage = payload?.errors?.[0]?.message;
+      if (response.status === 429) {
+        throw new CloudflareWorkersAiError('Cloudflare Workers AI Free-Kontingent oder Rate-Limit erreicht (HTTP 429). Kein kostenpflichtiger Fallback.', 429);
+      }
+      if (response.status === 403) {
+        throw new CloudflareWorkersAiError('Cloudflare verweigert Moondream den Zugriff (HTTP 403). Prüfe Workers-AI-Tokenrechte und Free-Plan-Modellzugang.', 403);
+      }
+      throw new CloudflareWorkersAiError(`Cloudflare Moondream Fehler (${response.status})${providerMessage ? `: ${providerMessage.slice(0, 180)}` : ''}.`, response.status);
+    }
+    const answer = typeof payload?.result?.answer === 'string' ? payload.result.answer.trim() : '';
+    if (!answer) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine Bildanalyse zurückgegeben.');
+    return { answer: answer.slice(0, 12_000), modelId: CLOUDFLARE_VISION_MODEL_ID };
+  } catch (error) {
+    if (error instanceof CloudflareWorkersAiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new CloudflareWorkersAiError('Cloudflare Moondream Bildanalyse nach 60 Sekunden abgebrochen (Timeout).');
+    }
+    throw new CloudflareWorkersAiError('Cloudflare Moondream ist momentan nicht erreichbar.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
