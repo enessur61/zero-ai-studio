@@ -140,20 +140,41 @@ export function assertZeroBudgetModelAllowed(
     throw new Error(`Kein gültiger Free-Tier-Kontingentdatensatz für "${modelId}". Sicher gestoppt (kein kostenpflichtiger Fallback).`);
   }
 
+  const rejectInvalidQuotaMetadata = (reason: string, message: string): never => {
+    recordAudit({
+      adapterId: 'gemini-quota-guard',
+      modelId,
+      action,
+      decision: 'BLOCKIERT_BUDGET_GUARD',
+      reason,
+      costEur: 0,
+    });
+    throw new Error(message);
+  };
+
   if (!Number.isSafeInteger(quota.requestsToday) || quota.requestsToday < 0 ||
       !Number.isSafeInteger(quota.dailySoftLimit) || quota.dailySoftLimit <= 0 ||
       typeof quota.exhausted !== 'boolean') {
-    throw new Error(`Free-Tier-Kontingentdaten für "${modelId}" sind ungültig. Sicher gestoppt (kein kostenpflichtiger Fallback).`);
+    rejectInvalidQuotaMetadata(
+      'Kontingentdaten sind fehlerhaft (ungültige Zähler oder Grenzwerte). Aufruf fail-closed blockiert.',
+      `Free-Tier-Kontingentdaten für "${modelId}" sind ungültig. Sicher gestoppt (kein kostenpflichtiger Fallback).`
+    );
   }
 
   if (quota.lastResetDate !== undefined) {
     if (typeof quota.lastResetDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(quota.lastResetDate)) {
-      throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
+      rejectInvalidQuotaMetadata(
+        'Reset-Datum der Free-Tier-Kontingentdaten ist ungültig. Aufruf fail-closed blockiert.',
+        `Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`
+      );
     }
     const resetDate = new Date(`${quota.lastResetDate}T00:00:00.000Z`);
     if (!Number.isFinite(resetDate.getTime()) || resetDate.toISOString().slice(0, 10) !== quota.lastResetDate ||
         quota.lastResetDate > today) {
-      throw new Error(`Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`);
+      rejectInvalidQuotaMetadata(
+        'Reset-Datum der Free-Tier-Kontingentdaten ist ungültig. Aufruf fail-closed blockiert.',
+        `Reset-Datum des Free-Tier-Kontingents für "${modelId}" ist ungültig. Sicher gestoppt.`
+      );
     }
     if (quota.lastResetDate < today) {
       recordAudit({
@@ -169,7 +190,17 @@ export function assertZeroBudgetModelAllowed(
       );
     }
   } else {
-    quota.lastResetDate = today;
+    recordAudit({
+      adapterId: 'gemini-quota-guard',
+      modelId,
+      action,
+      decision: 'BLOCKIERT_BUDGET_GUARD',
+      reason: 'Reset-Datum des Free-Tier-Kontingents fehlt. Aufruf aus Sicherheitsgründen blockiert; ein fehlender Zeitstempel ist kein Nachweis für ein frisches Provider-Kontingent.',
+      costEur: 0,
+    });
+    throw new Error(
+      `Reset-Datum des Free-Tier-Kontingents für "${modelId}" fehlt. Sicher gestoppt (kein kostenpflichtiger Fallback).`
+    );
   }
 
   if (quota.exhausted || quota.requestsToday >= quota.dailySoftLimit) {
@@ -186,6 +217,9 @@ export function assertZeroBudgetModelAllowed(
     );
   }
 
+  // recordBudgetAudit owns the single request-counter increment. Keep the
+  // guard itself side-effect-free apart from its audit callback to avoid
+  // counting each successful authorization twice in the persisted database.
   recordAudit({
     adapterId: 'gemini-free-tier',
     modelId,
