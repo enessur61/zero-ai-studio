@@ -160,24 +160,28 @@ export async function runLiveModelTest(
     return model;
   }
 
-  if (!model.hasRealAdapter) {
-    model.testPassed = false;
-    model.status = 'INSTALLATION ERFORDERLICH';
-    model.lastTestedAt = now;
-    model.lastTestLatencyMs = Date.now() - started;
-    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
-    return model;
-  }
-
   // A server-side test cannot execute browser APIs on the user's iPhone.
-  // Never mark a client-only adapter as tested without a real device-side probe.
-  if (model.executionMode === 'LOCAL ON-DEVICE') {
+  // loadDb deliberately clears persisted runtime verification for browser-only
+  // adapters, so check the explicit browser-probe state before hasRealAdapter.
+  if (
+    model.executionMode === 'LOCAL ON-DEVICE' &&
+    (model.status === 'BROWSER TEST ERFORDERLICH' || model.hasRealAdapter)
+  ) {
     model.testPassed = false;
     model.status = 'BROWSER TEST ERFORDERLICH';
     model.lastTestedAt = now;
     model.lastTestLatencyMs = Date.now() - started;
     model.lastTestMessage =
       'Quellcode ist vorhanden; die Browser-/iPhone-Laufzeit wurde vom Server nicht ausgeführt. Direkt auf dem Zielgerät prüfen.';
+    return model;
+  }
+
+  if (!model.hasRealAdapter) {
+    model.testPassed = false;
+    model.status = 'INSTALLATION ERFORDERLICH';
+    model.lastTestedAt = now;
+    model.lastTestLatencyMs = Date.now() - started;
+    model.lastTestMessage = `Lokale Gewichte (${model.sizeGB} GB) noch nicht installiert.`;
     return model;
   }
 
