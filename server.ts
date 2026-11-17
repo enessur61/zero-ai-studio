@@ -1772,6 +1772,25 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
 }));
 
 // === ZERO FILM DIRECTOR (<= 60s HARD CAP) ===
+function requireActiveCloudflareTextModel(db: Awaited<ReturnType<typeof loadDb>>): void {
+  const model = db.models.find((item) => item.id === 'cloudflare-glm-4.7-flash');
+  if (!model || !model.enabled || !model.testPassed || model.status !== 'FUNKTIONIERT' || !model.hasRealAdapter) {
+    throw new Error('GLM-4.7-Flash ist nicht freigegeben. Bitte das Modell im Model Hub erfolgreich live testen und aktivieren.');
+  }
+}
+
+function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
+  const cleaned = raw.trim().replace(/^\u0060\u0060\u0060(?:json)?\s*/i, '').replace(/\s*\u0060\u0060\u0060$/i, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('GLM hat kein gültiges JSON-Objekt geliefert. Bitte die Anfrage erneut versuchen.');
+  const parsed: unknown = JSON.parse(cleaned.slice(start, end + 1));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('GLM-Antwort hat nicht das erwartete JSON-Objektformat.');
+  }
+  return parsed as Record<string, unknown>;
+}
+
 app.post('/api/film/direct', asyncRoute(async (req, res) => {
   const db = await loadDb();
   try {
