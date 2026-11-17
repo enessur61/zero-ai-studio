@@ -36,8 +36,8 @@ export async function generateCloudflareText(params: {
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
-}): Promise<{
-  assertCloudflareWorkersAiFreePlanConfirmed(); text: string; modelId: string }> {
+}): Promise<{ text: string; modelId: string }> {
+  assertCloudflareWorkersAiFreePlanConfirmed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -125,8 +125,8 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
-}): Promise<{
-  assertCloudflareWorkersAiFreePlanConfirmed(); imageDataUrl: string; modelId: string }> {
+}): Promise<{ imageDataUrl: string; modelId: string }> {
+  assertCloudflareWorkersAiFreePlanConfirmed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -202,12 +202,12 @@ export async function transcribeCloudflareAudio(params: {
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
 }): Promise<{
-  assertCloudflareWorkersAiFreePlanConfirmed();
   text: string;
   vtt: string | null;
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
+  assertCloudflareWorkersAiFreePlanConfirmed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -297,8 +297,8 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
-}): Promise<{
-  assertCloudflareWorkersAiFreePlanConfirmed(); answer: string; modelId: string }> {
+}): Promise<{ answer: string; modelId: string }> {
+  assertCloudflareWorkersAiFreePlanConfirmed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
