@@ -72,10 +72,20 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 
 ZERO AI STUDIO ist als installierbare PWA vorbereitet. Öffne die veröffentlichte HTTPS-Adresse in Safari auf dem iPhone, tippe auf **Teilen → Zum Home-Bildschirm** und bestätige. Die App-Shell kann danach offline angezeigt werden; private API-Daten, Projekte, Chats und Memory werden ausdrücklich nicht im Service Worker zwischengespeichert. KI-Funktionen benötigen weiterhin eine Serververbindung.
 
+### Cloudflare Workers AI (ZERO Chat, Bildgenerierung & Transkription)
+Für ZERO CORE mit GLM-4.7-Flash, FLUX.1 Schnell und Whisper Large-v3-Turbo müssen diese Variablen serverseitig gesetzt sein:
+
+```env
+CLOUDFLARE_ACCOUNT_ID="DEINE_ACCOUNT_ID"
+CLOUDFLARE_API_TOKEN="DEIN_WORKERS_AI_API_TOKEN"
+```
+
+Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pro Tag für Workers AI bereit. Das Kontingent wird von allen verwendeten Workers-AI-Modellen gemeinsam genutzt und providerseitig begrenzt. Bei 429/ausgeschöpftem Kontingent stoppt ZERO; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX und Whisper müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
+
 ### Voraussetzungen
 - **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
 - **npm**
-- Kostenloser **Google Gemini API Key** (Free Tier in Google AI Studio)
+- Optional: eigener **Google Gemini API Key** im Free Tier für zusätzliche Gemini-basierte Funktionen
 
 ### Schritt-für-Schritt
 
@@ -176,10 +186,10 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
 | `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
 | `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
-| `POST` | `/api/image/generate` | Bildgenerierung über (derzeit deaktiviert; kein verifizierter dauerhaft kostenloser Provider) |
+| `POST` | `/api/image/generate` | Text-to-Image über FLUX.1 Schnell auf Cloudflare Workers AI Free; iPhone-Zielformate werden nach lokaler Bildgenerierung zugeschnitten |
 | `POST` | `/api/image/analyze` | Multimodale Vision-Bildanalyse über `gemini-3.8-flash` |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
-| `POST` | `/api/audio/transcribe` | Audio-Transkription mit echten Wort-Zeitstempeln und SRT-Export (`gemini-3.5-transcribe`) |
+| `POST` | `/api/audio/transcribe` | Audio-Transkription über Cloudflare Whisper Large-v3-Turbo Free oder aktiviertes Gemini-Modell; VTT-/Segmentdaten werden für SRT verwendet |
 | `POST` | `/api/music/compose` | KI-Musikparameter für den lokalen WebAudio DSP-Synthesizer |
 | `POST` | `/api/film/direct` | Vollautomatische Kurzfilm-Regie (hart begrenzt auf max. 60 Sekunden) |
 | `POST` | `/api/film/regenerate-scene` | Einzelne Szene inkl. neuem Bild regenerieren |
