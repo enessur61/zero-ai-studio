@@ -122,6 +122,22 @@ try {
   assert.equal(overLimitAfterLastSlot.allowed, false, 'a stale snapshot must not admit a request after the final slot is reserved');
   await authA.clearGeminiQuota(quotaParams.modelId);
 
+  // If a session-lock query fails before its result is received, destroy
+  // the physical connection rather than returning a possibly locked session.
+  let uncertainZipLockRelease: Error | boolean | undefined;
+  const uncertainZipLockClient = {
+    query: async () => { throw new Error('injected ZIP lock acquisition transport failure'); },
+    release: (error?: Error | boolean) => { uncertainZipLockRelease = error; },
+  };
+  const uncertainZipLockPool = {
+    connect: async () => uncertainZipLockClient,
+  } as unknown as Pool;
+  await assert.rejects(
+    () => acquirePersistentZipOperationLease(uncertainZipLockPool),
+    /injected ZIP lock acquisition transport failure/
+  );
+  assert.equal(uncertainZipLockRelease, true, 'an uncertain ZIP advisory-lock acquisition must destroy the pooled connection');
+
   // Background automatic ZIP backups must consume the exact same two
   // PostgreSQL advisory slots as HTTP ZIP operations across independent pools.
   const backgroundZipLeaseA = await acquirePersistentZipOperationLease(gatePoolA);
