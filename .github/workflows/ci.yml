@@ -457,6 +457,45 @@ jobs:
           }
           console.log('Verified PostgreSQL state, JSON backups, ZIP backup download/restore and read-only reconciliation.');
 
+          // Controlled read-only burst across both production-mode processes.
+          // This is an isolated CI capacity smoke test, not a live-production stress test.
+          const burstPaths = ['/api/projects', '/api/models', '/api/auth/status'];
+          const burstStartedAt = performance.now();
+          const burstLatencies = await Promise.all(Array.from({ length: 32 }, async (_, index) => {
+            const target = index % 2 === 0 ? base : baseB;
+            const path = burstPaths[index % burstPaths.length];
+            const requestStartedAt = performance.now();
+            const response = await fetch(target + path, {
+              headers: { cookie },
+              signal: AbortSignal.timeout(12000)
+            });
+            const latencyMs = performance.now() - requestStartedAt;
+            if (!response.ok) {
+              throw new Error('Concurrent read burst failed: ' + path + ' returned ' + response.status + ' ' + await response.text());
+            }
+            const payload = await response.json();
+            if (path === '/api/projects' && !Array.isArray(payload.projects)) {
+              throw new Error('Concurrent project read returned an invalid payload');
+            }
+            if (path === '/api/models' && !Array.isArray(payload.models)) {
+              throw new Error('Concurrent model catalog read returned an invalid payload');
+            }
+            if (path === '/api/auth/status' && !payload.authenticated) {
+              throw new Error('Concurrent authenticated status read lost its session');
+            }
+            return latencyMs;
+          }));
+          const sortedBurstLatencies = [...burstLatencies].sort((a, b) => a - b);
+          const burstP95Ms = sortedBurstLatencies[Math.ceil(sortedBurstLatencies.length * 0.95) - 1];
+          const burstMaxMs = sortedBurstLatencies.at(-1);
+          const burstDurationMs = performance.now() - burstStartedAt;
+          if (burstLatencies.length !== 32 || burstP95Ms > 12000) {
+            throw new Error('Read burst exceeded the 12-second request budget: p95=' + burstP95Ms + 'ms');
+          }
+          console.log('Verified 32 concurrent authenticated read requests across two server instances: ' +
+            'p95=' + Math.round(burstP95Ms) + 'ms, max=' + Math.round(burstMaxMs) +
+            'ms, wall=' + Math.round(burstDurationMs) + 'ms.');
+
           const logout = await authFetch('/api/auth/logout', { method: 'POST' });
           if (!logout.ok) throw new Error('Logout failed');
           const clearedCookie = logout.headers.get('set-cookie') ?? '';

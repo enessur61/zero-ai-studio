@@ -339,10 +339,10 @@ export function BrainView({
         </div>
 
         {/* Segmented Control */}
-        <div className="inline-flex items-center p-1 bg-[#11151E] border border-white/[0.08] rounded-xl self-start">
+        <div className="grid w-full grid-cols-3 items-center p-1 bg-[#11151E] border border-white/[0.08] rounded-xl sm:inline-flex sm:w-auto sm:self-start">
           <button
             onClick={() => setMode('assistant')}
-            className={`min-h-[40px] px-3.5 py-2 text-xs font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            className={`min-h-[40px] min-w-0 justify-center px-2 sm:px-3.5 py-2 text-[11px] sm:text-xs leading-tight text-center font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-normal sm:whitespace-nowrap ${
               mode === 'assistant' ? 'bg-[#2563EB] text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -351,7 +351,7 @@ export function BrainView({
           </button>
           <button
             onClick={() => setMode('web')}
-            className={`min-h-[40px] px-3.5 py-2 text-xs font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            className={`min-h-[40px] min-w-0 justify-center px-2 sm:px-3.5 py-2 text-[11px] sm:text-xs leading-tight text-center font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-normal sm:whitespace-nowrap ${
               mode === 'web' ? 'bg-[#2563EB] text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -360,7 +360,7 @@ export function BrainView({
           </button>
           <button
             onClick={() => setMode('automation')}
-            className={`min-h-[40px] px-3.5 py-2 text-xs font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            className={`min-h-[40px] min-w-0 justify-center px-2 sm:px-3.5 py-2 text-[11px] sm:text-xs leading-tight text-center font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors whitespace-normal sm:whitespace-nowrap ${
               mode === 'automation' ? 'bg-[#2563EB] text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
@@ -373,8 +373,8 @@ export function BrainView({
       {mode === 'assistant' && (
         <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col">
           {/* Controls bar */}
-          <div className="p-4 border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="p-4 border-b border-white/[0.08] flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-1 sm:flex-wrap sm:items-center">
               <select
                 value={selectedModel}
                 onChange={(e) =>
@@ -390,7 +390,7 @@ export function BrainView({
                       | NativeIOSTextModelId
                   )
                 }
-                className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB]"
+                className="min-h-[40px] w-full min-w-0 max-w-full bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB] sm:w-auto sm:max-w-full sm:flex-1"
               >
                 <option value="auto">ZERO AUTO · beste geprüfte kostenlose Engine</option>
                 <option value="gemini-3.8-flash">Gemini 3.8 Flash (Free-Tier, API-Key erforderlich)</option>
@@ -426,7 +426,7 @@ export function BrainView({
               <select
                 value={selectedProjectId}
                 onChange={(e) => setSelectedProjectId(e.target.value)}
-                className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB]"
+                className="min-h-[40px] w-full min-w-0 max-w-full bg-[#090B10] border border-white/[0.1] rounded-lg px-3 text-xs text-slate-200 focus:outline-none focus:border-[#2563EB] sm:w-auto sm:max-w-full sm:flex-1"
               >
                 <option value="">Kein Projektkontext</option>
                 {projects.map((p) => (
@@ -440,7 +440,7 @@ export function BrainView({
                 type="button"
                 onClick={() => setUseWebSearch((v) => !v)}
                 disabled={selectedModel === 'webgpu-llama-3.2-1b'}
-                className={`min-h-[40px] px-3 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[40px] w-full justify-center px-3 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap sm:w-auto sm:shrink-0 ${
                   selectedModel === 'webgpu-llama-3.2-1b'
                     ? 'bg-[#090B10] border-white/[0.1] text-slate-600 opacity-50 cursor-not-allowed'
                     : useWebSearch
@@ -456,7 +456,7 @@ export function BrainView({
             <button
               type="button"
               onClick={handleClearChat}
-              className="min-h-[40px] px-3 rounded-lg text-xs text-slate-400 hover:text-white hover:bg-white/[0.05] inline-flex items-center gap-1.5 transition-colors"
+              className="min-h-[40px] self-start px-3 rounded-lg text-xs text-slate-400 hover:text-white hover:bg-white/[0.05] inline-flex items-center gap-1.5 transition-colors sm:self-auto sm:shrink-0"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Verlauf leeren
