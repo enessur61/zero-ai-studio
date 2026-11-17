@@ -38,6 +38,15 @@ function baseBudget(): BudgetGuardState {
   assert.equal(classifyProviderError(new Error('503 UNAVAILABLE: model is overloaded')), 'transient');
   assert.equal(classifyProviderError(new Error('{"error":{"code":503,"status":"UNAVAILABLE"}}')), 'transient');
   assert.equal(isTransientServerError(new Error('fetch failed')), true);
+  for (const status of [500, 502, 503, 504]) {
+    const cloudflareFailure = new Error(`Cloudflare Workers AI Fehler (${status}): AiError: Internal server error (request-id)`);
+    assert.equal(classifyProviderError(cloudflareFailure), 'transient', `HTTP ${status} must be transient`);
+    assert.equal(isQuotaExhaustionError(cloudflareFailure), false, `HTTP ${status} must not lock the free quota`);
+  }
+  assert.match(
+    formatGermanApiError(new Error('Cloudflare Workers AI Fehler (500): Internal server error')),
+    /HTTP 5xx/,
+  );
   assert.equal(
     isQuotaExhaustionError(new Error('503 UNAVAILABLE: high demand, please retry')),
     false,
