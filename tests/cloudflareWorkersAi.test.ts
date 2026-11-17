@@ -48,16 +48,42 @@ try {
     { role: 'user', content: 'Antworte BEREIT' },
   ]);
 
+  let transientAttempts = 0;
+  const recovered = await generateCloudflareText({
+    prompt: 'zweite Nachricht',
+    fetchImpl: async () => {
+      transientAttempts += 1;
+      if (transientAttempts < 3) {
+        return new Response(JSON.stringify({
+          success: false,
+          errors: [{ message: 'Internal server error (test-request-id)' }],
+        }), { status: 500 });
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        result: { response: 'Wiederhergestellt' },
+        errors: [],
+      }), { status: 200 });
+    },
+  });
+  assert.equal(transientAttempts, 3);
+  assert.equal(recovered.text, 'Wiederhergestellt');
+
+  let rateLimitAttempts = 0;
   await assert.rejects(
     () => generateCloudflareText({
       prompt: 'test',
-      fetchImpl: async () => new Response(JSON.stringify({
-        success: false,
-        errors: [{ message: 'limit exceeded' }],
-      }), { status: 429 }),
+      fetchImpl: async () => {
+        rateLimitAttempts += 1;
+        return new Response(JSON.stringify({
+          success: false,
+          errors: [{ message: 'limit exceeded' }],
+        }), { status: 429 });
+      },
     }),
     /keinen kostenpflichtigen Fallback/,
   );
+  assert.equal(rateLimitAttempts, 1, '429 rate limits must not be retried');
 
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
