@@ -81,7 +81,7 @@ const MEDIA_TASKS: Record<ZeroMediaTask, {
   },
   transcription: {
     category: 'Sprache & Audio',
-    cloudModelIds: ['gemini-3.5-transcribe'],
+    cloudModelIds: ['cloudflare-whisper-large-v3-turbo', 'gemini-3.5-transcribe'],
     localModelIds: ['whisper-cpp-small'],
   },
 };
@@ -146,7 +146,9 @@ export function chooseZeroMediaModel(
 
     if (spec.cloudModelIds.includes(model.id)) {
       // Cloudflare enforces its shared Workers AI daily Neuron allocation provider-side.
-      if (model.id === 'flux-1-schnell-free') return model.executionMode === 'FREE CLOUD';
+      if (model.id === 'flux-1-schnell-free' || model.id === 'cloudflare-whisper-large-v3-turbo') {
+        return model.executionMode === 'FREE CLOUD';
+      }
       return model.executionMode === 'FREE CLOUD' && hasAvailableQuota(budget, model.id, today);
     }
     return false;
