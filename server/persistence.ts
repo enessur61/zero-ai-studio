@@ -409,10 +409,10 @@ export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: numbe
  * Acquire one of the same cross-process ZIP slots used by HTTP ZIP routes.
  * Background automatic backups must share the global memory/CPU budget too.
  */
-export async function acquirePersistentZipOperationLease(): Promise<{
+export async function acquirePersistentZipOperationLease(database: Pool = getPostgresPool()): Promise<{
   release: () => Promise<void>;
 } | null> {
-  const client = await getPostgresPool().connect();
+  const client = await database.connect();
   let lockId: number | null = null;
   try {
     for (let slot = 0; slot < 2; slot++) {
