@@ -29,7 +29,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
-import { generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -1262,6 +1262,20 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     if (!question) return res.status(400).json({ error: 'Bitte eine Analysefrage eingeben.' });
     if (question.length > 2_000) {
       return res.status(400).json({ error: 'Die Analysefrage darf maximal 2.000 Zeichen lang sein.' });
+    }
+
+    const moondream = database.models.find((model) => model.id === 'cloudflare-moondream-3.1-9b-a2b');
+    if (moondream?.enabled && moondream.testPassed && moondream.status === 'FUNKTIONIERT' && moondream.hasRealAdapter) {
+      const result = await analyzeCloudflareImage({
+        imageDataUrl: `data:${image.mimeType};base64,${image.data}`,
+        question,
+      });
+      await saveDb(database);
+      return res.json({
+        analysis: result.answer,
+        modelUsed: result.modelId,
+        costEur: 0,
+      });
     }
 
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
