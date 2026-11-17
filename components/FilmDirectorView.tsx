@@ -63,28 +63,33 @@ export function FilmDirectorView({
     setProductionVideoProjectId('');
     setProductionProgress({ percent: 1, label: 'ZERO startet die autonome Episode...' });
     try {
-      const selectedCharacter = characters.find((item) => item.id === characterId);
+      let defaultCharacter = characters.find((item) => item.id === characterId);
       const result = await runAutonomousFilmProduction({
-        createDraft: async () => apiRequest<{
-          project: StudioProject;
-          imageGenerationWarnings?: string[];
-        }>('/api/film/direct', {
-          method: 'POST',
-          body: JSON.stringify({
-            idea: idea.trim(),
-            genre,
-            targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
-            characterId,
-            generateImages,
-          }),
-        }),
+        createDraft: async () => {
+          const draft = await apiRequest<{
+            project: StudioProject;
+            imageGenerationWarnings?: string[];
+          }>('/api/film/direct', {
+            method: 'POST',
+            body: JSON.stringify({
+              idea: idea.trim(),
+              genre,
+              targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
+              characterId,
+              generateImages,
+            }),
+          });
+          defaultCharacter = characters.find((item) => draft.project.characterIds.includes(item.id)) || defaultCharacter;
+          return draft;
+        },
         generateVoiceover: async (scene) => {
+          const sceneCharacter = characters.find((item) => scene.characterIds.includes(item.id)) || defaultCharacter;
           const tts = await apiRequest<{ audioDataUrl: string; modelUsed?: string }>('/api/audio/tts', {
             method: 'POST',
             body: JSON.stringify({
               text: scene.narrationText,
-              voiceName: selectedCharacter?.voiceName || 'Kore',
-              style: selectedCharacter?.voiceStyle || 'Ruhige, klare deutsche Thriller-Erzählstimme',
+              voiceName: sceneCharacter?.voiceName || 'Kore',
+              style: sceneCharacter?.voiceStyle || 'Ruhige, klare deutsche Thriller-Erzählstimme',
             }),
           });
           return { audioDataUrl: tts.audioDataUrl, modelUsed: tts.modelUsed };
