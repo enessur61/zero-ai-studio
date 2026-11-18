@@ -183,6 +183,8 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             result = store.request_cancel("queued-cancel")
             self.assertEqual(result["status"], "cancelled")
             self.assertEqual(PersistentJobStore(directory).load_all()["queued-cancel"]["status"], "cancelled")
+            allowed, reason, _ = store.create_job_if_allowed({"id": "after-queued-cancel", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
+            self.assertTrue(allowed, reason)
 
     def test_cancel_running_job_is_only_a_persisted_request_until_inference_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,6 +195,9 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             with sqlite3.connect(store.database_path) as connection:
                 payload = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", ("running-cancel",)).fetchone()[0]
             self.assertEqual(__import__("json").loads(payload)["status"], "cancel_requested")
+            allowed, reason, _ = store.create_job_if_allowed({"id": "blocked-during-cancel", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
+            self.assertFalse(allowed)
+            self.assertEqual(reason, "concurrency_limit")
 
     def test_cancel_is_idempotent_and_does_not_overwrite_completed_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
