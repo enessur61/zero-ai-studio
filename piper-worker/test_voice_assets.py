@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+import voice_assets
 from voice_assets import (
     MODEL_SHA256,
     MODEL_SIZE_BYTES,
@@ -35,7 +38,7 @@ class PinnedVoiceAssetTests(unittest.TestCase):
         self.assertEqual(VOICE_ID, "de_DE-thorsten-medium")
         self.assertEqual(VOICE_REVISION, "cf910fb59f1d79ab3b625a63993a108751c6c25d")
         self.assertEqual(MODEL_SIZE_BYTES, 63_221_984)
-        self.assertEqual(len(MODEL_SHA256), 64)
+        self.assertEqual(MODEL_SHA256, "fd270eb3d1ebf91d763f8a0f949b1b1bebdfefaea18c3aaf8577dd34536e064f")
 
     def test_accepts_pinned_voice_config_shape(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,6 +53,25 @@ class PinnedVoiceAssetTests(unittest.TestCase):
             path = Path(directory) / "voice.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "pinned rdh-based"):
+                validate_voice_config(path)
+
+    def test_model_sha256_validation_accepts_only_the_pinned_bytes(self):
+        payload = b"pinned test model"
+        expected = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "voice.onnx"
+            path.write_bytes(payload)
+            with patch.object(voice_assets, "MODEL_SIZE_BYTES", len(payload)), patch.object(voice_assets, "MODEL_SHA256", expected):
+                voice_assets.validate_model_file(path)
+                path.write_bytes(b"tampered model")
+                with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+                    voice_assets.validate_model_file(path)
+
+    def test_rejects_non_object_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "voice.json"
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "root must be a JSON object"):
                 validate_voice_config(path)
 
     def test_rejects_wrong_inference_defaults(self):
