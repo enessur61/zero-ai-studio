@@ -147,6 +147,21 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             allowed_next_day, _, count = store.create_job_if_allowed({"id": "day-2", "status": "queued"}, daily_limit=1, max_concurrent=2, utc_day="2026-11-19")
             self.assertTrue(allowed_next_day)
             self.assertEqual(count, 1)
+    def test_daily_usage_is_reported_from_persisted_utc_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            self.assertEqual(store.daily_usage("2026-11-18"), 0)
+            for index in range(1, 4):
+                allowed, _, _ = store.create_job_if_allowed(
+                    {"id": f"quota-{index}", "status": "failed"},
+                    daily_limit=3,
+                    max_concurrent=3,
+                    utc_day="2026-11-18",
+                )
+                self.assertTrue(allowed)
+            self.assertEqual(store.daily_usage("2026-11-18"), 3)
+            self.assertEqual(store.daily_usage("2026-11-19"), 0)
+
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
