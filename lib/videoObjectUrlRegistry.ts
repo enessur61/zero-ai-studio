@@ -1,4 +1,4 @@
-export type VideoObjectUrlKind = 'restored' | 'generated' | 'export';
+export type VideoObjectUrlKind = 'restored' | 'generated' | 'export' | 'temporary';
 export interface VideoObjectUrlReference { projectId: string; sceneId?: string; kind: VideoObjectUrlKind; }
 interface SceneReference { projectId: string; sceneId: string; kind: VideoObjectUrlKind; }
 interface PreviewReference { referenceId: string; projectId: string; kind: VideoObjectUrlKind; }
@@ -65,6 +65,11 @@ export class VideoObjectUrlRegistry {
       if (this.revokeIfUnused(url)) revoked.push(url);
     }
     return revoked;
+  }
+
+  /** Releases a short-lived URL after its one-shot consumer (for example Image.onload) finishes. */
+  releaseTemporary(url: string): boolean {
+    return this.revokeIfUnused(url);
   }
 
   releaseAll(): string[] {

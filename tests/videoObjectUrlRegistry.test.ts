@@ -19,10 +19,12 @@ function makeRegistry() {
   const restoredOutgoing = create('project-a', 'scene-a', 'restored');
   registry.retainPreview(restoredOutgoing, 'wan-clip-preview', 'project-a', 'restored');
   const generatedOutgoing = create('project-a', 'scene-b', 'generated');
+  const pendingImport = create('project-a', undefined, 'temporary');
   const restoredIncoming = create('project-b', 'scene-c', 'restored');
   assert.deepEqual(registry.releaseProjectRestored('project-a'), [restoredOutgoing]);
   assert.deepEqual(revoked, [restoredOutgoing]);
   assert.equal(registry.has(generatedOutgoing), true);
+  assert.equal(registry.has(pendingImport), true, 'project switching does not prematurely revoke an in-flight image import URL');
   assert.equal(registry.has(restoredIncoming), true);
 }
 
@@ -65,12 +67,14 @@ function makeRegistry() {
   const restored = create('project-a', 'scene-1', 'restored');
   const generated = create('project-b', 'scene-2', 'generated');
   const exportUrl = create('project-b', undefined, 'export');
+  const pendingImport = create('project-b', undefined, 'temporary');
   registry.retainPreview(exportUrl, 'export-preview', 'project-b', 'export');
   const released = registry.releaseAll();
-  assert.deepEqual(new Set(released), new Set([restored, generated, exportUrl]));
-  assert.deepEqual(new Set(revoked), new Set([restored, generated, exportUrl]));
+  assert.deepEqual(new Set(released), new Set([restored, generated, exportUrl, pendingImport]));
+  assert.deepEqual(new Set(revoked), new Set([restored, generated, exportUrl, pendingImport]));
   assert.equal(registry.has(restored), false);
   assert.equal(registry.has(generated), false);
   assert.equal(registry.has(exportUrl), false);
+  assert.equal(registry.has(pendingImport), false);
 }
 console.log('Video object URL registry tests passed: project switch, multiple clips, preview replacement and unmount.');

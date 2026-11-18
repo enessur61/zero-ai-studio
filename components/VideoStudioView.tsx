@@ -127,7 +127,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           objectUrlRegistry.getProjectUrls(projectId).includes(wanClipUrlRef.current)) {
         replaceWanClipPreview(null);
       }
-      objectUrlRegistry.releaseProjectRestored(projectId);
+      if (leavingProject) objectUrlRegistry.releaseProjectRestored(projectId);
     };
   }, [selectedProjectId, currentProject?.id]);
 
@@ -428,10 +428,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           throw new Error(`„${file.name}“ ist größer als 20 MB.`);
         }
         const source = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const url = URL.createObjectURL(file);
+          const url = objectUrlRegistry.create(file, { projectId: currentProject?.id ?? '__image-import__', kind: 'temporary' });
           const img = new Image();
-          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
+          img.onload = () => { objectUrlRegistry.releaseTemporary(url); resolve(img); };
+          img.onerror = () => { objectUrlRegistry.releaseTemporary(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
           img.src = url;
         });
         const scale = Math.min(1, 1920 / Math.max(source.width, source.height));
