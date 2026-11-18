@@ -146,12 +146,15 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         created = created_response.json()
         job_id = created["id"]
         self.assertEqual(created["status"], "queued")
-        self.assertEqual(created["project_id"], "project_123")
-        self.assertEqual(created["scene_id"], "scene_456")
+        # Create acknowledges the job ID; persisted project/scene metadata is
+        # intentionally returned by the authenticated list/status endpoints.
+        self.assertEqual(created["duration_sec"], 5)
 
         listing = client.get("/jobs?limit=50", headers={"Authorization": self.auth})
         self.assertEqual(listing.status_code, 200)
-        self.assertEqual(listing.json()["jobs"][0]["id"], job_id)
+        listed_job = next(job for job in listing.json()["jobs"] if job["id"] == job_id)
+        self.assertEqual(listed_job["project_id"], "project_123")
+        self.assertEqual(listed_job["scene_id"], "scene_456")
         status = client.get(f"/jobs/{job_id}", headers={"Authorization": self.auth})
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json()["status"], "queued")
