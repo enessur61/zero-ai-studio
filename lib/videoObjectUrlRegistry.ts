@@ -32,13 +32,15 @@ export class VideoObjectUrlRegistry {
   releasePreview(url: string, referenceId: string): boolean {
     const entry = this.entries.get(url);
     if (!entry || !entry.previews.delete(referenceId)) return false;
-    return this.revokeIfUnused(url);
+    this.revokeIfUnused(url);
+    return true;
   }
 
   releaseSceneReference(url: string, projectId: string, sceneId: string): boolean {
     const entry = this.entries.get(url);
     if (!entry || !entry.scenes.delete(this.sceneKey(projectId, sceneId))) return false;
-    return this.revokeIfUnused(url);
+    this.revokeIfUnused(url);
+    return true;
   }
 
   getProjectUrls(projectId: string, kind?: VideoObjectUrlKind): string[] {
