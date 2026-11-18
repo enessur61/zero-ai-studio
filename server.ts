@@ -2565,6 +2565,17 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
 
   const prev = db.projects[idx];
 
+  // Optimistic version check prevents stale clients from replacing newer project scenes.
+  const expectedVersion = req.body?.expectedVersion;
+  if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion !== prev.version)) {
+    return res.status(409).json({
+      error: 'Das Projekt wurde zwischenzeitlich geändert. Bitte neu laden und Änderungen erneut anwenden.',
+      code: 'PROJECT_VERSION_CONFLICT',
+      expectedVersion: Number.isInteger(expectedVersion) ? expectedVersion : null,
+      actualVersion: prev.version,
+    });
+  }
+
   // Only explicitly supported content fields may be changed through this route.
   // Identity, timestamps, versions, snapshots and assets are server-managed;
   // assets must continue to use the dedicated validated /assets endpoint.
