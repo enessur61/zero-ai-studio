@@ -55,7 +55,7 @@ function makeRegistry() {
   registry.releaseSceneReference(previous, 'project-a', 'scene-1');
   assert.deepEqual(revoked, [previous]);
   assert.equal(registry.has(replacement), true);
-  assert.equal(registry.releasePreview(replacement, 'wan-clip-preview'), false);
+  assert.equal(registry.releasePreview(replacement, 'wan-clip-preview'), true);
   assert.equal(registry.has(replacement), true);
 }
 
