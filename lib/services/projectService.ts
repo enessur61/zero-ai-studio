@@ -24,11 +24,11 @@ export const projectService: ProjectService = {
     return response.project;
   },
 
-  async update(projectId: string, input: UpdateProjectInput) {
+  async update(projectId: string, input: UpdateProjectInput, expectedVersion?: number) {
     if (!projectId.trim()) throw new Error('Projekt-ID fehlt.');
     const response = await apiRequest<{ project: StudioProject }>(
       `/api/projects/${encodeURIComponent(projectId)}`,
-      { method: 'PUT', body: JSON.stringify(input) },
+      { method: 'PUT', body: JSON.stringify({ ...input, ...(expectedVersion === undefined ? {} : { expectedVersion }) }) },
     );
     if (!response.project?.id) throw new Error('ZERO hat kein gültiges aktualisiertes Projekt zurückgegeben.');
     return response.project;
