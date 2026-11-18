@@ -186,11 +186,20 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             with self.assertRaises(ValueError):
                 store.list_jobs(51)
 
-    def test_list_jobs_applies_safe_restart_recovery(self) -> None:
+    def test_list_jobs_does_not_mark_live_inference_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            store.save({"id": "interrupted", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
-            jobs = PersistentJobStore(directory).list_jobs()
+            store.save({"id": "live", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
+            jobs = store.list_jobs()
+            self.assertEqual(jobs[0]["status"], "running")
+            self.assertEqual(PersistentJobStore(directory).list_jobs()[0]["status"], "running")
+
+    def test_list_jobs_returns_recovered_status_after_worker_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            PersistentJobStore(directory).save({"id": "interrupted", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
+            restarted_store = PersistentJobStore(directory)
+            restarted_store.load_all()
+            jobs = restarted_store.list_jobs()
             self.assertEqual(jobs[0]["status"], "failed")
             self.assertIn("neu gestartet", jobs[0]["error"])
 
