@@ -1995,6 +1995,12 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const seed = Number.isInteger(req.body?.seed) && req.body.seed >= 0 && req.body.seed <= 2147483647
     ? req.body.seed
     : undefined;
+  const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : undefined;
+  const sceneId = typeof req.body?.sceneId === 'string' ? req.body.sceneId : undefined;
+  const safeResourceId = /^[A-Za-z0-9_-]{1,128}$/;
+  if ((projectId !== undefined && !safeResourceId.test(projectId)) || (sceneId !== undefined && !safeResourceId.test(sceneId))) {
+    return res.status(400).json({ error: 'Ungültige Projekt- oder Szenen-ID.' });
+  }
   if (prompt.length < 8 || prompt.length > 1800) {
     return res.status(400).json({ error: 'Der Wan-Prompt muss zwischen 8 und 1.800 Zeichen lang sein.' });
   }
@@ -2005,7 +2011,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     const response = await fetch(new URL('/jobs', worker.baseUrl), {
       method: 'POST',
       headers: { ...worker.headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }) }),
+      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }), ...(projectId ? { project_id: projectId } : {}), ...(sceneId ? { scene_id: sceneId } : {}) }),
       signal: controller.signal,
       redirect: 'error',
     });
@@ -2017,6 +2023,52 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}));
+
+app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
+  const worker = getWanWorkerConfig();
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
+    return res.status(400).json({ error: 'Ungültiges Joblisten-Limit (1–50).' });
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(new URL(`/jobs?limit=${requestedLimit}`, worker.baseUrl), {
+      headers: worker.headers,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok || !Array.isArray(payload.jobs)) {
+      return res.status(502).json({ error: 'Persistente Wan-Auftragsliste konnte nicht geladen werden.' });
+    }
+    const allowedStatuses = new Set(['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed']);
+    const jobs = payload.jobs.flatMap((value) => {
+      if (!value || typeof value !== 'object') return [];
+      const job = value as Record<string, unknown>;
+      if (typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) || !allowedStatuses.has(String(job.status))) return [];
+      return [{
+        id: job.id,
+        status: job.status,
+        createdAt: typeof job.created_at === 'string' ? job.created_at : null,
+        startedAt: typeof job.started_at === 'string' ? job.started_at : null,
+        finishedAt: typeof job.finished_at === 'string' ? job.finished_at : null,
+        durationSec: typeof job.duration_sec === 'number' ? job.duration_sec : 5,
+        engine: typeof job.engine === 'string' ? job.engine : 'Wan 2.1',
+        projectId: typeof job.project_id === 'string' ? job.project_id : null,
+        sceneId: typeof job.scene_id === 'string' ? job.scene_id : null,
+        error: typeof job.error === 'string' ? job.error.slice(0, 500) : null,
+        cancelReason: typeof job.cancel_reason === 'string' ? job.cancel_reason.slice(0, 300) : null,
+      }];
+    });
+    return res.json({ jobs, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar. Die Auftragsliste konnte nicht aktualisiert werden.' });
   } finally {
     clearTimeout(timeout);
   }
