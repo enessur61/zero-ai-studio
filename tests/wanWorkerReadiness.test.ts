@@ -15,6 +15,7 @@ const base = {
   workerUrlConfigured: true,
   workerTokenConfigured: true,
   workerReachable: true,
+  zeroCostGateOpen: true,
   payload: healthy,
 };
 
@@ -50,6 +51,13 @@ const closedCostGate = evaluateWanWorkerReadiness({
 });
 assert.equal(closedCostGate.online, false);
 assert.equal(closedCostGate.status, 'WORKER_COST_GATE_CLOSED');
+
+const zeroCostGateClosed = evaluateWanWorkerReadiness({
+  ...base,
+  zeroCostGateOpen: false,
+});
+assert.equal(zeroCostGateClosed.online, false);
+assert.equal(zeroCostGateClosed.status, 'ZERO_COST_GATE_CLOSED');
 
 const exhaustedDailyLimit = evaluateWanWorkerReadiness({
   ...base,
