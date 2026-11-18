@@ -34,7 +34,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
-import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -229,7 +229,7 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
   let raw = '';
   let modelId = '';
   let costMode: 'confirmed-free-cloud' | 'blocked' = 'blocked';
-  const cloudflareFree = isCloudflareWorkersAiConfigured() && isCloudflareWorkersAiFreePlanConfirmed();
+  const cloudflareFree = isCloudflareWorkersAiConfigured() && isCloudflareWorkersAiAllowed();
   const cloudflareRoute = cloudflareFree
     ? chooseZeroChatModel(db.models, db.budgetGuard, 'cloudflare-glm-4.7-flash')
     : null;
@@ -740,7 +740,7 @@ app.get('/api/models/ios-runtime', asyncRoute(async (_req, res) => {
 
 app.post('/api/models/test-all', asyncRoute(async (_req, res) => {
   const db = await loadDb();
-  const result = await runAllModelTests(db);
+  const result = await runAllModelTests(db, (modelId, action) => reserveZeroBudgetModelAllowed(modelId, action, db));
   await saveDb(db);
   res.json({
     testedCount: result.testedCount,
@@ -915,7 +915,7 @@ app.post('/api/models/registry/register', asyncRoute(async (req, res) => {
       });
       registeredModels.push(model);
     } else {
-      const tested = await runLiveModelTest(model, db);
+      const tested = await runLiveModelTest(model, db, (modelId, action) => reserveZeroBudgetModelAllowed(modelId, action, db));
       registeredModels.push(tested);
     }
   }
@@ -984,7 +984,7 @@ app.post('/api/models/:id/test', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const model = db.models.find((m) => m.id === req.params.id);
   if (!model) return res.status(404).json({ error: 'Modell nicht gefunden.' });
-  const tested = await runLiveModelTest(model, db);
+  const tested = await runLiveModelTest(model, db, (modelId, action) => reserveZeroBudgetModelAllowed(modelId, action, db));
   await saveDb(db);
   res.json({ model: tested, budgetGuard: db.budgetGuard });
 }));
@@ -1418,7 +1418,7 @@ app.post('/api/image/generate', asyncRoute(async (req, res) => {
 
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
-    if (!isCloudflareWorkersAiFreePlanConfirmed()) {
+    if (!isCloudflareWorkersAiAllowed()) {
       return res.status(503).json({
         error: 'FLUX bleibt gesperrt, bis das Cloudflare-Konto nachweislich auf Workers Free steht und ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true gesetzt wurde. Kein Provider-Aufruf wurde gestartet.',
         costEur: 0,
@@ -2001,6 +2001,11 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
 }
 
 app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
+  const wanEnabled = process.env.ZERO_WAN_GPU_ENABLED?.trim().toLowerCase() === 'true';
+  const wanCostsConfirmed = process.env.ZERO_WAN_GPU_COSTS_CONFIRMED?.trim().toLowerCase() === 'true';
+  if (!wanEnabled || !wanCostsConfirmed) {
+    return res.status(403).json({ error: 'Wan-GPU ist gesperrt. ZERO_WAN_GPU_ENABLED=true und ZERO_WAN_GPU_COSTS_CONFIRMED=true sind separat erforderlich. Kein GPU-Auftrag wurde gestartet.' });
+  }
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -2100,7 +2105,7 @@ async function generateFreeFilmDirectorText(params: {
   // Cloudflare is excluded unless the operator has explicitly confirmed a
   // Workers Free account. Gemini is selected only through ZERO's free quota gate.
   const models = params.db.models.filter((model) =>
-    isCloudflareWorkersAiFreePlanConfirmed() || model.id !== 'cloudflare-glm-4.7-flash'
+    isCloudflareWorkersAiAllowed() || model.id !== 'cloudflare-glm-4.7-flash'
   );
   const decision = chooseZeroChatModel(
     models,
@@ -2263,7 +2268,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
     if (generateImages) {
       const imageModel = db.models.find((item) => item.id === 'flux-1-schnell-free');
       const imageReady = Boolean(
-        isCloudflareWorkersAiFreePlanConfirmed() &&
+        isCloudflareWorkersAiAllowed() &&
         imageModel?.enabled &&
         imageModel.testPassed &&
         imageModel.status === 'FUNKTIONIERT' &&

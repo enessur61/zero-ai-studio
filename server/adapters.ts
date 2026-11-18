@@ -14,7 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio, CloudflareWorkersAiGateError } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -77,7 +77,8 @@ export async function generateFreeCloudImage(params: {
 
 export async function runLiveModelTest(
   model: ModelDefinition,
-  db: ZeroDatabase
+  db: ZeroDatabase,
+  reserveQuota?: (modelId: string, action: string) => Promise<void>
 ): Promise<ModelDefinition> {
   const started = Date.now();
   const now = new Date().toISOString();
@@ -228,6 +229,11 @@ export async function runLiveModelTest(
     return model;
   }
 
+  const reserveModelTestQuota = async (modelId: string): Promise<void> => {
+    if (reserveQuota) { await reserveQuota(modelId, 'MODEL_HEALTH_TEST'); return; }
+    assertZeroBudgetModelAllowed(modelId, 'MODEL_HEALTH_TEST', db.budgetGuard, (entry) => recordBudgetAudit(db, entry));
+  };
+
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
@@ -270,9 +276,7 @@ export async function runLiveModelTest(
       // Validate the explicit free-only billing gate before recording any model-call allowance.
       // Client construction is local; no provider request is made here.
       const ai = getGeminiClient();
-      assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
+      await reserveModelTestQuota(model.id);
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -298,9 +302,7 @@ export async function runLiveModelTest(
       // Validate the explicit free-only billing gate before recording any model-call allowance.
       // Client construction is local; no provider request is made here.
       const ai = getGeminiClient();
-      assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
+      await reserveModelTestQuota(model.id);
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -326,9 +328,7 @@ export async function runLiveModelTest(
       // Validate the explicit free-only billing gate before recording any model-call allowance.
       // Client construction is local; no provider request is made here.
       const ai = getGeminiClient();
-      assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
+      await reserveModelTestQuota(model.id);
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -353,9 +353,7 @@ export async function runLiveModelTest(
       // Validate the explicit free-only billing gate before recording any model-call allowance.
       // Client construction is local; no provider request is made here.
       const ai = getGeminiClient();
-      assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
+      await reserveModelTestQuota(model.id);
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
@@ -371,12 +369,8 @@ export async function runLiveModelTest(
         ? `Vektor-Embedding erfolgreich (${dims} Dimensionen).`
         : 'Keine Vektoren zurückgegeben.';
     } else if (model.id === 'gemini-web-grounding') {
-      assertZeroBudgetModelAllowed('gemini-web-grounding', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
-      assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
-        recordBudgetAudit(db, e)
-      );
+      await reserveModelTestQuota('gemini-web-grounding');
+      await reserveModelTestQuota('gemini-2.5-flash-lite');
       const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
@@ -424,7 +418,14 @@ export async function runLiveModelTest(
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
     const kind = classifyProviderError(err);
-    if (kind === 'quota-exhausted') {
+    if (err instanceof CloudflareWorkersAiGateError) {
+      recordBudgetAudit(db, { adapterId: 'cloudflare-workers-ai', modelId: model.id, action: 'MODEL_HEALTH_TEST', decision: 'BLOCKIERT_BUDGET_GUARD', reason: err.message, costEur: 0 });
+      model.testPassed = false;
+      model.enabled = false;
+      model.status = 'INSTALLATION ERFORDERLICH';
+      model.lastTestMessage = err.message;
+    }
+    else if (kind === 'quota-exhausted') {
       // Genuine, provider-confirmed quota exhaustion: persist a durable lock.
       if (db.budgetGuard.freeQuotaUsage[model.id]) {
         db.budgetGuard.freeQuotaUsage[model.id].exhausted = true;
@@ -480,7 +481,7 @@ export async function runLiveModelTest(
   return model;
 }
 
-export async function runAllModelTests(db: ZeroDatabase): Promise<{
+export async function runAllModelTests(db: ZeroDatabase, reserveQuota?: (modelId: string, action: string) => Promise<void>): Promise<{
   testedCount: number;
   models: ModelDefinition[];
 }> {
@@ -505,7 +506,7 @@ export async function runAllModelTests(db: ZeroDatabase): Promise<{
       pollinationsTestedInBatch = true;
     }
 
-    await runLiveModelTest(model, db);
+    await runLiveModelTest(model, db, reserveQuota);
   }
 
   return {

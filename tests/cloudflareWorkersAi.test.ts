@@ -1,59 +1,30 @@
 import assert from 'node:assert/strict';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, isCloudflareWorkersAiEnabled, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
-const originalFreePlan = process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
-
+const originalFreePlan = process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
+const originalEnabled = process.env.ZERO_CLOUDFLARE_AI_ENABLED;
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
-  delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
+  delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
+  delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
   assert.equal(isCloudflareWorkersAiConfigured(), false);
-
-  await assert.rejects(
-    () => generateCloudflareText({ prompt: 'test' }),
-    /Workers Free/i,
-  );
-  process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
-  await assert.rejects(
-    () => generateCloudflareText({ prompt: 'test' }),
-    /nicht konfiguriert/,
-  );
-  delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
-
+  assert.equal(isCloudflareWorkersAiAllowed(), false);
+  let blockedProviderCalls = 0;
+  await assert.rejects(() => generateCloudflareText({ prompt: 'test', fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_AI_ENABLED/);
+  process.env.ZERO_CLOUDFLARE_AI_ENABLED = 'true';
+  await assert.rejects(() => generateCloudflareText({ prompt: 'test', fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED/);
+  process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = 'true';
+  await assert.rejects(() => generateCloudflareText({ prompt: 'test' }), /nicht konfiguriert/);
+  assert.equal(blockedProviderCalls, 0, 'either missing flag must block before fetch');
   process.env.CLOUDFLARE_ACCOUNT_ID = 'account-test';
   process.env.CLOUDFLARE_API_TOKEN = 'secret-test-token';
   assert.equal(isCloudflareWorkersAiConfigured(), true);
-
-  assert.equal(isCloudflareWorkersAiFreePlanConfirmed(), false);
-  let blockedProviderCalls = 0;
-  await assert.rejects(
-    () => generateCloudflareText({
-      prompt: 'must not leave ZERO without a confirmed free plan',
-      fetchImpl: async () => {
-        blockedProviderCalls += 1;
-        return new Response('{}', { status: 200 });
-      },
-    }),
-    /Workers Free/i,
-  );
-  assert.equal(blockedProviderCalls, 0, 'unconfirmed Cloudflare billing must block before network access');
-  await assert.rejects(
-    () => generateCloudflareImage({
-      prompt: 'blocked image test',
-      fetchImpl: async () => {
-        blockedProviderCalls += 1;
-        return new Response('{}', { status: 200 });
-      },
-    }),
-    /Workers Free/i,
-  );
-  assert.equal(blockedProviderCalls, 0, 'image inference must share the same fail-closed billing gate');
-
-  process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = 'true';
+  assert.equal(isCloudflareWorkersAiEnabled(), true);
   assert.equal(isCloudflareWorkersAiFreePlanConfirmed(), true);
-
+  assert.equal(isCloudflareWorkersAiAllowed(), true);
   let requestUrl = '';
   let requestInit: RequestInit | undefined;
   const result = await generateCloudflareText({
@@ -180,18 +151,11 @@ try {
   assert.equal(transcription.segments[0]?.end, 1.25);
 
   let transcriptionTransientAttempts = 0;
-  const recoveredTranscription = await transcribeCloudflareAudio({
-    audioBase64: 'UklGRg==',
-    fetchImpl: async () => {
-      transcriptionTransientAttempts += 1;
-      if (transcriptionTransientAttempts === 1) {
-        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { text: 'Erholt', segments: [] }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(transcriptionTransientAttempts, 2);
-  assert.equal(recoveredTranscription.text, 'Erholt');
+  await assert.rejects(() => transcribeCloudflareAudio({ audioBase64: 'UklGRg==', fetchImpl: async () => {
+    transcriptionTransientAttempts += 1;
+    return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+  } }), /\(500\)/);
+  assert.equal(transcriptionTransientAttempts, 1, 'Whisper POST must not retry ambiguous 5xx');
 
   let transcriptionRateLimitAttempts = 0;
   await assert.rejects(
@@ -207,18 +171,11 @@ try {
   assert.equal(transcriptionRateLimitAttempts, 1);
 
   let imageTransientAttempts = 0;
-  const recoveredImage = await generateCloudflareImage({
-    prompt: 'retry test',
-    fetchImpl: async () => {
-      imageTransientAttempts += 1;
-      if (imageTransientAttempts === 1) {
-        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { image: 'B'.repeat(256) }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(imageTransientAttempts, 2);
-  assert.ok(recoveredImage.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+  await assert.rejects(() => generateCloudflareImage({ prompt: 'retry test', fetchImpl: async () => {
+    imageTransientAttempts += 1;
+    return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+  } }), /\(500\)/);
+  assert.equal(imageTransientAttempts, 1, 'FLUX POST must not retry ambiguous 5xx');
 
   let imageRateLimitAttempts = 0;
   await assert.rejects(
@@ -234,25 +191,11 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
-  const recovered = await generateCloudflareText({
-    prompt: 'zweite Nachricht',
-    fetchImpl: async () => {
-      transientAttempts += 1;
-      if (transientAttempts < 3) {
-        return new Response(JSON.stringify({
-          success: false,
-          errors: [{ message: 'Internal server error (test-request-id)' }],
-        }), { status: 500 });
-      }
-      return new Response(JSON.stringify({
-        success: true,
-        result: { response: 'Wiederhergestellt' },
-        errors: [],
-      }), { status: 200 });
-    },
-  });
-  assert.equal(transientAttempts, 3);
-  assert.equal(recovered.text, 'Wiederhergestellt');
+  await assert.rejects(() => generateCloudflareText({ prompt: 'zweite Nachricht', fetchImpl: async () => {
+    transientAttempts += 1;
+    return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
+  } }), /\(500\)/);
+  assert.equal(transientAttempts, 1, 'GLM POST must not retry ambiguous 5xx');
 
   let rateLimitAttempts = 0;
   await assert.rejects(
@@ -276,6 +219,8 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
-  if (originalFreePlan === undefined) delete process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED;
-  else process.env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED = originalFreePlan;
+  if (originalFreePlan === undefined) delete process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
+  else process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = originalFreePlan;
+  if (originalEnabled === undefined) delete process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+  else process.env.ZERO_CLOUDFLARE_AI_ENABLED = originalEnabled;
 }

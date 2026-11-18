@@ -87,6 +87,52 @@ class PersistentJobStore:
                 """
             )
 
+    def create_job_if_allowed(
+        self, job: dict[str, Any], daily_limit: int = 3, max_concurrent: int = 1, utc_day: str | None = None
+    ) -> tuple[bool, str, int]:
+        """Atomically reserve one daily job and persist it before returning success."""
+        if daily_limit < 1 or max_concurrent < 1:
+            raise ValueError("Job limits must be positive.")
+        from datetime import datetime, timezone
+        day = utc_day or datetime.now(timezone.utc).date().isoformat()
+        if len(day) != 10:
+            raise ValueError("Invalid UTC day key.")
+        payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
+        quota_id = "zero-daily-usage:" + day
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute("SELECT payload FROM zero_video_jobs").fetchall()
+            active = 0
+            for (raw_payload,) in rows:
+                try:
+                    existing = json.loads(raw_payload)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(existing, dict) and existing.get("status") in {"queued", "running"}:
+                    active += 1
+            if active >= max_concurrent:
+                connection.rollback()
+                return False, "concurrency_limit", active
+            quota_row = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", (quota_id,)).fetchone()
+            try:
+                accepted = int(json.loads(quota_row[0]).get("accepted_jobs", 0)) if quota_row else 0
+            except (TypeError, ValueError, json.JSONDecodeError):
+                accepted = daily_limit
+            if accepted >= daily_limit:
+                connection.rollback()
+                return False, "daily_limit", accepted
+            quota_payload = json.dumps({"id": quota_id, "kind": "daily_usage", "status": "quota", "utc_day": day, "accepted_jobs": accepted + 1}, separators=(",", ":"))
+            connection.execute(
+                "INSERT INTO zero_video_jobs (id, payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP",
+                (quota_id, quota_payload),
+            )
+            connection.execute(
+                "INSERT INTO zero_video_jobs (id, payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (str(job["id"]), payload),
+            )
+            connection.commit()
+            return True, "accepted", accepted + 1
     def save(self, job: dict[str, Any]) -> None:
         payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
         with self._connect() as connection:
@@ -120,6 +166,8 @@ class PersistentJobStore:
                 continue
             if not isinstance(job, dict) or job.get("id") != job_id:
                 self.delete(str(job_id))
+                continue
+            if job.get("kind") == "daily_usage":
                 continue
 
             if job.get("status") in {"queued", "running"}:

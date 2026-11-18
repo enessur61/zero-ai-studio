@@ -110,6 +110,43 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             self.assertIn('"completed": "succeeded"', result.stdout)
             self.assertIn('"interrupted": "failed"', result.stdout)
 
+    def test_daily_job_limit_survives_deletion_and_worker_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            for index in range(1, 4):
+                allowed, reason, count = store.create_job_if_allowed({"id": f"job-{index}", "status": "queued"}, daily_limit=3, max_concurrent=3, utc_day="2026-11-18")
+                self.assertTrue(allowed)
+                self.assertEqual(reason, "accepted")
+                self.assertEqual(count, index)
+            blocked, reason, count = store.create_job_if_allowed({"id": "job-4", "status": "queued"}, daily_limit=3, max_concurrent=3, utc_day="2026-11-18")
+            self.assertFalse(blocked)
+            self.assertEqual(reason, "daily_limit")
+            self.assertEqual(count, 3)
+            store.delete("job-1")
+            restarted = PersistentJobStore(directory)
+            blocked_again, reason_again, count_again = restarted.create_job_if_allowed({"id": "job-5", "status": "queued"}, daily_limit=3, max_concurrent=3, utc_day="2026-11-18")
+            self.assertFalse(blocked_again)
+            self.assertEqual(reason_again, "daily_limit")
+            self.assertEqual(count_again, 3)
+
+    def test_active_job_limit_is_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            allowed, _, _ = store.create_job_if_allowed({"id": "active-1", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
+            self.assertTrue(allowed)
+            blocked, reason, count = store.create_job_if_allowed({"id": "active-2", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
+            self.assertFalse(blocked)
+            self.assertEqual(reason, "concurrency_limit")
+            self.assertEqual(count, 1)
+
+    def test_daily_job_limit_uses_utc_day_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            allowed, _, _ = store.create_job_if_allowed({"id": "day-1", "status": "queued"}, daily_limit=1, max_concurrent=2, utc_day="2026-11-18")
+            self.assertTrue(allowed)
+            allowed_next_day, _, count = store.create_job_if_allowed({"id": "day-2", "status": "queued"}, daily_limit=1, max_concurrent=2, utc_day="2026-11-19")
+            self.assertTrue(allowed_next_day)
+            self.assertEqual(count, 1)
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)

@@ -12,21 +12,31 @@ export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process
   return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
-/**
- * Workers AI is only allowed when the operator explicitly confirms that this
- * account is on the Workers Free plan. On Workers Paid, usage above the daily
- * free allocation is billable, so credentials alone are never proof of €0.
- */
-export function isCloudflareWorkersAiFreePlanConfirmed(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED?.trim().toLowerCase() === 'true';
+/** Both independent operator confirmations are required. Missing values always deny. */
+export function isCloudflareWorkersAiEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ZERO_CLOUDFLARE_AI_ENABLED?.trim().toLowerCase() === 'true';
 }
-
-function assertCloudflareWorkersAiFreePlanConfirmed(): void {
+export function isCloudflareWorkersAiFreePlanConfirmed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED?.trim().toLowerCase() === 'true';
+}
+export function isCloudflareWorkersAiAllowed(env: NodeJS.ProcessEnv = process.env): boolean { return isCloudflareWorkersAiEnabled(env) && isCloudflareWorkersAiFreePlanConfirmed(env); }
+export class CloudflareWorkersAiGateError extends CloudflareWorkersAiError {
+  readonly code = 'CLOUDFLARE_BILLING_GATE_CLOSED';
+  constructor(message: string) { super(message, 403); this.name = 'CloudflareWorkersAiGateError'; }
+}
+function auditCloudflareProvider(modelId: string, action: string, decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD', reason: string, status: number | null = null): void {
+  console.info(JSON.stringify({ event: 'ZERO_PROVIDER_AUDIT', provider: 'cloudflare-workers-ai', adapterId: 'cloudflare-workers-ai', modelId, action, decision, reason, status, costEur: 0, timestamp: new Date().toISOString() }));
+}
+function assertCloudflareWorkersAiAllowed(modelId: string, action: string): void {
+  if (!isCloudflareWorkersAiEnabled()) {
+    const reason = 'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_AI_ENABLED=true fehlt. Kein Provider-Aufruf wurde gestartet.';
+    auditCloudflareProvider(modelId, action, 'BLOCKIERT_BUDGET_GUARD', reason, 403);
+    throw new CloudflareWorkersAiGateError(reason);
+  }
   if (!isCloudflareWorkersAiFreePlanConfirmed()) {
-    throw new CloudflareWorkersAiError(
-      'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true darf nur gesetzt werden, wenn das Konto nachweislich auf dem Workers Free plan läuft. Auf Workers Paid können Überschreitungen kostenpflichtig sein. Kein Provider-Aufruf wurde gestartet.',
-      403,
-    );
+    const reason = 'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=true fehlt. Kein Provider-Aufruf wurde gestartet.';
+    auditCloudflareProvider(modelId, action, 'BLOCKIERT_BUDGET_GUARD', reason, 403);
+    throw new CloudflareWorkersAiGateError(reason);
   }
 }
 
@@ -37,7 +47,7 @@ export async function generateCloudflareText(params: {
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; modelId: string }> {
-  assertCloudflareWorkersAiFreePlanConfirmed();
+  assertCloudflareWorkersAiAllowed('cloudflare-glm-4.7-flash', 'CLOUDFLARE_TEXT');
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -57,7 +67,7 @@ export async function generateCloudflareText(params: {
     let response: Response | undefined;
     // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
     // those server failures; never retry 401/403/429 or switch to a paid provider.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -78,10 +88,9 @@ export async function generateCloudflareText(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine HTTP-Antwort geliefert.');
+    auditCloudflareProvider('cloudflare-glm-4.7-flash', 'CLOUDFLARE_TEXT', response.ok ? 'ERLAUBT_0_EUR' : 'BLOCKIERT_BUDGET_GUARD', 'Einmaliger Provider-POST abgeschlossen.', response.status);
 
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
@@ -126,7 +135,7 @@ export async function generateCloudflareImage(params: {
   steps?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
-  assertCloudflareWorkersAiFreePlanConfirmed();
+  assertCloudflareWorkersAiAllowed('flux-1-schnell-free', 'CLOUDFLARE_IMAGE');
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -142,7 +151,7 @@ export async function generateCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -158,10 +167,9 @@ export async function generateCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
+    auditCloudflareProvider('flux-1-schnell-free', 'CLOUDFLARE_IMAGE', response.ok ? 'ERLAUBT_0_EUR' : 'BLOCKIERT_BUDGET_GUARD', 'Einmaliger Provider-POST abgeschlossen.', response.status);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: { image?: unknown };
@@ -207,7 +215,7 @@ export async function transcribeCloudflareAudio(params: {
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
-  assertCloudflareWorkersAiFreePlanConfirmed();
+  assertCloudflareWorkersAiAllowed('cloudflare-whisper-large-v3-turbo', 'CLOUDFLARE_TRANSCRIBE');
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -221,7 +229,7 @@ export async function transcribeCloudflareAudio(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -238,10 +246,9 @@ export async function transcribeCloudflareAudio(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine HTTP-Antwort geliefert.');
+    auditCloudflareProvider('cloudflare-whisper-large-v3-turbo', 'CLOUDFLARE_TRANSCRIBE', response.ok ? 'ERLAUBT_0_EUR' : 'BLOCKIERT_BUDGET_GUARD', 'Einmaliger Provider-POST abgeschlossen.', response.status);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: {
@@ -298,7 +305,7 @@ export async function analyzeCloudflareImage(params: {
   question: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ answer: string; modelId: string }> {
-  assertCloudflareWorkersAiFreePlanConfirmed();
+  assertCloudflareWorkersAiAllowed('cloudflare-moondream-3.1-9b-a2b', 'CLOUDFLARE_VISION');
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -318,7 +325,7 @@ export async function analyzeCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 1; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
@@ -338,10 +345,9 @@ export async function analyzeCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine HTTP-Antwort geliefert.');
+    auditCloudflareProvider('cloudflare-moondream-3.1-9b-a2b', 'CLOUDFLARE_VISION', response.ok ? 'ERLAUBT_0_EUR' : 'BLOCKIERT_BUDGET_GUARD', 'Einmaliger Provider-POST abgeschlossen.', response.status);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: { answer?: unknown };

@@ -20,6 +20,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
+WAN_GPU_ENABLED = os.environ.get("ZERO_WAN_GPU_ENABLED", "false").strip().lower() == "true"
+WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false").strip().lower() == "true"
+try:
+    WAN_DAILY_JOB_LIMIT = min(max(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), 1), 3)
+except ValueError:
+    WAN_DAILY_JOB_LIMIT = 0
+WAN_MAX_CONCURRENT_JOBS = 1
 MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,6 +52,11 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+
+
+def require_cost_gate() -> None:
+    if not WAN_GPU_ENABLED or not WAN_GPU_COSTS_CONFIRMED or WAN_DAILY_JOB_LIMIT < 1:
+        raise HTTPException(status_code=403, detail="Wan-GPU gesperrt: ZERO_WAN_GPU_ENABLED und ZERO_WAN_GPU_COSTS_CONFIRMED müssen separat true sein; Tageslimit maximal 3.")
 
 
 def require_auth(authorization: str | None) -> None:
@@ -128,6 +140,9 @@ def health() -> dict[str, Any]:
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
+        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and WAN_DAILY_JOB_LIMIT > 0,
+        "daily_job_limit": WAN_DAILY_JOB_LIMIT,
+        "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
     }
@@ -140,6 +155,7 @@ def create_job(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_auth(authorization)
+    require_cost_gate()
     try:
         require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
     except RuntimeError as exc:
@@ -160,14 +176,19 @@ def create_job(
                     old_file.unlink(missing_ok=True)
             if len(_jobs) >= 50:
                 raise HTTPException(status_code=429, detail="Worker job queue is full")
-        _jobs[job_id] = {
+        job = {
             "id": job_id,
             "status": "queued",
             "created_at": now,
             "duration_sec": 5,
             "engine": "Wan 2.1",
         }
-        _JOB_STORE.save(dict(_jobs[job_id]))
+        allowed, reason, count = _JOB_STORE.create_job_if_allowed(job, daily_limit=WAN_DAILY_JOB_LIMIT, max_concurrent=WAN_MAX_CONCURRENT_JOBS)
+        if not allowed:
+            if reason == "daily_limit":
+                raise HTTPException(status_code=429, detail=f"Wan-Tageslimit erreicht ({count}/{WAN_DAILY_JOB_LIMIT}).")
+            raise HTTPException(status_code=429, detail="Wan-GPU ist ausgelastet; maximal ein aktiver Job gleichzeitig.")
+        _jobs[job_id] = job
     background_tasks.add_task(
         asyncio.to_thread,
         run_generation,
@@ -176,7 +197,7 @@ def create_job(
         request.aspect_ratio,
         request.seed,
     )
-    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1"}
+    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1", "daily_jobs_accepted": count, "daily_job_limit": WAN_DAILY_JOB_LIMIT}
 
 
 @app.get("/jobs/{job_id}")
