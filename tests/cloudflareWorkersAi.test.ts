@@ -157,7 +157,7 @@ try {
   assert.equal(transcription.segments[0]?.end, 1.25);
 
   let transcriptionTransientAttempts = 0;
-  await assert.rejects(() => transcribeCloudflareAudio({ audioBase64: 'UklGRg==', fetchImpl: async () => {
+  await assert.rejects(() => transcribeCloudflareAudio({ audioBase64: 'UklGRg==', onAudit, fetchImpl: async () => {
     transcriptionTransientAttempts += 1;
     return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
   } }), /\(500\)/);
@@ -167,6 +167,7 @@ try {
   await assert.rejects(
     () => transcribeCloudflareAudio({
       audioBase64: 'UklGRg==',
+      onAudit,
       fetchImpl: async () => {
         transcriptionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
@@ -177,7 +178,7 @@ try {
   assert.equal(transcriptionRateLimitAttempts, 1);
 
   let imageTransientAttempts = 0;
-  await assert.rejects(() => generateCloudflareImage({ prompt: 'retry test', fetchImpl: async () => {
+  await assert.rejects(() => generateCloudflareImage({ prompt: 'retry test', onAudit, fetchImpl: async () => {
     imageTransientAttempts += 1;
     return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
   } }), /\(500\)/);
@@ -187,6 +188,7 @@ try {
   await assert.rejects(
     () => generateCloudflareImage({
       prompt: 'rate limit test',
+      onAudit,
       fetchImpl: async () => {
         imageRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
@@ -197,7 +199,7 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
-  await assert.rejects(() => generateCloudflareText({ prompt: 'zweite Nachricht', fetchImpl: async () => {
+  await assert.rejects(() => generateCloudflareText({ prompt: 'zweite Nachricht', onAudit, fetchImpl: async () => {
     transientAttempts += 1;
     return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
   } }), /\(500\)/);
@@ -207,6 +209,7 @@ try {
   await assert.rejects(
     () => generateCloudflareText({
       prompt: 'test',
+      onAudit,
       fetchImpl: async () => {
         rateLimitAttempts += 1;
         return new Response(JSON.stringify({
