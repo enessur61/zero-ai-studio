@@ -6,10 +6,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_gpu_memory, require_persistent_storage
 
 
 class PersistentJobStoreTests(unittest.TestCase):
+    def test_minimum_gpu_memory_gate(self) -> None:
+        self.assertFalse(has_sufficient_gpu_memory(8 * 1024 * 1024 * 1024))
+        self.assertFalse(has_sufficient_gpu_memory(12 * 1024 * 1024 * 1024 - 1))
+        self.assertTrue(has_sufficient_gpu_memory(12 * 1024 * 1024 * 1024))
+        self.assertTrue(has_sufficient_gpu_memory(24 * 1024 * 1024 * 1024))
+
     def test_ephemeral_worker_storage_is_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "persistent volume"):
             require_persistent_storage(False)
