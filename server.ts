@@ -2567,6 +2567,9 @@ app.put('/api/projects/:id', asyncRoute(async (req, res) => {
 
   // Optimistic version check prevents stale clients from replacing newer project scenes.
   const expectedVersion = req.body?.expectedVersion;
+  if (Array.isArray(req.body?.scenes) && expectedVersion === undefined) {
+    return res.status(428).json({ error: 'Szenenänderungen benötigen expectedVersion. Bitte Projekt neu laden.', code: 'PROJECT_VERSION_REQUIRED', actualVersion: prev.version });
+  }
   if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion !== prev.version)) {
     return res.status(409).json({
       error: 'Das Projekt wurde zwischenzeitlich geändert. Bitte neu laden und Änderungen erneut anwenden.',
