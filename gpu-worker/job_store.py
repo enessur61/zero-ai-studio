@@ -139,6 +139,12 @@ class PersistentJobStore:
             if active >= max_concurrent:
                 connection.rollback()
                 return False, "concurrency_limit", active
+            duplicate = connection.execute(
+                "SELECT 1 FROM zero_video_jobs WHERE id = ?", (str(job["id"]),)
+            ).fetchone()
+            if duplicate:
+                connection.rollback()
+                return False, "duplicate_id", active
             quota_row = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", (quota_id,)).fetchone()
             try:
                 accepted = int(json.loads(quota_row[0]).get("accepted_jobs", 0)) if quota_row else 0
