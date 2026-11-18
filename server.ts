@@ -1553,9 +1553,13 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
   try {
     const database = await loadDb();
     db = database;
-    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'text-to-speech', [], new Date(), preferredModelId);
+    const requestedModelId = req.body?.modelId === 'piper-tts-de-worker' ? 'piper-tts-de-worker' : preferredModelId;
+    const routeDecision = chooseZeroMediaModel(database.models, database.budgetGuard, 'text-to-speech', [], new Date(), requestedModelId);
     if (!routeDecision) {
       return res.status(503).json({ error: 'ZERO CORE findet aktuell kein aktiviertes, erfolgreich getestetes und verfügbares kostenloses TTS-Modell. Bitte Modelltest und Free-Tier-Kontingent prüfen. Kein kostenpflichtiger Fallback.' });
+    }
+    if (req.body?.modelId === 'piper-tts-de-worker' && routeDecision.modelId !== 'piper-tts-de-worker') {
+      return res.status(503).json({ error: 'Der ausdrücklich ausgewählte Piper-Worker ist nicht freigegeben oder nicht verfügbar. Es wurde kein anderes Modell als Fallback gestartet.' });
     }
     modelId = routeDecision.modelId;
     const text = String(req.body?.text ?? '').trim();
@@ -2797,7 +2801,6 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
   const title = String(req.body?.title ?? '').trim();
   const content = String(req.body?.content ?? '').trim();
   if (!title || !content) return res.status(400).json({ error: 'Titel und Inhalt erforderlich.' });
-
   let embedding: number[] | undefined;
   let embeddingNotice: string | undefined;
   if (process.env.GEMINI_API_KEY) {
