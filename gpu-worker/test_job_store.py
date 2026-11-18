@@ -175,6 +175,38 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             store.delete("job-1")
             self.assertNotIn("job-1", store.load_all())
 
+    def test_cancel_queued_job_is_persisted_as_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "queued-cancel", "status": "queued"})
+            result = store.request_cancel("queued-cancel")
+            self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(PersistentJobStore(directory).load_all()["queued-cancel"]["status"], "cancelled")
+
+    def test_cancel_running_job_is_only_a_persisted_request_until_inference_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "running-cancel", "status": "running"})
+            result = store.request_cancel("running-cancel")
+            self.assertEqual(result["status"], "cancel_requested")
+            self.assertEqual(PersistentJobStore(directory).load_all()["running-cancel"]["status"], "cancel_requested")
+
+    def test_cancel_is_idempotent_and_does_not_overwrite_completed_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "done", "status": "succeeded", "filename": "done.mp4"})
+            result = store.request_cancel("done")
+            self.assertEqual(result["status"], "succeeded")
+            self.assertIsNone(store.request_cancel("missing"))
+
+    def test_cancel_requested_job_is_terminalized_after_worker_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "cancel-on-restart", "status": "cancel_requested", "cancel_requested_at": "2026-11-18T00:00:00Z"})
+            restored = PersistentJobStore(directory).load_all()
+            self.assertEqual(restored["cancel-on-restart"]["status"], "cancelled")
+
+
 
 if __name__ == "__main__":
     unittest.main()
