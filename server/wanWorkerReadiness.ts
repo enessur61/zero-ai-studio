@@ -34,19 +34,20 @@ export function evaluateWanWorkerReadiness(input: {
   workerUrlConfigured: boolean;
   workerTokenConfigured: boolean;
   workerReachable: boolean;
+  zeroCostGateOpen: boolean;
   payload?: WanWorkerHealthPayload | null;
 }): WanWorkerReadiness {
   const payload = input.payload ?? {};
   const engine = [payload.engine, payload.model].some(
     (value) => typeof value === 'string' && /wan/i.test(value),
   );
-  const dailyJobLimit = Number.isInteger(payload.daily_job_limit)
+  const dailyJobLimit = typeof payload.daily_job_limit === 'number' && Number.isInteger(payload.daily_job_limit)
     ? Number(payload.daily_job_limit)
     : null;
-  const dailyJobsRemaining = Number.isInteger(payload.daily_jobs_remaining)
+  const dailyJobsRemaining = typeof payload.daily_jobs_remaining === 'number' && Number.isInteger(payload.daily_jobs_remaining)
     ? Number(payload.daily_jobs_remaining)
     : null;
-  const maxConcurrentJobs = Number.isInteger(payload.max_concurrent_jobs)
+  const maxConcurrentJobs = typeof payload.max_concurrent_jobs === 'number' && Number.isInteger(payload.max_concurrent_jobs)
     ? Number(payload.max_concurrent_jobs)
     : null;
   const dailyLimitReady = dailyJobLimit !== null
@@ -100,6 +101,12 @@ export function evaluateWanWorkerReadiness(input: {
       detail: payload.cost_gate_open === true ? 'Beide Worker-Freigaben sind aktiv.' : 'Mindestens eine Worker-Kostensperre ist geschlossen.',
     },
     {
+      id: 'zero_cost_gate',
+      label: 'ZERO-Kostensperren',
+      ready: input.zeroCostGateOpen,
+      detail: input.zeroCostGateOpen ? 'ZERO-Wan-Freigaben sind beide ausdrücklich aktiviert.' : 'ZERO_WAN_GPU_ENABLED und ZERO_WAN_GPU_COSTS_CONFIRMED sind nicht beide true.',
+    },
+    {
       id: 'daily_limit',
       label: 'Tageskontingent',
       ready: dailyLimitReady,
@@ -120,6 +127,7 @@ export function evaluateWanWorkerReadiness(input: {
   else if (payload.cuda_available !== true) status = 'WORKER_GPU_UNAVAILABLE';
   else if (payload.persistent_storage_configured !== true) status = 'WORKER_STORAGE_NOT_PERSISTENT';
   else if (payload.cost_gate_open !== true) status = 'WORKER_COST_GATE_CLOSED';
+  else if (!input.zeroCostGateOpen) status = 'ZERO_COST_GATE_CLOSED';
   else if (!dailyLimitReady) status = 'WORKER_DAILY_LIMIT_REACHED';
 
   return {
