@@ -34,6 +34,7 @@ function loadVideo(src: string): Promise<HTMLVideoElement> {
     video.crossOrigin = 'anonymous';
     video.muted = true;
     video.playsInline = true;
+    video.loop = true; // A 5-second Wan shot fills its full scene duration without freezing.
     video.preload = 'auto';
     video.onloadeddata = () => resolve(video);
     video.onerror = () => reject(new Error('Ein generierter Szenenclip konnte nicht geladen werden.'));
