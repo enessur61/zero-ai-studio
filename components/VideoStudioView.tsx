@@ -6,6 +6,7 @@ import { projectMediaService } from '../lib/services/projectMediaService.ts';
 import { wanJobService } from '../lib/services/wanJobService.ts';
 import type { WanJob } from '../lib/services/types.ts';
 import { matchWanJobScene } from '../server/wanJobList.ts';
+import { VideoObjectUrlRegistry } from '../lib/videoObjectUrlRegistry.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -20,6 +21,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
+  const scenesRef = useRef<FilmScene[]>(currentProject?.scenes ?? []);
+  const activeProjectIdRef = useRef(currentProject?.id);
+  activeProjectIdRef.current = currentProject?.id;
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeVoiceovers, setIncludeVoiceovers] = useState(true);
@@ -39,38 +43,98 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const [wanClipScene, setWanClipScene] = useState('');
+  const wanClipUrlRef = useRef<string | null>(null);
+  const resultRef = useRef<VideoRenderResult | null>(null);
+  const objectUrlRegistryRef = useRef<VideoObjectUrlRegistry | null>(null);
+  if (!objectUrlRegistryRef.current) objectUrlRegistryRef.current = new VideoObjectUrlRegistry();
+  const objectUrlRegistry = objectUrlRegistryRef.current;
 
+  function updateScenes(next: FilmScene[] | ((previous: FilmScene[]) => FilmScene[])) {
+    const resolved = typeof next === 'function' ? next(scenesRef.current) : next;
+    scenesRef.current = resolved;
+    setScenes(resolved);
+  }
+
+  function replaceWanClipPreview(nextUrl: string | null, projectId?: string, kind: 'restored' | 'generated' = 'generated') {
+    const previous = wanClipUrlRef.current;
+    if (nextUrl && nextUrl !== previous) {
+      objectUrlRegistry.retainPreview(nextUrl, 'wan-clip-preview', projectId ?? currentProject?.id ?? '__preview__', kind);
+    }
+    wanClipUrlRef.current = nextUrl;
+    setWanClipUrl(nextUrl);
+    if (previous && previous !== nextUrl) objectUrlRegistry.releasePreview(previous, 'wan-clip-preview');
+  }
+
+  function attachSceneVideo(projectId: string, sceneId: string, url: string) {
+    const previousUrl = scenesRef.current.find((scene) => scene.id === sceneId)?.videoUrl;
+    if (activeProjectIdRef.current === projectId) {
+      updateScenes((previous) => previous.map((scene) =>
+        scene.id === sceneId ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene
+      ));
+    } else {
+      objectUrlRegistry.releaseSceneReference(url, projectId, sceneId);
+    }
+    if (previousUrl && previousUrl !== url) objectUrlRegistry.releaseSceneReference(previousUrl, projectId, sceneId);
+  }
+
+  function releaseExportPreview() {
+    const previous = resultRef.current?.videoUrl;
+    if (previous) objectUrlRegistry.releasePreview(previous, 'export-preview');
+    resultRef.current = null;
+  }
 
   useEffect(() => {
     let active = true;
     if (!currentProject) {
-      setScenes([]);
+      updateScenes([]);
       return () => { active = false; };
     }
-    setScenes(currentProject.scenes);
+    const projectId = currentProject.id;
+    updateScenes(currentProject.scenes);
     Promise.all(currentProject.scenes.map(async (scene) => {
       try {
-        const blob = await projectMediaService.loadSceneVideo(currentProject.id, scene.id);
-        return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
-      } catch {
-        return null;
-      }
+        const blob = await projectMediaService.loadSceneVideo(projectId, scene.id);
+        if (!blob) return null;
+        const url = objectUrlRegistry.create(blob, { projectId, sceneId: scene.id, kind: 'restored' });
+        return { sceneId: scene.id, url };
+      } catch { return null; }
     })).then((restored) => {
       if (!active) {
-        restored.forEach((item) => { if (item) URL.revokeObjectURL(item.url); });
+        restored.forEach((item) => {
+          if (item) objectUrlRegistry.releaseSceneReference(item.url, projectId, item.sceneId);
+        });
         return;
       }
       const urls = new Map(restored.filter((item): item is { sceneId: string; url: string } => Boolean(item))
         .map((item) => [item.sceneId, item.url]));
       if (urls.size) {
-        setScenes((previous) => previous.map((scene) => {
+        updateScenes((previous) => previous.map((scene) => {
           const url = urls.get(scene.id);
           return url ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene;
         }));
       }
     });
-    return () => { active = false; };
-  }, [selectedProjectId, currentProject]);
+    return () => {
+      active = false;
+      const restoredUrls = new Set(objectUrlRegistry.getProjectUrls(projectId, 'restored'));
+      if (restoredUrls.size) {
+        updateScenes((previous) => previous.map((scene) =>
+          scene.videoUrl && restoredUrls.has(scene.videoUrl) ? { ...scene, videoUrl: undefined } : scene
+        ));
+        if (wanClipUrlRef.current && restoredUrls.has(wanClipUrlRef.current)) {
+          wanClipUrlRef.current = null;
+          setWanClipUrl(null);
+        }
+      }
+      objectUrlRegistry.releaseProjectRestored(projectId);
+    };
+  }, [selectedProjectId, currentProject?.id]);
+
+  useEffect(() => () => {
+    objectUrlRegistry.releaseAll();
+    wanClipUrlRef.current = null;
+    resultRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (soundtrack?.url) {
@@ -205,14 +269,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setWanJobId(job.id);
       setWanProgress('Gespeichertes Wan-MP4 wird wiederhergestellt...');
       const blob = await wanJobService.download(job.id);
-      const clipUrl = URL.createObjectURL(blob);
-      setWanClipUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return clipUrl; });
+      const targetScene = matchWanJobScene(job, currentProject?.id, scenesRef.current) ?? undefined;
+      const projectId = currentProject?.id ?? job.projectId ?? '__unassigned__';
+      const clipUrl = objectUrlRegistry.create(blob, { projectId, sceneId: targetScene?.id, kind: 'restored' });
+      replaceWanClipPreview(clipUrl, projectId, 'restored');
       setWanJobState('succeeded');
-      const targetScene = matchWanJobScene(job, currentProject?.id, scenes) ?? undefined;
       if (targetScene && currentProject) {
-        setScenes((previous) => previous.map((scene) =>
-          scene.id === targetScene.id ? { ...scene, videoUrl: clipUrl, status: 'Szenenbereit' } : scene
-        ));
+        attachSceneVideo(currentProject.id, targetScene.id, clipUrl);
         setWanClipScene(targetScene.title);
         try {
           const storage = await projectMediaService.saveSceneVideo(currentProject.id, targetScene.id, blob);
@@ -240,7 +303,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     setWanJobState('queued');
     setWanProgress('Sende Szene an den Wan-GPU-Worker...');
     setError(null);
-    setWanClipUrl(null);
+    replaceWanClipPreview(null);
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
@@ -290,8 +353,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           setWanJobState('downloading');
           setWanProgress('MP4 wird auf ZERO übertragen...');
           const blob = await wanJobService.download(jobId, controller.signal);
-          const clipUrl = URL.createObjectURL(blob);
-          setWanClipUrl(clipUrl);
+          const projectId = currentProject.id;
+          const clipUrl = objectUrlRegistry.create(blob, { projectId, sceneId: scene.id, kind: 'generated' });
+          replaceWanClipPreview(clipUrl, projectId, 'generated');
           let persistedLocally = false;
           let persistedOnServer = false;
           let storagePersistent: boolean | null = null;
@@ -307,9 +371,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             }
           }
           setWanClipScene(scene.title);
-          setScenes((previous) => previous.map((item) =>
-            item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
-          ));
+          attachSceneVideo(projectId, scene.id, clipUrl);
           setWanProgress(persistedOnServer
             ? persistedLocally && storagePersistent === true
               ? 'Echter Wan-2.1-Clip fertig · lokal und dauerhaft im ZERO-Projekt gespeichert · geräteübergreifend verfügbar.'
@@ -380,11 +442,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         context.drawImage(source, 0, 0, canvas.width, canvas.height);
         return canvas.toDataURL('image/jpeg', 0.84);
       }));
-      setScenes((previous) => previous.map((scene, index) => ({
+      updateScenes((previous) => previous.map((scene, index) => ({
         ...scene,
         imageUrl: optimized[index % optimized.length],
         status: 'Bild bereit',
       })));
+      releaseExportPreview();
       setResult(null);
       setError(null);
     } catch (err) {
@@ -394,11 +457,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   function updateSceneDuration(id: string, val: number) {
     const safeVal = Math.max(3, Math.min(30, val));
-    setScenes((prev) => prev.map((s) => (s.id === id ? { ...s, durationSec: safeVal } : s)));
+    updateScenes((prev) => prev.map((s) => (s.id === id ? { ...s, durationSec: safeVal } : s)));
   }
 
   function updateCamera(id: string, movement: FilmScene['cameraMovement']) {
-    setScenes((prev) =>
+    updateScenes((prev) =>
       prev.map((s) => (s.id === id ? { ...s, cameraMovement: movement } : s))
     );
   }
@@ -410,7 +473,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     if (current <= 60) return;
     const ratio = target / current;
     let sum = 0;
-    setScenes((prev) =>
+    updateScenes((prev) =>
       prev.map((s, idx) => {
         if (idx === prev.length - 1) {
           return { ...s, durationSec: Math.max(4, target - sum) };
@@ -464,7 +527,17 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         includeSceneVoiceovers: includeVoiceovers,
         onProgress: (pct, label) => setProgress({ pct, label }),
       });
+      const previousResultUrl = resultRef.current?.videoUrl;
+      if (rendered.videoUrl.startsWith('blob:')) {
+        const projectId = currentProject?.id ?? '__export__';
+        objectUrlRegistry.register(rendered.videoUrl, { projectId, kind: 'export' });
+        objectUrlRegistry.retainPreview(rendered.videoUrl, 'export-preview', projectId, 'export');
+      }
+      resultRef.current = rendered;
       setResult(rendered);
+      if (previousResultUrl && previousResultUrl !== rendered.videoUrl) {
+        objectUrlRegistry.releasePreview(previousResultUrl, 'export-preview');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Videoexport fehlgeschlagen');
     } finally {
