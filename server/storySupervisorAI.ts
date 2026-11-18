@@ -42,7 +42,10 @@ export function buildStorySupervisorAiPrompt(input: {
     title: clean(project.title || project.id, 160),
     scenes: (Array.isArray(project.scenes) ? project.scenes : []).slice(0, 80).map((scene) => ({
       id: scene.id,
+      index: scene.index,
       title: clean(scene.title, 180),
+      location: clean(scene.location, 120),
+      timeOfDay: clean(scene.timeOfDay, 80),
       characterIds: Array.isArray(scene.characterIds) ? scene.characterIds.slice(0, 20) : [],
       narration: clean(scene.narrationText, 900),
       dialogue: clean(scene.dialogueText, 1400),
@@ -68,14 +71,18 @@ export function buildStorySupervisorAiPrompt(input: {
     characters,
     relationships: input.state.relationships.filter((item) => item.seriesId === input.series.id).slice(0, 100).map((item) => ({
       from: item.fromCharacterId, to: item.toCharacterId, type: clean(item.type, 80), description: clean(item.description, 500),
+      createdAt: item.createdAt, updatedAt: item.updatedAt,
     })),
     knowledge: input.state.knowledge.filter((item) => item.seriesId === input.series.id).slice(0, 150).map((item) => ({
       characterId: item.characterId, fact: clean(item.fact, 350), learnedAt: item.learnedAt,
-      factType: item.factType || 'fact', subjectCharacterId: item.subjectCharacterId || '',
+      sourceEventId: item.sourceEventId || '', factType: item.factType || 'fact',
+      subjectCharacterId: item.subjectCharacterId || '', canonicalValue: clean(item.canonicalValue || '', 240),
     })),
     timeline: input.state.events.filter((item) => item.seriesId === input.series.id).slice(0, 200).map((item) => ({
-      title: clean(item.title, 160), description: clean(item.description, 400), occurredAt: item.occurredAt,
-      characterIds: item.characterIds || [], kind: item.kind || 'fact', timeMode: item.timeMode || 'present',
+      id: item.id, title: clean(item.title, 160), description: clean(item.description, 400), occurredAt: item.occurredAt,
+      sceneId: item.sceneId || '', characterIds: item.characterIds || [], kind: item.kind || 'fact',
+      subjectCharacterId: item.subjectCharacterId || '', canonicalValue: clean(item.canonicalValue || '', 240),
+      timeMode: item.timeMode || 'present',
     })),
     sceneVersionNotes: input.state.sceneVersions.filter((item) => item.seriesId === input.series.id).slice(-40).map((item) => ({
       sceneId: item.sceneId, version: item.version, note: clean(item.note, 240), createdAt: item.createdAt,
@@ -89,7 +96,7 @@ export function buildStorySupervisorAiPrompt(input: {
     'Gib ausschließlich ein valides JSON-Objekt gemäß dem angeforderten Schema zurück, ohne Markdown.',
   ].join(' ');
   const prompt = [
-    'Analysiere diesen Serienstand. Berücksichtige die chronologische Reihenfolge der Episoden und Szenen, Figurenwissen, Beziehungen, Serienbibel und Szenenversionen.',
+    'Analysiere diesen Serienstand. Berücksichtige die chronologische Reihenfolge der Episoden und Szenen, Figurenwissen samt Quellereignis und kanonischem Wert, datierte Beziehungsstände, Rückblenden/Träume sowie explizite Verknüpfungen zwischen Zeitachsenereignissen und Szenen. Unterscheide eine tatsächliche Beziehungsentwicklung von einer bloßen Änderung des zuletzt gespeicherten Beziehungsdatensatzes.',
     'Schema: {"overallAssessment":"string","characterAnalyses":[{"characterId":"bekannte ID","psychologicalProfile":"string","coreMotivation":"string","emotionalArc":"string","relationshipDynamics":["string"],"contradictions":["string"]}],"findings":[{"id":"stabile kurze ID","category":"psychology|motivation|emotion|relationship|subtext|contradiction","severity":"info|warning|critical","characterIds":["bekannte ID"],"episodeTitle":"string","sceneTitle":"string","evidence":"konkreter Beleg","interpretation":"Deutung","recommendation":"konkrete Verbesserung","confidence":"low|medium|high"}],"storyRecommendations":["string"]}. Maximal 12 Figurenanalysen, 30 Findings und 8 Empfehlungen.',
     JSON.stringify(payload),
   ].join('\n\n');

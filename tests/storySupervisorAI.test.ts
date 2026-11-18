@@ -18,6 +18,10 @@ assert.match(built.prompt,/Episode 1/);
 assert.match(built.prompt,/Elias sucht nach der Wahrheit/);
 assert.match(built.prompt,/misstrauen/);
 assert.match(built.prompt,/erst im Finale/);
+assert.match(built.prompt,/sourceEventId/);
+assert.match(built.prompt,/canonicalValue/);
+assert.match(built.prompt,/sceneId/);
+assert.match(built.prompt,/updatedAt/);
 assert.deepEqual(built.validCharacterIds.sort(),['c1','c2']);
 const response = parseStorySupervisorAiResponse(JSON.stringify({
  overallAssessment:'Die Beziehung kippt durch ein wiederholtes Vermeidungsverhalten.',
