@@ -125,8 +125,17 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       let completed = false;
       for (let attempt = 0; attempt < 180; attempt += 1) {
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(resolve, 3000);
-          controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('Überwachung beendet', 'AbortError')); }, { once: true });
+          const finish = () => {
+            controller.signal.removeEventListener('abort', abort);
+            resolve();
+          };
+          const timer = window.setTimeout(finish, 3000);
+          const abort = () => {
+            window.clearTimeout(timer);
+            controller.signal.removeEventListener('abort', abort);
+            reject(new DOMException('Überwachung beendet', 'AbortError'));
+          };
+          controller.signal.addEventListener('abort', abort, { once: true });
         });
         const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store', signal: controller.signal });
         const statusPayload = await statusResponse.json();
