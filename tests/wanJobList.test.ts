@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { matchWanJobScene, normalizeWanJobList, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
+import { loadWanJobList, matchWanJobScene, normalizeWanJobList, normalizeWanJobStatus, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
 
 const ids = [
   '00000000-0000-4000-8000-000000000001',
@@ -57,4 +57,40 @@ assert.equal(matchWanJobScene({ projectId: 'another-project', sceneId: 'scene-1'
 assert.equal(matchWanJobScene({ projectId: 'project-1', sceneId: 'missing-scene' }, 'project-1', [targetScene]), null);
 assert.equal(matchWanJobScene({ projectId: null, sceneId: 'scene-1' }, 'project-1', [targetScene]), null);
 assert.equal(matchWanJobScene({ projectId: 'project-1', sceneId: 'scene-1' }, undefined, [targetScene]), null);
+
+
+assert.equal(normalizeWanJobStatus(source[0], ids[0])?.status, 'queued');
+assert.equal(normalizeWanJobStatus(source[0], ids[1]), null);
+assert.equal(normalizeWanJobStatus({ ...source[0], status: 'invented' }, ids[0]), null);
+
+const okLoad = await loadWanJobList(
+  async () => new Response(JSON.stringify({ jobs: [source[0], source[0], { id: 'bad', status: 'running' }] }), {
+    status: 200, headers: { 'content-type': 'application/json' },
+  }),
+  new URL('https://worker.example/jobs?limit=50'),
+  {},
+);
+assert.equal(okLoad.kind, 'ok');
+if (okLoad.kind === 'ok') assert.equal(okLoad.jobs.length, 1);
+
+const malformedLoad = await loadWanJobList(
+  async () => new Response(JSON.stringify({ jobs: 'not-an-array' }), { status: 200 }),
+  new URL('https://worker.example/jobs'),
+  {},
+);
+assert.equal(malformedLoad.kind, 'invalid');
+
+const failedLoad = await loadWanJobList(
+  async () => new Response('{}', { status: 503 }),
+  new URL('https://worker.example/jobs'),
+  {},
+);
+assert.equal(failedLoad.kind, 'invalid');
+
+const offlineLoad = await loadWanJobList(
+  async () => { throw new TypeError('worker offline'); },
+  new URL('https://worker.example/jobs'),
+  {},
+);
+assert.equal(offlineLoad.kind, 'unavailable');
 
