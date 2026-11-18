@@ -62,6 +62,7 @@ import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { evaluateWanWorkerReadiness } from './server/wanWorkerReadiness.ts';
+import { streamWanVideoResponse } from './server/wanVideoStream.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -2054,15 +2055,21 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
       headers: worker.headers, signal: controller.signal, redirect: 'error',
     });
     if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
-    const length = Number(response.headers.get('content-length') ?? 0);
-    if (length > 100 * 1024 * 1024) return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length < 1024 || bytes.length > 100 * 1024 * 1024) return res.status(502).json({ error: 'Ungültige oder zu große MP4-Datei vom Wan-Worker.' });
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="zero-wan-${id}.mp4"`);
-    res.setHeader('Content-Length', String(bytes.length));
-    return res.send(bytes);
+    try {
+      await streamWanVideoResponse(response, res);
+      return;
+    } catch (error) {
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : new Error('Wan-Stream fehlgeschlagen.'));
+        return;
+      }
+      return res.status(502).json({ error: error instanceof Error ? error.message : 'Ungültige MP4-Datei vom Wan-Worker.' });
+    }
   } catch {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     return res.status(503).json({ error: 'Wan-Video konnte nicht geladen werden.' });
   } finally {
     clearTimeout(timeout);
