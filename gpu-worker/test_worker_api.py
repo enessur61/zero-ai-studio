@@ -156,7 +156,6 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
                 "project_id": "project_123",
                 "scene_id": "scene_456",
             })
-        worker._jobs = worker._JOB_STORE.load_all()
         listed = worker.list_jobs(50, authorization=self.auth)["jobs"]
         self.assertEqual({job["status"] for job in listed}, set(states))
         self.assertEqual(len(listed), 6)
@@ -283,19 +282,14 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         self.assertEqual(store.daily_usage("2026-11-18"), 3)
         self.assertEqual(len(store.list_jobs(50)), 40)
 
-    def test_malformed_or_duplicate_job_ids_are_not_exposed_by_zero_normalizer(self) -> None:
-        # This assertion covers the worker API's source data contract without
-        # invoking an external provider or CUDA inference.
-        from pathlib import Path
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, "-c", "from job_store import PersistentJobStore; print('worker store import ok')"],
-            check=True,
-            cwd=Path(__file__).parent,
-            capture_output=True,
-            text=True,
-        )
-        self.assertIn("worker store import ok", result.stdout)
+    def test_corrupt_persisted_json_is_ignored_by_job_list(self) -> None:
+        import sqlite3
+        with sqlite3.connect(worker._JOB_STORE.database_path) as connection:
+            connection.execute(
+                "INSERT INTO zero_video_jobs (id, payload) VALUES (?, ?)",
+                ("corrupt-job", "{not-json"),
+            )
+        self.assertEqual(worker.list_jobs(50, authorization=self.auth)["jobs"], [])
 
 
 if __name__ == "__main__":
