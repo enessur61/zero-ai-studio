@@ -3,6 +3,7 @@ import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles }
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { projectMediaService } from '../lib/services/projectMediaService.ts';
+import { projectService } from '../lib/services/projectService.ts';
 import { wanJobService } from '../lib/services/wanJobService.ts';
 import type { WanJob } from '../lib/services/types.ts';
 import { matchWanJobScene } from '../server/wanJobList.ts';
@@ -12,16 +13,20 @@ interface VideoStudioViewProps {
   projects: StudioProject[];
   activeProjectId?: string;
   soundtrack?: { url: string; title: string } | null;
+  onProjectUpdated?: (project: StudioProject) => void;
 }
 
-export function VideoStudioView({ projects, activeProjectId, soundtrack }: VideoStudioViewProps) {
+export function VideoStudioView({ projects, activeProjectId, soundtrack, onProjectUpdated }: VideoStudioViewProps) {
   const [selectedProjectId, setSelectedProjectId] = useState(
     activeProjectId || projects[0]?.id || ''
   );
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
+  const [scenesOwnerProjectId, setScenesOwnerProjectId] = useState(currentProject?.id ?? '');
   const scenesRef = useRef<FilmScene[]>(currentProject?.scenes ?? []);
+  const projectVersionsRef = useRef(new Map(projects.map((project) => [project.id, project.version])));
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const activeProjectIdRef = useRef(currentProject?.id);
   activeProjectIdRef.current = currentProject?.id;
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
@@ -53,6 +58,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     const resolved = typeof next === 'function' ? next(scenesRef.current) : next;
     scenesRef.current = resolved;
     setScenes(resolved);
+    setScenesOwnerProjectId(activeProjectIdRef.current ?? '');
   }
 
   function replaceWanClipPreview(nextUrl: string | null, projectId?: string, kind: 'restored' | 'generated' = 'generated') {
@@ -82,6 +88,30 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     if (previous) objectUrlRegistry.releasePreview(previous, 'export-preview');
     resultRef.current = null;
   }
+
+  // Persist user-authored timeline edits with optimistic project-version checks.
+  // Temporary Blob URLs are excluded; ProjectMediaService owns the actual clip bytes.
+  useEffect(() => {
+    if (!currentProject || scenesOwnerProjectId !== currentProject.id) return;
+    const projectId = currentProject.id;
+    const persistedScenes = scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    const serverScenes = currentProject.scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    if (JSON.stringify(persistedScenes) === JSON.stringify(serverScenes)) return;
+    if (!projectVersionsRef.current.has(projectId)) projectVersionsRef.current.set(projectId, currentProject.version);
+    const timer = window.setTimeout(() => {
+      saveQueueRef.current = saveQueueRef.current.then(async () => {
+        const expectedVersion = projectVersionsRef.current.get(projectId) ?? currentProject.version;
+        try {
+          const updated = await projectService.update(projectId, { scenes: persistedScenes }, expectedVersion);
+          projectVersionsRef.current.set(projectId, updated.version);
+          onProjectUpdated?.(updated);
+        } catch (saveError) {
+          setError(saveError instanceof Error ? saveError.message : 'VideoStudio-Änderungen konnten nicht dauerhaft gespeichert werden.');
+        }
+      });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [scenes, scenesOwnerProjectId, currentProject?.id, currentProject?.version, onProjectUpdated]);
 
   useEffect(() => {
     let active = true;
