@@ -15,7 +15,7 @@ from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_g
 import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,8 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
+    scene_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def require_cost_gate() -> None:
@@ -244,6 +246,8 @@ def create_job(
             "created_at": now,
             "duration_sec": 5,
             "engine": "Wan 2.1",
+            **({"project_id": request.project_id} if request.project_id else {}),
+            **({"scene_id": request.scene_id} if request.scene_id else {}),
         }
         allowed, reason, count = _JOB_STORE.create_job_if_allowed(job, daily_limit=WAN_DAILY_JOB_LIMIT, max_concurrent=WAN_MAX_CONCURRENT_JOBS)
         if not allowed:
@@ -281,6 +285,19 @@ def cancel_job(job_id: str, authorization: str | None = Header(default=None)) ->
             "cancelled": job["status"] == "cancelled",
             "message": job.get("cancel_reason", "Auftrag ist bereits abgeschlossen."),
         }
+
+
+@app.get("/jobs")
+def list_jobs(
+    limit: int = Query(default=50, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_auth(authorization)
+    with _jobs_lock:
+        persisted = _JOB_STORE.list_jobs(limit)
+        for job in persisted:
+            _jobs[str(job["id"])] = dict(job)
+        return {"jobs": persisted, "limit": limit}
 
 
 @app.get("/jobs/{job_id}")
