@@ -22,7 +22,7 @@ const base = {
 const ready = evaluateWanWorkerReadiness(base);
 assert.equal(ready.online, true);
 assert.equal(ready.status, 'WORKER_ONLINE');
-assert.equal(ready.readiness.length, 8);
+assert.equal(ready.readiness.length, 9);
 assert.ok(ready.readiness.every((criterion) => criterion.ready));
 
 const missingUrl = evaluateWanWorkerReadiness({ ...base, workerUrlConfigured: false });
