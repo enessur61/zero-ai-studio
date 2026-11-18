@@ -176,6 +176,24 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             store.delete("job-1")
             self.assertNotIn("job-1", store.load_all())
 
+    def test_list_jobs_returns_newest_persisted_jobs_with_a_safe_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "older", "status": "failed", "created_at": "2026-11-17T00:00:00Z"})
+            store.save({"id": "newer", "status": "succeeded", "created_at": "2026-11-18T00:00:00Z"})
+            store.save({"id": "middle", "status": "cancelled", "created_at": "2026-11-17T12:00:00Z"})
+            self.assertEqual([job["id"] for job in store.list_jobs(2)], ["newer", "middle"])
+            with self.assertRaises(ValueError):
+                store.list_jobs(51)
+
+    def test_list_jobs_applies_safe_restart_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "interrupted", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
+            jobs = PersistentJobStore(directory).list_jobs()
+            self.assertEqual(jobs[0]["status"], "failed")
+            self.assertIn("neu gestartet", jobs[0]["error"])
+
     def test_cancel_queued_job_is_persisted_as_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
