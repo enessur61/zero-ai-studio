@@ -2,11 +2,12 @@ import type { FilmScene, StudioProject } from '../src/types/zero.ts';
 import type { VideoRenderResult } from './localVideoCompositor.ts';
 
 export const FILM_PRODUCTION_MAX_DURATION_SEC = 60;
+export const FILM_PRODUCTION_MAX_WAN_CLIPS = 3;
 
 export interface FilmProductionProgress {
   percent: number;
   label: string;
-  stage: 'script' | 'images' | 'voiceover' | 'saving' | 'rendering' | 'complete';
+  stage: 'script' | 'images' | 'voiceover' | 'video' | 'saving' | 'rendering' | 'complete';
 }
 
 export interface FilmProductionPipelineServices {
@@ -15,6 +16,8 @@ export interface FilmProductionPipelineServices {
     imageGenerationWarnings?: string[];
   }>;
   generateVoiceover(scene: FilmScene): Promise<{ audioDataUrl: string; modelUsed?: string }>;
+  /** Returns a temporary browser object URL for a completed 5-second Wan MP4, or null when unavailable. */
+  generateVideoClip?(scene: FilmScene, onProgress: (label: string) => void): Promise<string | null>;
   saveProject(projectId: string, scenes: FilmScene[]): Promise<StudioProject>;
   renderVideo(
     project: StudioProject,
@@ -104,25 +107,74 @@ export async function runAutonomousFilmProduction(
     warnings.push('Kein Voiceover konnte mit einem freigegebenen kostenlosen Modell erzeugt werden. Der Videoexport wird ohne Sprecher-Audio fortgesetzt.');
   }
 
-  onProgress?.({ percent: 63, label: 'Sichere Szenen und verfügbare Sprachaufnahmen...', stage: 'saving' });
-  const savedProject = await services.saveProject(project.id, scenes);
+  // Generate no more than three Wan shots per episode. Worker-side daily and
+  // concurrency gates remain authoritative; this is an additional client cap.
+  const renderScenes: FilmScene[] = scenes.map((scene) => ({ ...scene }));
+  const temporaryClipUrls: string[] = [];
+  if (services.generateVideoClip) {
+    const candidates = renderScenes.slice(0, FILM_PRODUCTION_MAX_WAN_CLIPS);
+    for (let index = 0; index < candidates.length; index += 1) {
+      const scene = candidates[index];
+      onProgress?.({
+        percent: 60 + Math.round(((index + 1) / candidates.length) * 8),
+        label: `ZERO generiert KI-Videoclip ${index + 1}/${candidates.length}...`,
+        stage: 'video',
+      });
+      try {
+        const videoUrl = await services.generateVideoClip(scene, (label) => {
+          onProgress?.({ percent: 60 + Math.round(((index + 0.5) / candidates.length) * 8), label, stage: 'video' });
+        });
+        if (videoUrl) {
+          if (!videoUrl.startsWith('blob:')) throw new Error('Der Worker-Clip muss als temporäre lokale Blob-URL bereitgestellt werden.');
+          renderScenes[index] = { ...scene, videoUrl };
+          temporaryClipUrls.push(videoUrl);
+        } else {
+          warnings.push(`Szene ${scene.index}: kein KI-Videoclip verfügbar. ZERO verwendet den lokalen Storyboard-Schnitt.`);
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'Unbekannter Wan-Worker-Fehler';
+        warnings.push(`Szene ${scene.index}: KI-Videoclip nicht verfügbar – ${detail}. ZERO verwendet den lokalen Storyboard-Schnitt.`);
+      }
+    }
+    if (renderScenes.length > FILM_PRODUCTION_MAX_WAN_CLIPS) {
+      warnings.push(`Wan-Limit: maximal ${FILM_PRODUCTION_MAX_WAN_CLIPS} KI-Clips pro Episode; übrige Szenen werden lokal als Storyboard geschnitten.`);
+    }
+  }
+
+  onProgress?.({ percent: 69, label: 'Sichere Szenen und verfügbare Sprachaufnahmen...', stage: 'saving' });
+  // Never persist browser blob: URLs: they are ephemeral and invalid after reload.
+  const persistedScenes = renderScenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+  const savedProject = await services.saveProject(project.id, persistedScenes);
   const savedDuration = savedProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
   if (savedDuration > FILM_PRODUCTION_MAX_DURATION_SEC) {
     throw new Error(`Gespeicherte Szenen überschreiten das 60-Sekunden-Limit (${savedDuration}s).`);
   }
 
   onProgress?.({ percent: 70, label: 'ZERO schneidet den finalen Hochkantfilm...', stage: 'rendering' });
-  const video = await services.renderVideo(savedProject, (percent, label) => {
-    onProgress?.({
-      percent: Math.min(98, 70 + Math.round(Math.max(0, Math.min(100, percent)) * 0.28)),
-      label,
-      stage: 'rendering',
+  try {
+    const clipsBySceneId = new Map(renderScenes.map((scene) => [scene.id, scene.videoUrl]));
+    const projectForRender: StudioProject = {
+      ...savedProject,
+      scenes: savedProject.scenes.map((scene) => ({
+        ...scene,
+        ...(clipsBySceneId.get(scene.id) ? { videoUrl: clipsBySceneId.get(scene.id) } : {}),
+      })),
+    };
+    const video = await services.renderVideo(projectForRender, (percent, label) => {
+      onProgress?.({
+        percent: Math.min(98, 70 + Math.round(Math.max(0, Math.min(100, percent)) * 0.28)),
+        label,
+        stage: 'rendering',
+      });
     });
-  });
-  if (!Number.isFinite(video.durationSec) || video.durationSec > FILM_PRODUCTION_MAX_DURATION_SEC) {
-    throw new Error('Der Videoexport hat das harte 60-Sekunden-Limit verletzt und wird nicht als Ergebnis freigegeben.');
-  }
+    if (!Number.isFinite(video.durationSec) || video.durationSec > FILM_PRODUCTION_MAX_DURATION_SEC) {
+      throw new Error('Der Videoexport hat das harte 60-Sekunden-Limit verletzt und wird nicht als Ergebnis freigegeben.');
+    }
 
-  onProgress?.({ percent: 100, label: 'Episode erfolgreich exportiert.', stage: 'complete' });
-  return { project: savedProject, video, warnings, imagesReady, voiceoversReady };
+    onProgress?.({ percent: 100, label: 'Episode erfolgreich exportiert.', stage: 'complete' });
+    return { project: savedProject, video, warnings, imagesReady, voiceoversReady };
+  } finally {
+    // Clip blobs are only needed during rendering. The final export has its own URL.
+    for (const url of temporaryClipUrls) URL.revokeObjectURL(url);
+  }
 }
