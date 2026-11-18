@@ -29,12 +29,15 @@ except ValueError:
 WAN_MAX_CONCURRENT_JOBS = 1
 MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
+HF_CACHE_DIR = Path(os.environ.get("HF_HOME", "/data/huggingface-cache")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
+MODEL_CACHE_PERSISTENT = has_persistent_mount(HF_CACHE_DIR)
 if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true":
     require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+    require_persistent_storage(MODEL_CACHE_PERSISTENT)
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
 
@@ -138,6 +141,11 @@ def health() -> dict[str, Any]:
         "model": MODEL_ID,
         "model_loaded": _pipeline is not None,
         "cuda_available": torch.cuda.is_available(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "gpu_vram_total_mb": round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)) if torch.cuda.is_available() else 0,
+        "gpu_vram_free_mb": round(torch.cuda.mem_get_info(0)[0] / (1024 * 1024)) if torch.cuda.is_available() else 0,
+        "gpu_vram_recommended_min_mb": 12 * 1024,
+        "model_cache_persistent": MODEL_CACHE_PERSISTENT,
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
@@ -148,6 +156,7 @@ def health() -> dict[str, Any]:
         "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
+        "model_cache_persistent": MODEL_CACHE_PERSISTENT,
     }
 
 
