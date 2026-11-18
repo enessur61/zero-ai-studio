@@ -34,10 +34,14 @@ def validate_voice_config(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("Piper voice config is not valid UTF-8 JSON") from exc
 
+    if not isinstance(config, dict):
+        raise RuntimeError("Piper voice config root must be a JSON object")
     audio = config.get("audio", {})
     espeak = config.get("espeak", {})
     inference = config.get("inference", {})
     language = config.get("language", {})
+    if not all(isinstance(section, dict) for section in (audio, espeak, inference, language)):
+        raise RuntimeError("Piper voice config sections must be JSON objects")
     expected = (
         config.get("phoneme_type") == "espeak"
         and config.get("num_symbols") == 256
