@@ -132,6 +132,11 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
                 finish_cancelled_job(job_id, output_path)
                 return
             pipe = get_pipeline()
+            with _jobs_lock:
+                cancelled_during_model_load = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_during_model_load:
+                finish_cancelled_job(job_id, output_path)
+                return
             result = pipe(
                 prompt=prompt,
                 negative_prompt="low quality, blurry, distorted, watermark, text",
