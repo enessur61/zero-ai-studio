@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { loadWanJobList, matchWanJobScene, normalizeWanJobList, normalizeWanJobStatus, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
+import { isValidWanJobId, loadWanJobList, matchWanJobScene, normalizeWanJobList, normalizeWanJobStatus, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
 
 const ids = [
   '00000000-0000-4000-8000-000000000001',
@@ -94,3 +94,12 @@ const offlineLoad = await loadWanJobList(
 );
 assert.equal(offlineLoad.kind, 'unavailable');
 
+
+assert.equal(isValidWanJobId(ids[0]), true);
+assert.equal(isValidWanJobId(ids[0].toUpperCase()), true);
+assert.equal(isValidWanJobId('00000000-0000-0000-0000-000000000000'), false, 'nil UUID is not a generated Wan job ID');
+assert.equal(isValidWanJobId('00000000-0000-4000-0000-000000000001'), false, 'invalid UUID variant must be rejected');
+assert.equal(isValidWanJobId('00000000-0000-7000-8000-000000000001'), false, 'unsupported UUID version must be rejected');
+assert.equal(isValidWanJobId('00000000-0000-4000-8000-000000000001-extra'), false);
+assert.equal(isValidWanJobId(null), false);
+assert.equal(isValidWanJobId(123), false);
