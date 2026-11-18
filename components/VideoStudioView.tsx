@@ -25,7 +25,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [progress, setProgress] = useState({ pct: 0, label: '' });
   const [result, setResult] = useState<VideoRenderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [wanWorker, setWanWorker] = useState({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...' });
+  const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
@@ -79,10 +79,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           online: payload.online === true,
           status: String(payload.status || 'UNKNOWN'),
           message: String(payload.message || 'Kein Status verfügbar.'),
+          gpuName: typeof payload.gpuName === 'string' ? payload.gpuName : null,
+          gpuVramTotalMb: typeof payload.gpuVramTotalMb === 'number' ? payload.gpuVramTotalMb : null,
+          gpuVramFreeMb: typeof payload.gpuVramFreeMb === 'number' ? payload.gpuVramFreeMb : null,
+          readiness: Array.isArray(payload.readiness) ? payload.readiness.filter((item: unknown) => item && typeof item === 'object' && typeof (item as { label?: unknown }).label === 'string').map((item: { id?: string; label: string; ready?: boolean; detail?: string }) => ({ id: String(item.id || item.label), label: item.label, ready: item.ready === true, detail: String(item.detail || '') })) : [],
         });
       })
       .catch((err) => {
-        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.' });
+        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
       });
     return () => { active = false; };
   }, []);
@@ -380,6 +384,25 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               </span>
             </div>
             <p className="text-xs text-slate-400">{wanWorker.message}</p>
+            {(wanWorker.gpuName || wanWorker.gpuVramTotalMb !== null) && (
+              <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5 space-y-1">
+                {wanWorker.gpuName && <p className="text-xs text-white">{wanWorker.gpuName}</p>}
+                {wanWorker.gpuVramTotalMb !== null && <p className="text-[11px] text-slate-400">GPU-Speicher: {(wanWorker.gpuVramTotalMb / 1024).toFixed(1)} GB gesamt{wanWorker.gpuVramFreeMb !== null ? ` · ${(wanWorker.gpuVramFreeMb / 1024).toFixed(1)} GB frei` : ''}</p>}
+              </div>
+            )}
+            {wanWorker.readiness.length > 0 && (
+              <details className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5">
+                <summary className="cursor-pointer text-xs text-slate-300">Technische Bereitschaft ({wanWorker.readiness.filter((item) => item.ready).length}/{wanWorker.readiness.length})</summary>
+                <ul className="mt-2 space-y-2">
+                  {wanWorker.readiness.map((item) => (
+                    <li key={item.id} className="flex items-start gap-2 text-[11px]">
+                      <span className={item.ready ? 'text-emerald-400' : 'text-amber-300'}>{item.ready ? '✓' : '•'}</span>
+                      <span className="min-w-0"><span className="text-slate-200">{item.label}</span><span className="block text-slate-500">{item.detail}</span></span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
             <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
             {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
             {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
