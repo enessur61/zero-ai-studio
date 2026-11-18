@@ -97,7 +97,7 @@ def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
         job = _jobs[job_id]
         if job.get("status") == "cancelled":
             return dict(job)
-        if job.get("status") == "cancel_requested" and changes.get("status") == "running":
+        if job.get("status") == "cancel_requested" and changes.get("status") in {"running", "succeeded", "failed"}:
             return dict(job)
         job.update(changes)
         _JOB_STORE.save(dict(job))
@@ -151,7 +151,7 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
-        update_job(
+        finished = update_job(
             job_id,
             status="succeeded",
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -159,6 +159,8 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             size_bytes=output_path.stat().st_size,
             duration_sec=5,
         )
+        if finished.get("status") == "cancel_requested":
+            finish_cancelled_job(job_id, output_path)
     except Exception as exc:  # Report failure; never fall back to a paid API.
         with _jobs_lock:
             cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
