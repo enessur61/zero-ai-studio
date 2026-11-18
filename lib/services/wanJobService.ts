@@ -35,19 +35,26 @@ export const wanJobService: WanJobService = {
     if (!input.projectId.trim() || !input.sceneId.trim()) {
       throw new Error('Wan-Aufträge benötigen eine gültige Projekt- und Szenenzuordnung.');
     }
-    const response = await apiRequest<{ job: unknown; costFallback?: unknown }>('/api/video/engine/jobs', {
+    const response = await apiRequest<{ job: unknown; costFallback?: unknown; maxFinalDurationSec?: unknown }>('/api/video/engine/jobs', {
       method: 'POST',
       body: JSON.stringify(input),
       signal,
     });
     if (response.costFallback !== false) throw new Error('Wan-Auftrag wurde nicht ausdrücklich kostenfallbackfrei bestätigt.');
+    if (response.maxFinalDurationSec !== 60) throw new Error('Wan hat das harte 60-Sekunden-Exportlimit nicht bestätigt.');
+    if (!response.job || typeof response.job !== 'object' || Array.isArray(response.job)) {
+      throw new Error('Wan hat keine gültigen Auftragsdaten zurückgegeben.');
+    }
+    const rawJob = response.job as Record<string, unknown>;
+    const rawDuration = rawJob.durationSec ?? rawJob.duration_sec;
+    if (rawDuration !== 5) throw new Error('Wan hat keine exakt fünf Sekunden lange Szene bestätigt.');
     const job = normalizeJob(response.job, {
       projectId: input.projectId,
       sceneId: input.sceneId,
       durationSec: 5,
       engine: 'Wan 2.1',
     });
-    if (job.status !== 'queued' || job.durationSec !== 5) throw new Error('Wan hat keinen gültigen 5-Sekunden-Auftrag bestätigt.');
+    if (job.status !== 'queued') throw new Error('Wan hat keinen gültigen 5-Sekunden-Auftrag bestätigt.');
     return job;
   },
 

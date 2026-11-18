@@ -23,7 +23,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   requests.push({ url, method, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
   if (url === '/api/projects') return new Response(JSON.stringify({ projects: [project] }), { status: 200 });
   if (url === '/api/projects/project-1') return new Response(JSON.stringify({ project }), { status: 200 });
-  if (url === '/api/video/engine/jobs') return new Response(JSON.stringify({ costFallback: false, job: {
+  if (url === '/api/video/engine/jobs') return new Response(JSON.stringify({ costFallback: false, maxFinalDurationSec: 60, job: {
     id: '00000000-0000-4000-8000-000000000001', status: 'queued', duration_sec: 5, engine: 'Wan 2.1',
   } }), { status: 201 });
   return new Response(JSON.stringify({ error: 'not found' }), { status: 404 });
