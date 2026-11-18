@@ -253,6 +253,8 @@ def create_job(
         if not allowed:
             if reason == "daily_limit":
                 raise HTTPException(status_code=429, detail=f"Wan-Tageslimit erreicht ({count}/{WAN_DAILY_JOB_LIMIT}).")
+            if reason == "duplicate_id":
+                raise HTTPException(status_code=409, detail="Doppelte Wan-Auftrags-ID; bitte erneut versuchen.")
             raise HTTPException(status_code=429, detail="Wan-GPU ist ausgelastet; maximal ein aktiver Job gleichzeitig.")
         _jobs[job_id] = job
     background_tasks.add_task(
