@@ -97,8 +97,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
     const persistedScenes = scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
     const serverScenes = currentProject.scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
     if (JSON.stringify(persistedScenes) === JSON.stringify(serverScenes)) return;
-    const knownVersion = projectVersionsRef.current.get(projectId);
-    if (knownVersion === undefined || currentProject.version > knownVersion) projectVersionsRef.current.set(projectId, currentProject.version);
+    if (!projectVersionsRef.current.has(projectId)) projectVersionsRef.current.set(projectId, currentProject.version);
     const timer = window.setTimeout(() => {
       saveQueueRef.current = saveQueueRef.current.then(async () => {
         const expectedVersion = projectVersionsRef.current.get(projectId) ?? currentProject.version;
