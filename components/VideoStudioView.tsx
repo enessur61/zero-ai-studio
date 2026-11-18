@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -27,6 +27,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [error, setError] = useState<string | null>(null);
   const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
+  const [wanJobId, setWanJobId] = useState<string | null>(null);
+  const [wanJobState, setWanJobState] = useState<'idle' | 'queued' | 'running' | 'downloading' | 'stopped' | 'failed' | 'succeeded'>('idle');
+  const wanAbortRef = useRef<AbortController | null>(null);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const [wanClipScene, setWanClipScene] = useState('');
@@ -93,7 +96,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   async function handleWanSceneGeneration(scene: FilmScene) {
     if (wanBusy || !wanWorker.online) return;
+    const controller = new AbortController();
+    wanAbortRef.current = controller;
     setWanBusy(true);
+    setWanJobId(null);
+    setWanJobState('queued');
     setWanProgress('Sende Szene an den Wan-GPU-Worker...');
     setError(null);
     setWanClipUrl(null);
@@ -105,24 +112,32 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+        signal: controller.signal,
       });
       const createdPayload = await created.json();
       if (!created.ok || typeof createdPayload.job?.id !== 'string') {
         throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
       }
       const jobId = createdPayload.job.id as string;
+      setWanJobId(jobId);
+      setWanJobState('queued');
       setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
       let completed = false;
       for (let attempt = 0; attempt < 180; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 10000));
-        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, 3000);
+          controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('Überwachung beendet', 'AbortError')); }, { once: true });
+        });
+        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store', signal: controller.signal });
         const statusPayload = await statusResponse.json();
         if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
         const job = statusPayload.job;
-        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        if (job.status === 'failed') { setWanJobState('failed'); throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.')); }
+        setWanJobState(job.status === 'queued' ? 'queued' : 'running');
         if (job.status === 'succeeded') {
+          setWanJobState('downloading');
           setWanProgress('MP4 wird auf ZERO übertragen...');
-          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
+          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include', signal: controller.signal });
           if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
           const blob = await videoResponse.blob();
           if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
@@ -153,6 +168,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             : persistedLocally
               ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
               : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
+          setWanJobState('succeeded');
           completed = true;
           break;
         }
@@ -160,9 +176,16 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       }
       if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
-      setWanProgress('');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setWanJobState('stopped');
+        setWanProgress('ZERO verfolgt diesen Auftrag nicht weiter. Der GPU-Worker kann ihn trotzdem weiter ausführen; eine serverseitige Abbruchfunktion ist derzeit nicht vorhanden.');
+      } else {
+        setWanJobState('failed');
+        setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
+        setWanProgress('');
+      }
     } finally {
+      if (wanAbortRef.current === controller) wanAbortRef.current = null;
       setWanBusy(false);
     }
   }
@@ -404,7 +427,15 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               </details>
             )}
             <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
-            {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
+            {wanBusy && <div className="space-y-2">
+              <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-sky-400" /></div>
+              {wanJobId && <p className="text-[10px] text-slate-500 break-all">Auftrags-ID: {wanJobId}</p>}
+              <button type="button" onClick={() => wanAbortRef.current?.abort()} className="min-h-[40px] w-full rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 text-xs font-medium text-amber-200">Überwachung beenden</button>
+            </div>}
+            {!wanBusy && wanJobState === 'stopped' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'failed' && <p className="text-xs text-rose-300">Auftrag fehlgeschlagen. Du kannst die Szene erneut starten.</p>}
+            {!wanBusy && wanJobState === 'succeeded' && <p className="text-xs text-emerald-300">Auftrag abgeschlossen.</p>}
             {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
             {wanClipUrl && (
               <div className="space-y-2">
