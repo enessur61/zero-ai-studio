@@ -1881,6 +1881,8 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  const zeroCostGateOpen = process.env.ZERO_WAN_GPU_ENABLED?.trim().toLowerCase() === 'true'
+    && process.env.ZERO_WAN_GPU_COSTS_CONFIRMED?.trim().toLowerCase() === 'true';
   const base = {
     configured: Boolean(configuredUrl),
     engine: 'Wan 2.1',
@@ -1893,6 +1895,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       workerUrlConfigured: Boolean(configuredUrl),
       workerTokenConfigured: Boolean(token),
       workerReachable: false,
+      zeroCostGateOpen,
     });
     return res.json({ ...base, ...readiness });
   }
@@ -1907,6 +1910,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       workerUrlConfigured: true,
       workerTokenConfigured: true,
       workerReachable: false,
+      zeroCostGateOpen,
     });
     return res.status(503).json({
       ...base,
@@ -1938,19 +1942,19 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       workerUrlConfigured: true,
       workerTokenConfigured: true,
       workerReachable: true,
+      zeroCostGateOpen,
       payload,
     });
     return res.json({
       ...base,
       ...readiness,
-      ttsAvailable: false,
-      ttsVoiceDownloaded: false,
     });
   } catch {
     const readiness = evaluateWanWorkerReadiness({
       workerUrlConfigured: true,
       workerTokenConfigured: true,
       workerReachable: false,
+      zeroCostGateOpen,
     });
     return res.json({ ...base, ...readiness });
   } finally {
