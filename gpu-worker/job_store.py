@@ -269,16 +269,24 @@ class PersistentJobStore:
         return jobs
 
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return the newest persisted jobs after applying safe restart recovery."""
+        """Read persisted jobs without applying startup recovery to live work."""
         if not 1 <= limit <= 50:
             raise ValueError("Job list limit must be between 1 and 50.")
-        jobs = self.load_all()
-        ordered = sorted(
-            jobs.values(),
-            key=lambda job: str(job.get("created_at") or ""),
-            reverse=True,
-        )
-        return ordered[:limit]
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, payload FROM zero_video_jobs ORDER BY updated_at DESC"
+            ).fetchall()
+        jobs: list[dict[str, Any]] = []
+        for job_id, payload in rows:
+            try:
+                job = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(job, dict) or job.get("id") != job_id or job.get("kind") == "daily_usage":
+                continue
+            jobs.append(job)
+        jobs.sort(key=lambda job: str(job.get("created_at") or ""), reverse=True)
+        return jobs[:limit]
 
     def prune_completed(self, max_jobs: int = 50, retain_jobs: int = 40) -> list[dict[str, Any]]:
         if max_jobs < 1 or retain_jobs < 1 or retain_jobs >= max_jobs:
