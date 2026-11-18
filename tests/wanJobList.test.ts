@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeWanJobList, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
+import { matchWanJobScene, normalizeWanJobList, WAN_JOB_STATUSES } from '../server/wanJobList.ts';
 
 const ids = [
   '00000000-0000-4000-8000-000000000001',
@@ -50,3 +50,11 @@ assert.deepEqual(normalizeWanJobList(source, 0), []);
 assert.deepEqual(normalizeWanJobList({ jobs: source }), []);
 
 console.log('Wan job list normalization tests passed: all lifecycle states, validation, deduplication and metadata bounds.');
+
+const targetScene = { id: 'scene-1', title: 'Matching scene' };
+assert.equal(matchWanJobScene({ projectId: 'project-1', sceneId: 'scene-1' }, 'project-1', [targetScene]), targetScene);
+assert.equal(matchWanJobScene({ projectId: 'another-project', sceneId: 'scene-1' }, 'project-1', [targetScene]), null);
+assert.equal(matchWanJobScene({ projectId: 'project-1', sceneId: 'missing-scene' }, 'project-1', [targetScene]), null);
+assert.equal(matchWanJobScene({ projectId: null, sceneId: 'scene-1' }, 'project-1', [targetScene]), null);
+assert.equal(matchWanJobScene({ projectId: 'project-1', sceneId: 'scene-1' }, undefined, [targetScene]), null);
+
