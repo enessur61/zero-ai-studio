@@ -2022,6 +2022,42 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   }
 }));
 
+app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}/cancel`, worker.baseUrl), {
+      method: 'POST',
+      headers: worker.headers,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Abbruch konnte vom Worker nicht bestätigt werden.' });
+    if (payload.id !== id || !['cancelled', 'cancel_requested', 'succeeded', 'failed'].includes(String(payload.status))) {
+      return res.status(502).json({ error: 'Ungültige Abbruchbestätigung vom Wan-Worker.' });
+    }
+    const statusCode = payload.status === 'cancel_requested' ? 202 : 200;
+    return res.status(statusCode).json({
+      job: {
+        id,
+        status: payload.status,
+        cancelled: payload.status === 'cancelled',
+        cancelRequested: payload.status === 'cancel_requested',
+        message: typeof payload.message === 'string' ? payload.message : 'Worker-Status aktualisiert.',
+      },
+    });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Der Abbruch ist nicht bestätigt; bitte den Jobstatus erneut prüfen.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}));
+
 app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
