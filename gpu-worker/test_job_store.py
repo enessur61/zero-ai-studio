@@ -186,6 +186,28 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             with self.assertRaises(ValueError):
                 store.list_jobs(51)
 
+    def test_list_jobs_preserves_project_and_scene_recovery_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({
+                "id": "metadata-job", "status": "succeeded",
+                "created_at": "2026-11-18T00:00:00Z",
+                "project_id": "project_123", "scene_id": "scene_456",
+            })
+            job = store.list_jobs()[0]
+            self.assertEqual(job["project_id"], "project_123")
+            self.assertEqual(job["scene_id"], "scene_456")
+
+    def test_cancelled_jobs_are_included_in_completed_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            store.save({"id": "cancel-old", "status": "cancelled", "created_at": "2026-11-17T00:00:00Z"})
+            store.save({"id": "succeed-new", "status": "succeeded", "created_at": "2026-11-18T00:00:00Z"})
+            store.save({"id": "fail-new", "status": "failed", "created_at": "2026-11-19T00:00:00Z"})
+            removed = store.prune_completed(max_jobs=3, retain_jobs=2)
+            self.assertEqual([job["id"] for job in removed], ["cancel-old"])
+            self.assertNotIn("cancel-old", store.list_jobs())
+
     def test_list_jobs_does_not_mark_live_inference_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
