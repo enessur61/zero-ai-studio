@@ -44,7 +44,7 @@ const bounded = normalizeWanJobList([
   { ...source[1], id: ids[1], duration_sec: -50 },
 ], 2);
 assert.equal(bounded.length, 2);
-assert.equal(bounded[0].durationSec, 60);
+assert.equal(bounded[0].durationSec, 5);
 assert.equal(bounded[1].durationSec, 1);
 assert.deepEqual(normalizeWanJobList(source, 0), []);
 assert.deepEqual(normalizeWanJobList({ jobs: source }), []);
