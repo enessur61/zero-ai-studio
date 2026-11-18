@@ -131,6 +131,7 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    daily_jobs_accepted = _JOB_STORE.daily_usage()
     return {
         "ok": True,
         "engine": "Wan 2.1",
@@ -140,8 +141,10 @@ def health() -> dict[str, Any]:
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
-        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and WAN_DAILY_JOB_LIMIT > 0,
+        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and 1 <= WAN_DAILY_JOB_LIMIT <= 3,
         "daily_job_limit": WAN_DAILY_JOB_LIMIT,
+        "daily_jobs_accepted": daily_jobs_accepted,
+        "daily_jobs_remaining": max(0, WAN_DAILY_JOB_LIMIT - daily_jobs_accepted),
         "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
