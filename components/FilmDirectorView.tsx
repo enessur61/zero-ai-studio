@@ -218,7 +218,7 @@ export function FilmDirectorView({
   function editEvent(item: ContinuityEvent) { setEventDraft({ id: item.id, title: item.title, description: item.description, occurredAt: localDateValue(item.occurredAt), kind: item.kind || 'fact', subjectCharacterId: item.subjectCharacterId || '', canonicalValue: item.canonicalValue || '', timeMode: item.timeMode || 'present', characterIds: item.characterIds || [] }); }
 
   async function handleCreateFilm(e: React.FormEvent) {
-    let wanWorkerUnavailable = false;
+    let wanGenerationStopped = false;
     e.preventDefault();
     if (!idea.trim() || directing) return;
     setDirecting(true);
@@ -263,7 +263,7 @@ export function FilmDirectorView({
         generateVideoClip: async (scene, onClipProgress) => {
           // A blocked or unconfigured worker is detected once; never hammer a
           // known-closed gate with more episode requests.
-          if (wanWorkerUnavailable) return null;
+          if (wanGenerationStopped) return null;
           try {
             onClipProgress(`Wan nimmt Szene ${scene.index} an...`);
             const accepted = await apiRequest<{ job: { id: string; status: string; durationSec: number }; maxFinalDurationSec: number; costFallback: false }>('/api/video/engine/jobs', {
@@ -308,10 +308,10 @@ export function FilmDirectorView({
             return URL.createObjectURL(blob);
           } catch (clipError) {
             const message = clipError instanceof Error ? clipError.message : 'Wan-Worker nicht verfügbar.';
-            if (/gesperrt|nicht konfiguriert|nicht vollständig konfiguriert|nicht erreichbar|HTTP 403|HTTP 503/i.test(message)) {
-              wanWorkerUnavailable = true;
-            }
-            throw clipError;
+            // Stop the episode's Wan queue after the first failure: do not burn
+            // the remaining worker quota on a known-bad or closed provider.
+            wanGenerationStopped = true;
+            throw new Error(message);
           }
         },
         saveProject: async (projectId, scenes) => {
