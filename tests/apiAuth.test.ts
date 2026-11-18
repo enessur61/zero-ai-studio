@@ -21,7 +21,7 @@ async function invoke(path: string, hasValidSession: () => Promise<boolean>, con
     sessionSecret: configured ? 'a-secure-session-secret-that-is-long-enough-123' : '',
     hasValidSession,
   });
-  middleware({ path } as Request, recorder.response, (() => { nextCalled = true; }) as never);
+  middleware({ path } as unknown as Request, recorder.response, (() => { nextCalled = true; }) as never);
   await new Promise((resolve) => setImmediate(resolve));
   return { ...recorder, nextCalled };
 }
