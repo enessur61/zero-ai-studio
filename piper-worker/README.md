@@ -10,7 +10,7 @@ CPU-only German WAV voiceovers through Piper ONNX using the pinned de_DE-thorste
 - **Compatibility:** the pinned model card requires Piper 1.5 or higher. ZERO pins Piper 1.8.0.
 - **Integrity:** ONNX file SHA-256 and exact size are checked before loading. The JSON config is parsed and checked against the pinned language, sample rate, Piper metadata and inference defaults. The pinned upstream model card is bundled at `voice/MODEL_CARD.md`.
 
-The model card's provenance is recorded faithfully; ZERO does not make a blanket legal determination or mark commercial use as legally cleared. Keep the engine license and exact voice model card with redistributed artifacts. This README is not legal advice.
+The ONNX binary has an exact SHA-256 pin. The upstream JSON config is pinned by the immutable revision URL and validated structurally (its upstream file digest is not independently pinned in this release). The model card's provenance is recorded faithfully; ZERO does not make a blanket legal determination or mark commercial use as legally cleared. Keep the engine license and exact voice model card with redistributed artifacts. This README is not legal advice.
 
 ## Default-deny cost gate
 
