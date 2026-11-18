@@ -213,6 +213,14 @@ struct ZEROWebView: UIViewRepresentable {
             type: WKMediaCaptureType,
             decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
         ) {
+            guard let appURL = Self.appURL,
+                  origin.protocol == appURL.scheme,
+                  origin.host == appURL.host,
+                  origin.port == (appURL.port ?? 443) else {
+                decisionHandler(.deny)
+                return
+            }
+
             decisionHandler(.prompt)
         }
     }
