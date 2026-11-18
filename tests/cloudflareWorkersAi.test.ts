@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, isCloudflareWorkersAiEnabled, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio, type CloudflareAuditEvent } from '../server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, isCloudflareWorkersAiEnabled, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio, type CloudflareAuditEvent, CloudflareAuditPersistenceError } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
@@ -229,6 +229,7 @@ try {
   assert.ok(auditEvents.some((item) => item.outcome === 'success' && item.providerRequestId === 'cf-ray:ray-success-123'));
   assert.ok(auditEvents.some((item) => item.outcome === 'http_error' && item.httpStatus === 500));
   assert.ok(auditEvents.every((item) => item.provider === 'cloudflare-workers-ai' && item.costEur === 0));
+  await assert.rejects(() => generateCloudflareText({ prompt: 'audit persistence failure', onAudit: async () => { throw new Error('state store unavailable'); }, fetchImpl: async () => new Response(JSON.stringify({ success: true, result: { response: 'OK' } }), { status: 200 }) }), CloudflareAuditPersistenceError);
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
   if (originalAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
