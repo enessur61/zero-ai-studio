@@ -1512,10 +1512,6 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
-    if (modelId === 'piper-tts-de-worker') {
-      const message = err instanceof Error ? err.message : 'Piper-Worker nicht verfügbar.';
-      return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
-    }
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage['gemini-3.8-flash']) {
       await markGeminiQuotaExhausted('gemini-3.8-flash', db);
       try {
@@ -1630,6 +1626,10 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
       costEur: 0,
     });
   } catch (err) {
+    if (modelId === 'piper-tts-de-worker') {
+      const message = err instanceof Error ? err.message : 'Piper-Worker nicht verfügbar.';
+      return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
+    }
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {
       await markGeminiQuotaExhausted(modelId, db);
       try {

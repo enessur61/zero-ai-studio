@@ -160,3 +160,4 @@ export function chooseZeroMediaModel(
   const selected = (requestedModelId ? eligible.find((model) => model.id === requestedModelId) : undefined) ?? eligible[0];
   return {
     modelId: selected.id,
+    consideredModelIds: eligible.map((model) => model.id),
