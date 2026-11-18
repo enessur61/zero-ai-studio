@@ -19,7 +19,7 @@ export const sceneService: SceneService = {
     if (!scene.id || project.scenes.some((item) => item.id === scene.id)) {
       throw new Error('Szenen-ID fehlt oder ist im Projekt bereits vorhanden.');
     }
-    const updated = await projectService.update(projectId, { scenes: [...project.scenes, scene] });
+    const updated = await projectService.update(projectId, { scenes: [...project.scenes, scene] }, project.version);
     const created = updated.scenes.find((item) => item.id === scene.id);
     if (!created) throw new Error('Die neue Szene wurde vom Server nicht bestätigt.');
     return created;
@@ -32,7 +32,7 @@ export const sceneService: SceneService = {
     const scenes = project.scenes.map((scene, itemIndex) => itemIndex === index
       ? { ...scene, ...patch, id: scene.id }
       : scene);
-    const updated = await projectService.update(projectId, { scenes });
+    const updated = await projectService.update(projectId, { scenes }, project.version);
     const result = updated.scenes.find((item) => item.id === sceneId);
     if (!result) throw new Error('Die Szenenänderung wurde vom Server nicht bestätigt.');
     return result;
@@ -43,6 +43,6 @@ export const sceneService: SceneService = {
     if (!project.scenes.some((item) => item.id === sceneId)) {
       throw new Error('Szene gehört nicht zu diesem Projekt oder existiert nicht.');
     }
-    await projectService.update(projectId, { scenes: project.scenes.filter((item) => item.id !== sceneId) });
+    await projectService.update(projectId, { scenes: project.scenes.filter((item) => item.id !== sceneId) }, project.version);
   },
 };
