@@ -24,6 +24,11 @@ export interface WanJobListItem {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Strict UUID validation shared by every server-side Wan proxy endpoint. */
+export function isValidWanJobId(value: unknown): value is string {
+  return typeof value === 'string' && UUID_PATTERN.test(value);
+}
 const STATUS_SET = new Set<string>(WAN_JOB_STATUSES);
 
 function optionalString(value: unknown, maxLength: number): string | null {
