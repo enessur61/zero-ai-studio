@@ -141,17 +141,17 @@ export async function runAutonomousFilmProduction(
     }
   }
 
-  onProgress?.({ percent: 69, label: 'Sichere Szenen und verfügbare Sprachaufnahmen...', stage: 'saving' });
-  // Never persist browser blob: URLs: they are ephemeral and invalid after reload.
-  const persistedScenes = renderScenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
-  const savedProject = await services.saveProject(project.id, persistedScenes);
-  const savedDuration = savedProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
-  if (savedDuration > FILM_PRODUCTION_MAX_DURATION_SEC) {
-    throw new Error(`Gespeicherte Szenen überschreiten das 60-Sekunden-Limit (${savedDuration}s).`);
-  }
-
-  onProgress?.({ percent: 70, label: 'ZERO schneidet den finalen Hochkantfilm...', stage: 'rendering' });
   try {
+    onProgress?.({ percent: 69, label: 'Sichere Szenen und verfügbare Sprachaufnahmen...', stage: 'saving' });
+    // Never persist browser blob: URLs: they are ephemeral and invalid after reload.
+    const persistedScenes = renderScenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    const savedProject = await services.saveProject(project.id, persistedScenes);
+    const savedDuration = savedProject.scenes.reduce((sum, scene) => sum + scene.durationSec, 0);
+    if (savedDuration > FILM_PRODUCTION_MAX_DURATION_SEC) {
+      throw new Error(`Gespeicherte Szenen überschreiten das 60-Sekunden-Limit (${savedDuration}s).`);
+    }
+
+    onProgress?.({ percent: 70, label: 'ZERO schneidet den finalen Hochkantfilm...', stage: 'rendering' });
     const clipsBySceneId = new Map(renderScenes.map((scene) => [scene.id, scene.videoUrl]));
     const projectForRender: StudioProject = {
       ...savedProject,
