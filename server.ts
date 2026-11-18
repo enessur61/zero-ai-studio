@@ -61,6 +61,7 @@ import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.t
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
+import { evaluateWanWorkerReadiness } from './server/wanWorkerReadiness.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -1875,86 +1876,83 @@ Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11,
 }));
 
 // === ZERO VIDEO ENGINE BRIDGE (OPTIONAL SELF-HOSTED WAN WORKER) ===
-// The GPU worker is deliberately external: the Render web service is not a video-generation GPU.
-// Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
+// Health is only reported as online when every operational gate is confirmed.
 app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  const base = {
+    configured: Boolean(configuredUrl),
+    engine: 'Wan 2.1',
+    maxDurationSec: 60,
+    costFallback: false as const,
+  };
+
   if (!configuredUrl || !token) {
-    return res.json({
-      configured: Boolean(configuredUrl),
-      online: false,
-      engine: 'Wan 2.1',
-      status: configuredUrl ? 'WORKER_TOKEN_MISSING' : 'GPU_WORKER_NOT_CONFIGURED',
-      message: configuredUrl
-        ? 'ZERO_VIDEO_ENGINE_TOKEN fehlt. Der Worker wird ohne gemeinsames Geheimnis nicht freigeschaltet.'
-        : 'Noch kein eigener Wan-GPU-Worker verbunden. ZERO verwendet weiterhin den lokalen Storyboard-Export.',
-      maxDurationSec: 60,
-      costFallback: false,
+    const readiness = evaluateWanWorkerReadiness({
+      workerUrlConfigured: Boolean(configuredUrl),
+      workerTokenConfigured: Boolean(token),
+      workerReachable: false,
     });
+    return res.json({ ...base, ...readiness });
   }
 
   let endpoint: URL;
   try {
     endpoint = new URL(configuredUrl);
-    if (IS_PRODUCTION && endpoint.protocol !== 'https:') {
-      throw new Error('HTTPS erforderlich');
-    }
+    if (IS_PRODUCTION && endpoint.protocol !== 'https:') throw new Error('HTTPS erforderlich');
     if (!['https:', 'http:'].includes(endpoint.protocol)) throw new Error('Ungültiges Protokoll');
   } catch {
+    const readiness = evaluateWanWorkerReadiness({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: false,
+    });
     return res.status(503).json({
-      configured: true,
-      online: false,
-      engine: 'Wan 2.1',
+      ...base,
+      ...readiness,
       status: 'INVALID_WORKER_URL',
       message: 'Die konfigurierte ZERO_VIDEO_ENGINE_URL ist ungültig. In Produktion ist HTTPS erforderlich.',
-      maxDurationSec: 60,
-      costFallback: false,
     });
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000);
   try {
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    headers.Authorization = `Bearer ${token}`;
     const response = await fetch(new URL('/health', endpoint), {
       method: 'GET',
-      headers,
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
       signal: controller.signal,
       redirect: 'error',
     });
-    if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
-    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean; tts_available?: boolean; tts_voice_downloaded?: boolean };
-    const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
-    const online = payload.ok === true && payload.cuda_available === true && engineMatches;
+    if (!response.ok) {
+      const readiness = evaluateWanWorkerReadiness({
+        workerUrlConfigured: true,
+        workerTokenConfigured: true,
+        workerReachable: false,
+      });
+      return res.json({ ...base, ...readiness });
+    }
+    const payload = await response.json() as import('./server/wanWorkerReadiness.ts').WanWorkerHealthPayload;
+    const readiness = evaluateWanWorkerReadiness({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: true,
+      payload,
+    });
     return res.json({
-      configured: true,
-      online,
-      gpuAvailable: payload.cuda_available === true,
-      ttsAvailable: payload.tts_available === true,
-      ttsVoiceDownloaded: payload.tts_voice_downloaded === true,
-      engine: 'Wan 2.1',
-      status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
-      message: online
-        ? 'Wan-Worker und CUDA-GPU erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
-        : payload.cuda_available === false
-          ? 'Worker erreichbar, aber keine CUDA-GPU verfügbar. Wan-Inferenz ist nicht startbereit.'
-          : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
-      maxDurationSec: 60,
-      costFallback: false,
+      ...base,
+      ...readiness,
+      ttsAvailable: false,
+      ttsVoiceDownloaded: false,
     });
   } catch {
-    return res.json({
-      configured: true,
-      online: false,
-      engine: 'Wan 2.1',
-      status: 'WORKER_OFFLINE',
-      message: 'Wan-GPU-Worker ist derzeit nicht erreichbar. Es wird kein kostenpflichtiger Ersatzdienst verwendet.',
-      maxDurationSec: 60,
-      costFallback: false,
+    const readiness = evaluateWanWorkerReadiness({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: false,
     });
+    return res.json({ ...base, ...readiness });
   } finally {
     clearTimeout(timeout);
   }
