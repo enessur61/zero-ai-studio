@@ -94,6 +94,55 @@ function makeVideo(durationSec: number) {
 }
 
 {
+  const project = makeProject([makeScene(1, 15), makeScene(2, 15), makeScene(3, 15), makeScene(4, 15)]);
+  const persisted: FilmScene[] = [];
+  let generated = 0;
+  let renderedClips = 0;
+  const result = await runAutonomousFilmProduction({
+    createDraft: async () => ({ project }),
+    generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
+    generateVideoClip: async (scene) => {
+      generated += 1;
+      assert.ok(scene.videoPrompt.length > 0);
+      return URL.createObjectURL(new Blob(['clip']));
+    },
+    saveProject: async (_id, scenes) => {
+      persisted.push(...scenes);
+      assert.ok(scenes.every((scene) => !scene.videoUrl), 'temporary blob URLs must never be persisted');
+      return { ...project, scenes };
+    },
+    renderVideo: async (renderProject) => {
+      renderedClips = renderProject.scenes.filter((scene) => Boolean(scene.videoUrl)).length;
+      assert.equal(renderedClips, 3, 'at most three Wan clips are attached to one episode');
+      return makeVideo(60);
+    },
+  });
+  assert.equal(generated, 3);
+  assert.equal(renderedClips, 3);
+  assert.ok(result.warnings.some((warning) => warning.includes('maximal 3 KI-Clips')));
+  assert.ok(persisted.every((scene) => !scene.videoUrl));
+}
+
+{
+  const project = makeProject([makeScene(1, 20), makeScene(2, 20)]);
+  let rendered = false;
+  const result = await runAutonomousFilmProduction({
+    createDraft: async () => ({ project }),
+    generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
+    generateVideoClip: async () => { throw new Error('Wan-GPU ist gesperrt'); },
+    saveProject: async (_id, scenes) => ({ ...project, scenes }),
+    renderVideo: async (renderProject) => {
+      rendered = true;
+      assert.ok(renderProject.scenes.every((scene) => !scene.videoUrl));
+      return makeVideo(40);
+    },
+  });
+  assert.equal(rendered, true, 'Wan failures must fall back to local storyboard rendering');
+  assert.ok(result.warnings.some((warning) => warning.includes('Wan-GPU ist gesperrt')));
+  assert.ok(result.warnings.some((warning) => warning.includes('Storyboard-Schnitt')));
+}
+
+{
   const overLimit = makeProject([makeScene(1, 31), makeScene(2, 30)]);
   let providerCalls = 0;
   await assert.rejects(
