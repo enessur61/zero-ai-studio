@@ -87,6 +87,24 @@ class PersistentJobStore:
                 """
             )
 
+    def daily_usage(self, utc_day: str | None = None) -> int:
+        """Return the number of accepted GPU jobs for the current UTC day."""
+        from datetime import datetime, timezone
+        day = utc_day or datetime.now(timezone.utc).date().isoformat()
+        quota_id = "zero-daily-usage:" + day
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM zero_video_jobs WHERE id = ?", (quota_id,)
+            ).fetchone()
+        if not row:
+            return 0
+        try:
+            payload = json.loads(row[0])
+            accepted = payload.get("accepted_jobs", 0) if isinstance(payload, dict) else 0
+            return max(0, int(accepted))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return 0
+
     def create_job_if_allowed(
         self, job: dict[str, Any], daily_limit: int = 3, max_concurrent: int = 1, utc_day: str | None = None
     ) -> tuple[bool, str, int]:
