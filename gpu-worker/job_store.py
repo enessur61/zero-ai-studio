@@ -303,7 +303,7 @@ class PersistentJobStore:
                 job = json.loads(payload)
             except (TypeError, json.JSONDecodeError):
                 continue
-            if isinstance(job, dict) and job.get("status") in {"succeeded", "failed"}:
+            if isinstance(job, dict) and job.get("status") in {"succeeded", "failed", "cancelled"}:
                 completed.append(job)
         completed.sort(key=lambda job: str(job.get("created_at", "")))
         remove_count = max(0, len(rows) - retain_jobs)
