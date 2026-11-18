@@ -33,12 +33,13 @@ The worker token must be long and random. Never put it in browser code or the pu
 All endpoints except `GET /health` require `Authorization: Bearer <token>`.
 
 - `GET /health` — runtime/CUDA status, without loading model weights.
-- `POST /jobs` — enqueue a shot. JSON: `{"prompt":"...","duration_sec":5,"aspect_ratio":"16:9","seed":42}`. Returns HTTP 202 and a job ID.
+- `POST /jobs` — enqueue a shot. JSON: `{"prompt":"...","duration_sec":5,"aspect_ratio":"16:9","seed":42,"project_id":"...","scene_id":"..."}`. Project/scene IDs are optional recovery metadata. Returns HTTP 202 and a job ID.
+- `GET /jobs?limit=50` — list the newest persisted jobs (1–50); reading the list does not mark live GPU work as interrupted.
 - `GET /jobs/{id}` — queued/running/cancel_requested/cancelled/succeeded/failed status.
 - `POST /jobs/{id}/cancel` — request cancellation. Queued jobs become cancelled immediately; running inference becomes cancel_requested and is finalized only after the current GPU inference step returns. The worker does not claim to interrupt a CUDA kernel mid-step.
 - `GET /jobs/{id}/video` — download completed MP4; cancelled jobs never expose a video.
 
-The worker serializes GPU inference, persists job metadata in SQLite, limits job history, validates UUIDs and prompts, and never attempts a paid fallback. With the required persistent volume mounted, completed job records and MP4 files survive worker restarts. Queued/running jobs are marked failed on restart because their GPU execution cannot safely be resumed. A persisted cancel_requested job is finalized as cancelled on restart because the prior worker process is no longer running. Without a persistent mount, the data remains ephemeral; set `WAN_REQUIRE_PERSISTENT_STORAGE=true` in production so startup fails closed when the configured output path is not mounted.
+The worker serializes GPU inference, persists job metadata in SQLite, limits job history (including cancelled jobs), validates UUIDs and prompts, and never attempts a paid fallback. With the required persistent volume mounted, completed job records and MP4 files survive worker restarts. Queued/running jobs are marked failed on restart because their GPU execution cannot safely be resumed. A persisted cancel_requested job is finalized as cancelled on restart because the prior worker process is no longer running. Without a persistent mount, the data remains ephemeral; set `WAN_REQUIRE_PERSISTENT_STORAGE=true` in production so startup fails closed when the configured output path is not mounted.
 
 ## Hardware and cost
 
