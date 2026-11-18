@@ -5,9 +5,11 @@ import type { ContinuityState } from '../src/types/continuity.ts';
 import type { CharacterProfile, StudioProject } from '../src/types/zero.ts';
 
 const state: ContinuityState = {
-  series: [], knowledge: [], locations: [], sceneVersions: [],
-  relationships: [{ id:'r1', seriesId:'s1', fromCharacterId:'c1', toCharacterId:'c2', type:'misstrauen', description:'Elias vermutet Verrat.' ,createdAt:'',updatedAt:''}],
-  events: [{ id:'e1', seriesId:'s1', title:'Geständnis', description:'Mara lügt über den Schlüssel.', occurredAt:'2026-01-01T00:00:00Z', characterIds:['c1','c2'], createdAt:'',updatedAt:'' }],
+  series: [],
+  knowledge: [{ id:'k1', seriesId:'s1', characterId:'c1', fact:'Elias erfährt vom Schlüssel.', sourceEventId:'e1', learnedAt:'2026-01-01T00:00:00Z', factType:'secret', subjectCharacterId:'c2', canonicalValue:'der Schlüssel', createdAt:'', updatedAt:'' }],
+  locations: [], sceneVersions: [],
+  relationships: [{ id:'r1', seriesId:'s1', fromCharacterId:'c1', toCharacterId:'c2', type:'misstrauen', description:'Elias vermutet Verrat.' ,createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-02T00:00:00Z'}],
+  events: [{ id:'e1', seriesId:'s1', title:'Geständnis', description:'Mara lügt über den Schlüssel.', occurredAt:'2026-01-01T00:00:00Z', sceneId:'sc1', characterIds:['c1','c2'], kind:'secret_reveal', subjectCharacterId:'c2', canonicalValue:'der Schlüssel', timeMode:'present', createdAt:'',updatedAt:'' }],
 };
 const series = { id:'s1', title:'Der fehlende Tag', logline:'Ein Geheimnis zerreißt Vertrauen.', genre:'Mystery', bible:'Elias darf die Wahrheit erst im Finale erfahren.', projectIds:['p1'], createdAt:'',updatedAt:'' };
 const scene = { id:'sc1', index:1, title:'Das Geständnis', location:'',timeOfDay:'',durationSec:20,cameraMovement:'Statisch' as const,characterIds:['c1','c2'],narrationText:'Elias sucht nach der Wahrheit.',dialogueText:'Mara: Ich habe dich nie gesehen.',subtitleText:'',soundCue:'',imagePrompt:'',videoPrompt:'',status:'Entwurf' as const };
