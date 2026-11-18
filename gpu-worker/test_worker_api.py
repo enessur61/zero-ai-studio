@@ -168,6 +168,24 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         self.assertTrue(cancelled["cancelled"])
         self.assertEqual(worker.PersistentJobStore(self.output).load_all()[job_id]["status"], "cancelled")
 
+    def test_worker_health_and_api_preserve_five_second_shots_and_sixty_second_final_cap(self) -> None:
+        status = worker.health()
+        self.assertEqual(status["max_shot_duration_sec"], 5)
+        self.assertEqual(status["max_final_duration_sec"], 60)
+        self.assertFalse(status["cost_fallback"])
+
+    def test_daily_limit_is_enforced_by_create_endpoint_after_terminal_jobs(self) -> None:
+        for index in range(3):
+            job_id = str(UUID(int=100 + index))
+            self.create(job_id)
+            worker._jobs[job_id]["status"] = "failed"
+            worker._JOB_STORE.save(worker._jobs[job_id])
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 3)
+        with self.assertRaises(HTTPException) as limited:
+            self.create(str(UUID(int=104)))
+        self.assertEqual(limited.exception.status_code, 429)
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 3)
+
     def test_running_cancel_is_only_requested_and_keeps_gpu_concurrency_reserved(self) -> None:
         job_id = str(UUID("00000000-0000-4000-8000-000000000010"))
         job = {"id": job_id, "status": "running", "created_at": "2026-11-18T12:00:00Z"}
@@ -187,6 +205,9 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         )
         self.assertFalse(allowed)
         self.assertEqual(reason, "concurrency_limit")
+        with self.assertRaises(HTTPException) as endpoint_blocked:
+            self.create(str(UUID("00000000-0000-4000-8000-000000000011")))
+        self.assertEqual(endpoint_blocked.exception.status_code, 429)
 
     def test_cancelled_job_never_exposes_mp4_and_terminal_cancel_is_idempotent(self) -> None:
         created, _ = self.create()
@@ -218,7 +239,10 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         self.assertEqual(completed["scene_id"], "scene_456")
 
         restarted = worker.PersistentJobStore(self.output)
-        restored = restarted.load_all()[job_id]
+        restored_jobs = restarted.load_all()
+        worker._JOB_STORE = restarted
+        worker._jobs = restored_jobs
+        restored = restored_jobs[job_id]
         self.assertEqual(restored["status"], "succeeded")
         self.assertEqual(restored["project_id"], "project_123")
         self.assertEqual(restored["scene_id"], "scene_456")
