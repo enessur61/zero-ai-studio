@@ -61,3 +61,14 @@ export function normalizeWanJobList(value: unknown, limit = 50): WanJobListItem[
   }
   return jobs;
 }
+
+
+/** Attach a recovered clip only to the exact project and scene that created it. */
+export function matchWanJobScene<T extends { id: string }>(
+  job: Pick<WanJobListItem, 'projectId' | 'sceneId'>,
+  currentProjectId: string | null | undefined,
+  scenes: readonly T[],
+): T | null {
+  if (!currentProjectId || job.projectId !== currentProjectId || !job.sceneId) return null;
+  return scenes.find((scene) => scene.id === job.sceneId) ?? null;
+}
