@@ -63,6 +63,7 @@ import { createContinuityRouter } from './src/routes/continuity.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { evaluateWanWorkerReadiness } from './server/wanWorkerReadiness.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
+import { normalizeWanJobList } from './server/wanJobList.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -2048,25 +2049,7 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     if (!response.ok || !Array.isArray(payload.jobs)) {
       return res.status(502).json({ error: 'Persistente Wan-Auftragsliste konnte nicht geladen werden.' });
     }
-    const allowedStatuses = new Set(['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed']);
-    const jobs = payload.jobs.flatMap((value) => {
-      if (!value || typeof value !== 'object') return [];
-      const job = value as Record<string, unknown>;
-      if (typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) || !allowedStatuses.has(String(job.status))) return [];
-      return [{
-        id: job.id,
-        status: job.status,
-        createdAt: typeof job.created_at === 'string' ? job.created_at : null,
-        startedAt: typeof job.started_at === 'string' ? job.started_at : null,
-        finishedAt: typeof job.finished_at === 'string' ? job.finished_at : null,
-        durationSec: typeof job.duration_sec === 'number' ? job.duration_sec : 5,
-        engine: typeof job.engine === 'string' ? job.engine : 'Wan 2.1',
-        projectId: typeof job.project_id === 'string' ? job.project_id : null,
-        sceneId: typeof job.scene_id === 'string' ? job.scene_id : null,
-        error: typeof job.error === 'string' ? job.error.slice(0, 500) : null,
-        cancelReason: typeof job.cancel_reason === 'string' ? job.cancel_reason.slice(0, 300) : null,
-      }];
-    });
+    const jobs = normalizeWanJobList(payload.jobs, requestedLimit);
     return res.json({ jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar. Die Auftragsliste konnte nicht aktualisiert werden.' });
