@@ -152,6 +152,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setWanJobState('queued');
       setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
       let completed = false;
+      let cancellationPending = false;
       for (let attempt = 0; attempt < 180; attempt += 1) {
         await new Promise<void>((resolve, reject) => {
           const finish = () => {
@@ -178,6 +179,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           break;
         }
         if (job.status === 'cancel_requested') {
+          cancellationPending = true;
           setWanJobState('cancel_requested');
           setWanProgress('Abbruch angefordert. Der Worker beendet den laufenden GPU-Schritt; ZERO wartet auf die endgültige Bestätigung.');
         } else {
@@ -223,7 +225,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         }
         setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
       }
-      if (!completed && wanJobState === 'cancel_requested') {
+      if (!completed && cancellationPending) {
         setWanProgress('Der Worker hat den Abbruch noch nicht final bestätigt. Der Auftrag kann weiterhin GPU-Ressourcen belegen; bitte später den Status erneut prüfen.');
       } else if (!completed) {
         throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
