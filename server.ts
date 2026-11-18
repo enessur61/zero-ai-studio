@@ -35,6 +35,7 @@ import {
   runLiveModelTest,
 } from './server/adapters.ts';
 import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
+import { createCloudflareBudgetAuditRecorder } from './server/cloudflareAudit.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -239,6 +240,7 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
       prompt: input.prompt,
       maxTokens: 1800,
       enableThinking: true,
+      onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
     });
     raw = result.text;
     modelId = result.modelId;
@@ -276,7 +278,8 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
   const source = JSON.stringify({ series, projects: db.projects.filter((project) => series.projectIds.includes(project.id)), characters: db.characters, knowledge: continuity.knowledge.filter((item) => item.seriesId === series.id), relationships: continuity.relationships.filter((item) => item.seriesId === series.id), events: continuity.events.filter((item) => item.seriesId === series.id) });
   const version = createDramaturgyAnalysisVersion({ seriesId: series.id, modelId, costMode, analysis, previous: latest, source });
   continuity.dramaturgyAnalyses.push(version);
-  await saveDb({ ...db, continuity });
+  db.continuity = continuity;
+  await saveDb(db);
   return res.json({ analysis, analysisVersion: version, modelId, costMode, paidFallback: false, generatedAt: version.createdAt });
 }));
 
@@ -482,11 +485,13 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
       message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
     });
   }
+  const db = await loadDb();
   try {
     const result = await generateCloudflareText({
       prompt: 'Antworte ausschließlich mit: ZERO_CLOUDFLARE_OK',
       maxTokens: 128,
       enableThinking: false,
+      onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
     });
     return res.json({
       ok: true,
@@ -1120,6 +1125,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
           prompt: streamContents,
           systemPrompt: systemInstruction,
           maxTokens: 1200,
+          onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
         });
         replyText = cloudflareResult.text;
         if (wantsStream && replyText) {
@@ -1336,6 +1342,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
             systemPrompt: 'Du bist ZERO WEB INTELLIGENCE. Fasse ausschließlich die bereitgestellten Suchtreffer auf Deutsch zusammen. Trenne belegte Fakten, Unsicherheiten und offene Punkte. Erfinde keine Fakten und keine Quellen. Verweise bei Aussagen auf die Nummern [1], [2] usw.',
             prompt: `Suchanfrage: ${query}\n\nWeb-Suchergebnisse:\n${groundedSources}\n\nErstelle eine strukturierte Recherche mit Kurzfazit, wichtigsten Erkenntnissen, Widersprüchen/Unsicherheiten und einer kurzen Bewertung der Quellenlage.`,
             maxTokens: 1100,
+            onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
           });
           report = ai.text.trim();
           modelUsed = 'SearXNG (self-hosted) + GLM-4.7-Flash';
@@ -1418,13 +1425,6 @@ app.post('/api/image/generate', asyncRoute(async (req, res) => {
 
   let db: Awaited<ReturnType<typeof loadDb>> | null = null;
   try {
-    if (!isCloudflareWorkersAiAllowed()) {
-      return res.status(503).json({
-        error: 'FLUX bleibt gesperrt, bis das Cloudflare-Konto nachweislich auf Workers Free steht und ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true gesetzt wurde. Kein Provider-Aufruf wurde gestartet.',
-        costEur: 0,
-        paidFallback: false,
-      });
-    }
     db = await loadDb();
     const routeDecision = chooseZeroMediaModel(db.models, db.budgetGuard, 'image', [], new Date(), 'flux-1-schnell-free');
     if (!routeDecision) {
@@ -1435,6 +1435,7 @@ app.post('/api/image/generate', asyncRoute(async (req, res) => {
     const image = await generateFreeCloudImage({
       prompt,
       model: 'flux',
+      onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
     });
     res.json({ ...image, modelId: 'flux-1-schnell-free', costEur: 0 });
   } catch (err) {
@@ -1478,6 +1479,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
       const result = await analyzeCloudflareImage({
         imageDataUrl: `data:${image.mimeType};base64,${image.data}`,
         question,
+        onAudit: createCloudflareBudgetAuditRecorder(database, saveDb),
       });
       await saveDb(database);
       return res.json({
@@ -1734,6 +1736,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
         audioBase64: audio.data,
         language: 'de',
         task: 'transcribe',
+        onAudit: createCloudflareBudgetAuditRecorder(database, saveDb),
       });
       if (!result.text) throw new Error('Whisper hat keine Sprache im Audio erkannt.');
       const { srt, subtitleCueCount } = buildSrtFromTimedWords(
@@ -1857,6 +1860,7 @@ Gib ausschließlich dieses JSON-Objekt zurück:
 }
 Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11, padBrightness 0.1-1.0, pulseIntensity 0.0-1.0, subBassLevel 0.2-1.0.`,
       maxTokens: 500,
+      onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
     });
 
     const raw = parseCloudflareJsonObject(response.text);
@@ -2121,6 +2125,7 @@ async function generateFreeFilmDirectorText(params: {
       systemPrompt: params.systemPrompt,
       prompt: params.prompt,
       maxTokens: params.maxTokens,
+      onAudit: createCloudflareBudgetAuditRecorder(params.db, saveDb),
     });
     return result;
   }
@@ -2276,7 +2281,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       );
       if (!imageReady) {
         imageGenerationWarnings.push(
-          'FLUX-Szenenbilder sind gesperrt, solange ZERO_CLOUDFLARE_FREE_PLAN_CONFIRMED=true nicht für ein Workers-Free-Konto gesetzt ist und FLUX nicht live getestet wurde. Der Filmtext wurde trotzdem erstellt.'
+          'FLUX-Szenenbilder sind gesperrt, solange ZERO_CLOUDFLARE_AI_ENABLED=true und ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=true nicht für ein Workers-Free-Konto gesetzt ist und FLUX nicht live getestet wurde. Der Filmtext wurde trotzdem erstellt.'
         );
         mappedScenes.forEach((scene) => { scene.status = 'Bildgenerierung nicht verfügbar'; });
       } else {
@@ -2286,6 +2291,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
             const img = await generateFreeCloudImage({
               prompt: scene.imagePrompt,
               model: 'flux',
+              onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
             });
             scene.imageUrl = img.imageDataUrl;
             scene.status = 'Bild bereit';
@@ -2772,6 +2778,7 @@ app.post('/api/characters', asyncRoute(async (req, res) => {
         prompt: `Editorial portrait of ${consistencyPrompt}, dark moody studio lighting`,
         model: 'flux',
         aspectRatio: '1:1',
+        onAudit: createCloudflareBudgetAuditRecorder(db, saveDb),
       });
       referenceImageUrl = img.imageDataUrl;
     } catch {

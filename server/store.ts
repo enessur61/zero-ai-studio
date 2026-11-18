@@ -718,8 +718,8 @@ export function recordBudgetAudit(
     ...entry,
   };
   db.budgetGuard.auditLog.unshift(event);
-  if (db.budgetGuard.auditLog.length > 60) {
-    db.budgetGuard.auditLog = db.budgetGuard.auditLog.slice(0, 60);
+  if (db.budgetGuard.auditLog.length > 500) {
+    db.budgetGuard.auditLog = db.budgetGuard.auditLog.slice(0, 500);
   }
   if (entry.decision === 'ERLAUBT_0_EUR' && db.budgetGuard.freeQuotaUsage[entry.modelId]) {
     db.budgetGuard.freeQuotaUsage[entry.modelId].requestsToday += 1;

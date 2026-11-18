@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, isCloudflareWorkersAiEnabled, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiFreePlanConfirmed, isCloudflareWorkersAiEnabled, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio, type CloudflareAuditEvent } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
 const originalFreePlan = process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED;
 const originalEnabled = process.env.ZERO_CLOUDFLARE_AI_ENABLED;
+const auditEvents: CloudflareAuditEvent[] = [];
+const onAudit = async (event: CloudflareAuditEvent) => { auditEvents.push(event); };
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
@@ -13,9 +15,9 @@ try {
   assert.equal(isCloudflareWorkersAiConfigured(), false);
   assert.equal(isCloudflareWorkersAiAllowed(), false);
   let blockedProviderCalls = 0;
-  await assert.rejects(() => generateCloudflareText({ prompt: 'test', fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_AI_ENABLED/);
+  await assert.rejects(() => generateCloudflareText({ prompt: 'test', onAudit, fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_AI_ENABLED/);
   process.env.ZERO_CLOUDFLARE_AI_ENABLED = 'true';
-  await assert.rejects(() => generateCloudflareText({ prompt: 'test', fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED/);
+  await assert.rejects(() => generateCloudflareText({ prompt: 'test', onAudit, fetchImpl: async () => { blockedProviderCalls += 1; return new Response('{}', { status: 200 }); } }), /ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED/);
   process.env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED = 'true';
   await assert.rejects(() => generateCloudflareText({ prompt: 'test' }), /nicht konfiguriert/);
   assert.equal(blockedProviderCalls, 0, 'either missing flag must block before fetch');
@@ -32,6 +34,7 @@ try {
     systemPrompt: 'Du bist ZERO.',
     maxTokens: 128,
     enableThinking: false,
+    onAudit,
     fetchImpl: async (input, init) => {
       requestUrl = String(input);
       requestInit = init;
@@ -39,7 +42,7 @@ try {
         success: true,
         result: { choices: [{ message: { content: 'BEREIT' } }] },
         errors: [],
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }), { status: 200, headers: { 'Content-Type': 'application/json', 'cf-ray': 'ray-success-123' } });
     },
   });
 
@@ -60,6 +63,7 @@ try {
   const image = await generateCloudflareImage({
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
+    onAudit,
     fetchImpl: async (input, init) => {
       imageUrl = String(input);
       imageBody = String(init?.body);
@@ -83,6 +87,7 @@ try {
   const vision = await analyzeCloudflareImage({
     imageDataUrl: 'data:image/png;base64,AAAA',
     question: 'Was ist auf diesem Bild?',
+    onAudit,
     fetchImpl: async (input, init) => {
       visionUrl = String(input);
       visionBody = String(init?.body);
@@ -125,6 +130,7 @@ try {
     audioBase64: 'UklGRg==',
     language: 'de',
     task: 'transcribe',
+    onAudit,
     fetchImpl: async (input, init) => {
       transcriptionUrl = String(input);
       transcriptionBody = String(init?.body);
@@ -213,6 +219,16 @@ try {
   );
   assert.equal(rateLimitAttempts, 1, '429 rate limits must not be retried');
 
+
+  await assert.rejects(() => generateCloudflareText({ prompt: 'network test', onAudit, fetchImpl: async () => {
+    throw new TypeError('fetch failed');
+  } }), /momentan nicht erreichbar/);
+  assert.ok(auditEvents.some((item) => item.outcome === 'network_error' && item.errorCategory === 'network'));
+  assert.equal(auditEvents.filter((item) => item.outcome === 'gate_blocked').length, 2);
+  assert.ok(auditEvents.filter((item) => item.outcome === 'gate_blocked').every((item) => item.httpStatus === 403));
+  assert.ok(auditEvents.some((item) => item.outcome === 'success' && item.providerRequestId === 'cf-ray:ray-success-123'));
+  assert.ok(auditEvents.some((item) => item.outcome === 'http_error' && item.httpStatus === 500));
+  assert.ok(auditEvents.every((item) => item.provider === 'cloudflare-workers-ai' && item.costEur === 0));
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
   if (originalAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;

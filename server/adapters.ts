@@ -12,9 +12,10 @@ import {
   verifyIOSAdapterForModel,
 } from './coremlAdapter.ts';
 import type { ZeroDatabase } from './store.ts';
-import { recordBudgetAudit } from './store.ts';
+import { recordBudgetAudit, saveDb } from './store.ts';
+import { createCloudflareBudgetAuditRecorder } from './cloudflareAudit.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
-import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio, CloudflareWorkersAiGateError } from './cloudflareWorkersAi.ts';
+import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio, CloudflareWorkersAiGateError, type CloudflareAuditEvent } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
 const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
@@ -59,6 +60,7 @@ export async function generateFreeCloudImage(params: {
   model?: 'flux' | 'turbo' | 'sana';
   aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3';
   seed?: number;
+  onAudit?: (event: CloudflareAuditEvent) => Promise<void>;
 }): Promise<{ imageDataUrl: string; engine: string; width: number; height: number }> {
   if (params.model && params.model !== 'flux') {
     throw new Error('Für ZERO ist aktuell nur FLUX.1 Schnell über Cloudflare verifiziert. SD Turbo und Sana bleiben sicher deaktiviert.');
@@ -66,6 +68,7 @@ export async function generateFreeCloudImage(params: {
   const result = await generateCloudflareImage({
     prompt: params.prompt,
     steps: 4,
+    onAudit: params.onAudit,
   });
   return {
     imageDataUrl: result.imageDataUrl,
@@ -234,6 +237,8 @@ export async function runLiveModelTest(
     assertZeroBudgetModelAllowed(modelId, 'MODEL_HEALTH_TEST', db.budgetGuard, (entry) => recordBudgetAudit(db, entry));
   };
 
+  const onCloudflareAudit = createCloudflareBudgetAuditRecorder(db, saveDb);
+
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
@@ -242,6 +247,7 @@ export async function runLiveModelTest(
       const result = await analyzeCloudflareImage({
         imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRx8AAAAASUVORK5CYII=',
         question: 'Beschreibe das Bild in einem kurzen Satz.',
+        onAudit: onCloudflareAudit,
       });
       model.testPassed = result.modelId === '@cf/moondream/moondream3.1-9B-A2B' && result.answer.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -254,6 +260,7 @@ export async function runLiveModelTest(
       const result = await transcribeCloudflareAudio({
         audioBase64: createSilentWavBase64(0.5, 16000),
         language: 'de',
+        onAudit: onCloudflareAudit,
       });
       model.testPassed = result.modelId === '@cf/openai/whisper-large-v3-turbo' && typeof result.text === 'string';
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -261,7 +268,7 @@ export async function runLiveModelTest(
         ? 'Cloudflare Whisper Live-Probe erfolgreich; echte deutsche Transkription erfolgt mit der nächsten Audioaufnahme.'
         : 'Whisper lieferte kein gültiges Transkriptionsformat.';
     } else if (model.id === 'cloudflare-glm-4.7-flash') {
-      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 128, enableThinking: false });
+      const result = await generateCloudflareText({ prompt: 'Antworte exakt mit einem Wort: BEREIT', maxTokens: 128, enableThinking: false, onAudit: onCloudflareAudit });
       model.testPassed = result.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
       model.lastTestMessage = model.testPassed
@@ -395,6 +402,7 @@ export async function runLiveModelTest(
       const result = await generateFreeCloudImage({
         prompt: 'minimalist dark studio probe',
         model: model.id === 'sd-turbo-free' ? 'turbo' : model.id === 'sana-free' ? 'sana' : 'flux',
+        onAudit: onCloudflareAudit,
       });
       model.testPassed = result.imageDataUrl.startsWith('data:image/');
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -419,7 +427,6 @@ export async function runLiveModelTest(
     const cleanMsg = formatGermanApiError(err);
     const kind = classifyProviderError(err);
     if (err instanceof CloudflareWorkersAiGateError) {
-      recordBudgetAudit(db, { adapterId: 'cloudflare-workers-ai', modelId: model.id, action: 'MODEL_HEALTH_TEST', decision: 'BLOCKIERT_BUDGET_GUARD', reason: err.message, costEur: 0 });
       model.testPassed = false;
       model.enabled = false;
       model.status = 'INSTALLATION ERFORDERLICH';
