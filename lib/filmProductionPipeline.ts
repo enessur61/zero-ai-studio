@@ -17,7 +17,9 @@ export interface FilmProductionPipelineServices {
   }>;
   generateVoiceover(scene: FilmScene): Promise<{ audioDataUrl: string; modelUsed?: string }>;
   /** Returns a temporary browser object URL for a completed 5-second Wan MP4, or null when unavailable. */
-  generateVideoClip?(scene: FilmScene, onProgress: (label: string) => void): Promise<string | null>;
+  generateVideoClip?(scene: FilmScene, projectId: string, onProgress: (label: string) => void): Promise<string | null>;
+  /** Must confirm durable server persistence before a generated clip is used in the render. */
+  saveVideoClip?(projectId: string, sceneId: string, blob: Blob): Promise<{ serverPersisted: boolean }>;
   saveProject(projectId: string, scenes: FilmScene[]): Promise<StudioProject>;
   renderVideo(
     project: StudioProject,
@@ -113,7 +115,9 @@ export async function runAutonomousFilmProduction(
   const temporaryClipUrls: string[] = [];
   if (services.generateVideoClip) {
     const candidates = renderScenes.slice(0, FILM_PRODUCTION_MAX_WAN_CLIPS);
+    let stopWanAfterFailure = false;
     for (let index = 0; index < candidates.length; index += 1) {
+      if (stopWanAfterFailure) break;
       const scene = candidates[index];
       onProgress?.({
         percent: 60 + Math.round(((index + 1) / candidates.length) * 8),
@@ -121,17 +125,26 @@ export async function runAutonomousFilmProduction(
         stage: 'video',
       });
       try {
-        const videoUrl = await services.generateVideoClip(scene, (label) => {
+        const videoUrl = await services.generateVideoClip(scene, project.id, (label) => {
           onProgress?.({ percent: 60 + Math.round(((index + 0.5) / candidates.length) * 8), label, stage: 'video' });
         });
         if (videoUrl) {
           if (!videoUrl.startsWith('blob:')) throw new Error('Der Worker-Clip muss als temporäre lokale Blob-URL bereitgestellt werden.');
-          renderScenes[index] = { ...scene, videoUrl };
           temporaryClipUrls.push(videoUrl);
+          if (!services.saveVideoClip) throw new Error('ProjectMediaService ist nicht verfügbar; der KI-Clip wird nicht ohne dauerhafte Speicherung verwendet.');
+          const clipResponse = await fetch(videoUrl);
+          if (!clipResponse.ok) throw new Error('Der temporäre Wan-Clip konnte vor der Speicherung nicht gelesen werden.');
+          const clipBlob = await clipResponse.blob();
+          const savedClip = await services.saveVideoClip(project.id, scene.id, clipBlob);
+          if (savedClip.serverPersisted !== true) {
+            throw new Error('Dauerhafte Serverspeicherung des Wan-Clips wurde nicht bestätigt; ZERO verwendet den Storyboard-Schnitt.');
+          }
+          renderScenes[index] = { ...scene, videoUrl };
         } else {
           warnings.push(`Szene ${scene.index}: kein KI-Videoclip verfügbar. ZERO verwendet den lokalen Storyboard-Schnitt.`);
         }
       } catch (error) {
+        stopWanAfterFailure = true;
         const detail = error instanceof Error ? error.message : 'Unbekannter Wan-Worker-Fehler';
         warnings.push(`Szene ${scene.index}: KI-Videoclip nicht verfügbar – ${detail}. ZERO verwendet den lokalen Storyboard-Schnitt.`);
       }

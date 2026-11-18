@@ -101,10 +101,16 @@ function makeVideo(durationSec: number) {
   const result = await runAutonomousFilmProduction({
     createDraft: async () => ({ project }),
     generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
-    generateVideoClip: async (scene) => {
+    generateVideoClip: async (scene, projectId) => {
       generated += 1;
       assert.ok(scene.videoPrompt.length > 0);
+      assert.equal(projectId, project.id);
       return URL.createObjectURL(new Blob(['clip']));
+    },
+    saveVideoClip: async (projectId, sceneId) => {
+      assert.equal(projectId, project.id);
+      assert.ok(project.scenes.some((scene) => scene.id === sceneId));
+      return { serverPersisted: true };
     },
     saveProject: async (_id, scenes) => {
       persisted.push(...scenes);
@@ -148,7 +154,11 @@ function makeVideo(durationSec: number) {
   const result = await runAutonomousFilmProduction({
     createDraft: async () => ({ project }),
     generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
-    generateVideoClip: async () => URL.createObjectURL(new Blob(['valid temporary clip'])),
+    generateVideoClip: async (_scene, projectId) => {
+      assert.equal(projectId, project.id);
+      return URL.createObjectURL(new Blob(['valid temporary clip']));
+    },
+    saveVideoClip: async () => ({ serverPersisted: true }),
     saveProject: async (_id, scenes) => ({ ...project, scenes }),
     renderVideo: async (renderProject) => {
       renderAttempts += 1;
@@ -226,4 +236,48 @@ function makeVideo(durationSec: number) {
   );
 }
 
-console.log('Film production pipeline tests passed: autonomous order, partial failures, asset validation and hard 60s cap.');
+
+{
+  const project = makeProject([makeScene(1, 20), makeScene(2, 20)]);
+  let generated = 0;
+  let saved = 0;
+  let renderCount = 0;
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = ((url: string) => { revoked.push(url); }) as typeof URL.revokeObjectURL;
+  const clipUrl = URL.createObjectURL(new Blob(['one generated Wan clip']));
+  try {
+    const result = await runAutonomousFilmProduction({
+      createDraft: async () => ({ project }),
+      generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
+      generateVideoClip: async (_scene, projectId) => {
+        generated += 1;
+        assert.equal(projectId, project.id);
+        return clipUrl;
+      },
+      saveVideoClip: async (projectId, sceneId, blob) => {
+        saved += 1;
+        assert.equal(projectId, project.id);
+        assert.equal(sceneId, 'scene-1');
+        assert.ok(blob.size > 0);
+        return { serverPersisted: false };
+      },
+      saveProject: async (_id, scenes) => ({ ...project, scenes }),
+      renderVideo: async (renderProject) => {
+        renderCount += 1;
+        assert.ok(renderProject.scenes.every((scene) => !scene.videoUrl),
+          'a clip without confirmed server persistence must never enter the render');
+        return makeVideo(40);
+      },
+    });
+    assert.equal(generated, 1, 'a media upload failure must not trigger another Wan generation');
+    assert.equal(saved, 1, 'the generated clip is saved once without retrying GPU inference');
+    assert.equal(renderCount, 1, 'storyboard fallback still completes the episode');
+    assert.ok(result.warnings.some((warning) => warning.includes('Dauerhafte Serverspeicherung')));
+    assert.deepEqual(revoked, [clipUrl], 'temporary object URL is revoked after fallback rendering');
+  } finally {
+    URL.revokeObjectURL = originalRevoke;
+  }
+}
+
+console.log('Film production pipeline tests passed: autonomous order, durable clip storage, upload-failure fallback, cleanup and hard 60s cap.');

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
-import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { projectMediaService } from '../lib/services/projectMediaService.ts';
+import { wanJobService } from '../lib/services/wanJobService.ts';
+import type { WanJob } from '../lib/services/types.ts';
 import { matchWanJobScene } from '../server/wanJobList.ts';
 
 interface VideoStudioViewProps {
@@ -28,12 +30,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [error, setError] = useState<string | null>(null);
   const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
-  const [wanJobs, setWanJobs] = useState<Array<{
-    id: string; status: 'queued' | 'running' | 'cancel_requested' | 'cancelled' | 'succeeded' | 'failed';
-    createdAt: string | null; startedAt: string | null; finishedAt: string | null;
-    durationSec: number; engine: string; projectId: string | null; sceneId: string | null;
-    error: string | null; cancelReason: string | null;
-  }>>([]);
+  const [wanJobs, setWanJobs] = useState<WanJob[]>([]);
   const [wanJobsLoading, setWanJobsLoading] = useState(true);
   const [wanJobsError, setWanJobsError] = useState('');
   const [wanJobId, setWanJobId] = useState<string | null>(null);
@@ -53,7 +50,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     setScenes(currentProject.scenes);
     Promise.all(currentProject.scenes.map(async (scene) => {
       try {
-        const blob = await loadSceneVideoClip(currentProject.id, scene.id);
+        const blob = await projectMediaService.loadSceneVideo(currentProject.id, scene.id);
         return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
       } catch {
         return null;
@@ -90,21 +87,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       inFlight = true;
       controller = new AbortController();
       try {
-        const response = await fetch('/api/video/engine/jobs?limit=50', {
-          credentials: 'include',
-          cache: 'no-store',
-          signal: controller.signal,
-        });
-        const payload = await response.json();
-        if (!response.ok || !Array.isArray(payload.jobs)) {
-          throw new Error(payload.error || 'Persistente Wan-Auftragsliste nicht verfügbar.');
-        }
+        const jobs = await wanJobService.list(50, controller.signal);
         if (active) {
-          setWanJobs(payload.jobs.filter((job: unknown) =>
-            Boolean(job && typeof job === 'object'
-              && typeof (job as { id?: unknown }).id === 'string'
-              && ['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String((job as { status?: unknown }).status)))
-          ));
+          setWanJobs(jobs);
           setWanJobsError('');
         }
       } catch (loadError) {
@@ -167,25 +152,18 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     setWanJobId(targetJobId);
     setWanProgress('Sende echte Abbruchanforderung an den Worker...');
     try {
-      const response = await fetch(`/api/video/engine/jobs/${targetJobId}/cancel`, {
-        method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-      });
-      const payload = await response.json();
-      if (!response.ok || payload.job?.id !== targetJobId) {
-        throw new Error(payload.error || 'Der Worker hat den Abbruch nicht bestätigt.');
-      }
-      setWanJobs((previous) => previous.map((job) => job.id === targetJobId ? { ...job, status: payload.job.status } : job));
-      if (payload.job.status === 'cancelled') {
+      const cancelledJob = await wanJobService.cancel(targetJobId);
+      if (cancelledJob.id !== targetJobId) throw new Error('Der Worker hat einen fremden Auftrag zurückgegeben.');
+      setWanJobs((previous) => previous.map((job) => job.id === targetJobId ? { ...job, ...cancelledJob } : job));
+      if (cancelledJob.status === 'cancelled') {
         setWanJobState('cancelled');
         setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
-      } else if (payload.job.status === 'cancel_requested') {
+      } else if (cancelledJob.status === 'cancel_requested') {
         setWanJobState('cancel_requested');
         setWanProgress('Abbruch angefordert. Der aktuelle GPU-Inferenzschritt läuft noch und wird sicher beendet; erst danach bestätigt ZERO den Abbruch.');
       } else {
-        setWanJobState(payload.job.status === 'succeeded' ? 'succeeded' : 'failed');
-        setWanProgress(payload.job.status === 'succeeded' ? 'Der Clip war bereits fertig; ein Abbruch war nicht mehr möglich.' : 'Der Auftrag war bereits beendet.');
+        setWanJobState(cancelledJob.status === 'succeeded' ? 'succeeded' : 'failed');
+        setWanProgress(cancelledJob.status === 'succeeded' ? 'Der Clip war bereits fertig; ein Abbruch war nicht mehr möglich.' : 'Der Auftrag war bereits beendet.');
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Abbruchstatus konnte nicht bestätigt werden.');
@@ -209,10 +187,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               : job.error || 'Auftrag fehlgeschlagen.');
     }
     try {
-      const response = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
-      const payload = await response.json();
-      if (!response.ok || payload.job?.id !== jobId) throw new Error(payload.error || 'Jobstatus konnte nicht wieder aufgenommen werden.');
-      const status = payload.job.status;
+      const resumedJob = await wanJobService.get(jobId);
+      if (resumedJob.id !== jobId) throw new Error('Wan hat einen fremden Auftrag zurückgegeben.');
+      const status = resumedJob.status;
       if (['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(status)) {
         setWanJobState(status);
         setWanJobs((previous) => previous.map((item) => item.id === jobId ? { ...item, status } : item));
@@ -227,12 +204,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     try {
       setWanJobId(job.id);
       setWanProgress('Gespeichertes Wan-MP4 wird wiederhergestellt...');
-      const response = await fetch(`/api/video/engine/jobs/${job.id}/video`, { credentials: 'include', cache: 'no-store' });
-      if (!response.ok) throw new Error('Das gespeicherte MP4 ist nicht mehr verfügbar.');
-      const blob = await response.blob();
-      if (!blob.type.includes('video') || blob.size < 1024 || blob.size > 100 * 1024 * 1024) {
-        throw new Error('Das gespeicherte Wan-MP4 ist ungültig.');
-      }
+      const blob = await wanJobService.download(job.id);
       const clipUrl = URL.createObjectURL(blob);
       setWanClipUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return clipUrl; });
       setWanJobState('succeeded');
@@ -243,7 +215,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         ));
         setWanClipScene(targetScene.title);
         try {
-          const storage = await saveSceneVideoClip(currentProject.id, targetScene.id, blob);
+          const storage = await projectMediaService.saveSceneVideo(currentProject.id, targetScene.id, blob);
           setWanProgress(storage.serverPersisted
             ? 'Gespeicherter Wan-Clip wiederhergestellt und dem aktuellen ZERO-Projekt zugeordnet.'
             : 'Clip wiederhergestellt und in der Szene angezeigt, aber nicht dauerhaft synchronisiert. Bitte vor Gerätewechsel exportieren.');
@@ -272,18 +244,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
-      const created = await fetch('/api/video/engine/jobs', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio, ...(currentProject?.id ? { projectId: currentProject.id } : {}), sceneId: scene.id }),
-        signal: controller.signal,
-      });
-      const createdPayload = await created.json();
-      if (!created.ok || typeof createdPayload.job?.id !== 'string') {
-        throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
-      }
-      const jobId = createdPayload.job.id as string;
+      if (!currentProject?.id) throw new Error('Bitte zuerst ein ZERO-Projekt auswählen, damit der Wan-Auftrag eindeutig zugeordnet wird.');
+      const createdJob = await wanJobService.create({
+        projectId: currentProject.id,
+        sceneId: scene.id,
+        prompt: prompt.slice(0, 1800),
+        aspectRatio,
+      }, controller.signal);
+      const jobId = createdJob.id;
       setWanJobId(jobId);
       setWanJobState('queued');
       setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
@@ -303,10 +271,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           };
           controller.signal.addEventListener('abort', abort, { once: true });
         });
-        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store', signal: controller.signal });
-        const statusPayload = await statusResponse.json();
-        if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
-        const job = statusPayload.job;
+        const job = await wanJobService.get(jobId, controller.signal);
         if (job.status === 'failed') { setWanJobState('failed'); throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.')); }
         if (job.status === 'cancelled') {
           setWanJobState('cancelled');
@@ -324,10 +289,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         if (job.status === 'succeeded') {
           setWanJobState('downloading');
           setWanProgress('MP4 wird auf ZERO übertragen...');
-          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include', signal: controller.signal });
-          if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
-          const blob = await videoResponse.blob();
-          if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
+          const blob = await wanJobService.download(jobId, controller.signal);
           const clipUrl = URL.createObjectURL(blob);
           setWanClipUrl(clipUrl);
           let persistedLocally = false;
@@ -336,7 +298,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           let storageError = '';
           if (currentProject?.id) {
             try {
-              const storageStatus = await saveSceneVideoClip(currentProject.id, scene.id, blob);
+              const storageStatus = await projectMediaService.saveSceneVideo(currentProject.id, scene.id, blob);
               persistedLocally = storageStatus.localSaved;
               persistedOnServer = storageStatus.serverPersisted === true;
               storagePersistent = storageStatus.persistent;

@@ -9,6 +9,8 @@ import {
 import { apiRequest } from '../lib/api.ts';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import { runAutonomousFilmProduction } from '../lib/filmProductionPipeline.ts';
+import { projectMediaService } from '../lib/services/projectMediaService.ts';
+import { wanJobService } from '../lib/services/wanJobService.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
 import type { CharacterKnowledge, ContinuityEvent, ContinuitySeries, SemanticContinuityConflict } from '../src/types/continuity.ts';
 
@@ -260,49 +262,33 @@ export function FilmDirectorView({
           });
           return { audioDataUrl: tts.audioDataUrl, modelUsed: tts.modelUsed };
         },
-        generateVideoClip: async (scene, onClipProgress) => {
+        generateVideoClip: async (scene, projectId, onClipProgress) => {
           // A blocked or unconfigured worker is detected once; never hammer a
           // known-closed gate with more episode requests.
           if (wanGenerationStopped) return null;
           try {
             onClipProgress(`Wan nimmt Szene ${scene.index} an...`);
-            const accepted = await apiRequest<{ job: { id: string; status: string; durationSec: number }; maxFinalDurationSec: number; costFallback: false }>('/api/video/engine/jobs', {
-              method: 'POST',
-              body: JSON.stringify({
-                prompt: `${scene.videoPrompt}. Cinematic continuity, preserve the established character appearance. Shot length exactly 5 seconds.`.slice(0, 1800),
-                aspectRatio: '9:16',
-              }),
+            const job = await wanJobService.create({
+              projectId,
+              sceneId: scene.id,
+              prompt: `${scene.videoPrompt}. Cinematic continuity, preserve the established character appearance. Shot length exactly 5 seconds.`.slice(0, 1800),
+              aspectRatio: '9:16',
             });
-            if (!accepted.job?.id || accepted.job.status !== 'queued' || accepted.job.durationSec !== 5 || accepted.maxFinalDurationSec !== 60 || accepted.costFallback !== false) {
-              throw new Error('Wan hat keine gültige, kostenfallbackfreie 5-Sekunden-Auftragsbestätigung geliefert.');
-            }
-
             const deadline = Date.now() + 6 * 60 * 1000;
-            let status = 'queued';
-            while (Date.now() < deadline) {
+            let status = job.status;
+            while (Date.now() < deadline && status !== 'succeeded') {
               await new Promise((resolve) => window.setTimeout(resolve, 2000));
-              const snapshot = await apiRequest<{ job: { id: string; status: string; error?: string }; costFallback: false }>(`/api/video/engine/jobs/${accepted.job.id}`);
-              if (snapshot.costFallback !== false || snapshot.job?.id !== accepted.job.id) {
-                throw new Error('Ungültige oder nicht kostenfallbackfreie Wan-Statusantwort.');
-              }
-              status = snapshot.job.status;
-              if (status === 'succeeded') break;
-              if (status === 'failed') throw new Error(snapshot.job.error || 'Wan-Worker hat die Szene als fehlgeschlagen markiert.');
-              if (status !== 'queued' && status !== 'running') throw new Error(`Unbekannter Wan-Jobstatus: ${status}`);
-              onClipProgress(status === 'queued' ? `Wan wartet auf GPU · Szene ${scene.index}...` : `Wan rendert Szene ${scene.index}...`);
+              const snapshot = await wanJobService.get(job.id);
+              if (snapshot.id !== job.id) throw new Error('Wan lieferte einen fremden Auftragsstatus.');
+              status = snapshot.status;
+              if (status === 'failed') throw new Error(snapshot.error || 'Wan-Worker hat die Szene als fehlgeschlagen markiert.');
+              if (status === 'cancelled' || status === 'cancel_requested') throw new Error('Wan-Auftrag wurde abgebrochen.');
+              if (status !== 'queued' && status !== 'running' && status !== 'succeeded') throw new Error(`Unbekannter Wan-Jobstatus: ${status}`);
+              onClipProgress(status === 'queued' ? `Wan wartet auf GPU · Szene ${scene.index}...` : status === 'running' ? `Wan rendert Szene ${scene.index}...` : `Lade fertigen Wan-Clip für Szene ${scene.index}...`);
             }
             if (status !== 'succeeded') throw new Error('Zeitlimit: Wan hat den Clip nicht innerhalb von sechs Minuten fertiggestellt.');
-
-            onClipProgress(`Lade fertigen Wan-Clip für Szene ${scene.index}...`);
-            const response = await fetch(`/api/video/engine/jobs/${accepted.job.id}/video`, {
-              method: 'GET',
-              credentials: 'same-origin',
-              redirect: 'error',
-              headers: { Accept: 'video/mp4' },
-            });
-            if (!response.ok) throw new Error(response.status === 409 ? 'Wan-Video ist noch nicht bereit.' : `Wan-Download fehlgeschlagen (HTTP ${response.status}).`);
-            const blob = await response.blob();
-            if (blob.size < 1024 || blob.size > 100 * 1024 * 1024 || (blob.type && !blob.type.includes('video/mp4'))) {
+            const blob = await wanJobService.download(job.id);
+            if (blob.size > 100 * 1024 * 1024 || !blob.type.toLowerCase().includes('video')) {
               throw new Error('Wan lieferte keine gültige MP4-Datei innerhalb des 100-MB-Limits.');
             }
             return URL.createObjectURL(blob);
@@ -313,6 +299,10 @@ export function FilmDirectorView({
             wanGenerationStopped = true;
             throw new Error(message);
           }
+        },
+        saveVideoClip: async (projectId, sceneId, blob) => {
+          const saved = await projectMediaService.saveSceneVideo(projectId, sceneId, blob);
+          return { serverPersisted: saved.serverPersisted };
         },
         saveProject: async (projectId, scenes) => {
           const saved = await apiRequest<{ project: StudioProject }>(`/api/projects/${projectId}`, {

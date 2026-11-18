@@ -80,11 +80,11 @@ export interface CreateWanJobInput {
 }
 
 export interface WanJobService {
-  create(input: CreateWanJobInput): Promise<WanJob>;
-  list(limit?: number): Promise<WanJob[]>;
-  get(jobId: string): Promise<WanJob>;
-  cancel(jobId: string): Promise<WanJob>;
-  download(jobId: string): Promise<Blob>;
+  create(input: CreateWanJobInput, signal?: AbortSignal): Promise<WanJob>;
+  list(limit?: number, signal?: AbortSignal): Promise<WanJob[]>;
+  get(jobId: string, signal?: AbortSignal): Promise<WanJob>;
+  cancel(jobId: string, signal?: AbortSignal): Promise<WanJob>;
+  download(jobId: string, signal?: AbortSignal): Promise<Blob>;
 }
 
 export type { FilmScene, ProjectAsset, StudioProject };

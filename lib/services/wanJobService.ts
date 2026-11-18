@@ -31,50 +31,58 @@ function normalizeJob(value: unknown, fallback?: Partial<WanJob>): WanJob {
 }
 
 export const wanJobService: WanJobService = {
-  async create(input: CreateWanJobInput) {
+  async create(input: CreateWanJobInput, signal?: AbortSignal) {
     if (!input.projectId.trim() || !input.sceneId.trim()) {
       throw new Error('Wan-Aufträge benötigen eine gültige Projekt- und Szenenzuordnung.');
     }
-    const response = await apiRequest<{ job: unknown }>('/api/video/engine/jobs', {
+    const response = await apiRequest<{ job: unknown; costFallback?: unknown }>('/api/video/engine/jobs', {
       method: 'POST',
       body: JSON.stringify(input),
+      signal,
     });
-    return normalizeJob(response.job, {
+    if (response.costFallback !== false) throw new Error('Wan-Auftrag wurde nicht ausdrücklich kostenfallbackfrei bestätigt.');
+    const job = normalizeJob(response.job, {
       projectId: input.projectId,
       sceneId: input.sceneId,
       durationSec: 5,
       engine: 'Wan 2.1',
     });
+    if (job.status !== 'queued' || job.durationSec !== 5) throw new Error('Wan hat keinen gültigen 5-Sekunden-Auftrag bestätigt.');
+    return job;
   },
 
-  async list(limit = 50) {
+  async list(limit = 50, signal?: AbortSignal) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('Wan-Auftragslimit muss zwischen 1 und 50 liegen.');
-    const response = await apiRequest<{ jobs: unknown[] }>(`/api/video/engine/jobs?limit=${limit}`);
+    const response = await apiRequest<{ jobs: unknown[] }>(`/api/video/engine/jobs?limit=${limit}`, { signal });
     if (!Array.isArray(response.jobs)) throw new Error('ZERO hat keine gültige Wan-Auftragsliste geliefert.');
     return response.jobs.map((item) => normalizeJob(item));
   },
 
-  async get(jobId) {
+  async get(jobId, signal?: AbortSignal) {
     if (!jobId.trim()) throw new Error('Wan-Job-ID fehlt.');
-    const response = await apiRequest<{ job: unknown }>(`/api/video/engine/jobs/${encodeURIComponent(jobId)}`);
+    const response = await apiRequest<{ job: unknown; costFallback?: unknown }>(
+      `/api/video/engine/jobs/${encodeURIComponent(jobId)}`, { signal },
+    );
+    if (response.costFallback !== false) throw new Error('Wan-Status wurde nicht ausdrücklich kostenfallbackfrei bestätigt.');
     return normalizeJob(response.job);
   },
 
-  async cancel(jobId) {
+  async cancel(jobId, signal?: AbortSignal) {
     if (!jobId.trim()) throw new Error('Wan-Job-ID fehlt.');
     const response = await apiRequest<{ job: unknown }>(
       `/api/video/engine/jobs/${encodeURIComponent(jobId)}/cancel`,
-      { method: 'POST' },
+      { method: 'POST', signal },
     );
     return normalizeJob(response.job);
   },
 
-  async download(jobId) {
+  async download(jobId, signal?: AbortSignal) {
     if (!jobId.trim()) throw new Error('Wan-Job-ID fehlt.');
     const response = await fetch(`/api/video/engine/jobs/${encodeURIComponent(jobId)}/video`, {
       credentials: 'same-origin',
       cache: 'no-store',
       redirect: 'error',
+      signal,
     });
     if (!response.ok) throw new Error(`Wan-Video konnte nicht geladen werden (HTTP ${response.status}).`);
     const blob = await response.blob();
