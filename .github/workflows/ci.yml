@@ -276,6 +276,7 @@ jobs:
             method: 'PUT',
             body: JSON.stringify({
               title: 'CI edited project',
+              expectedVersion: durationProject.version,
               scenes: durationProject.scenes.slice(0, 1).map((scene) => ({ ...scene, imageUrl: 'javascript:alert(1)', audioDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' })),
               snapshotNote: 'CI snapshot restore test',
               id: 'attacker-controlled-id',
