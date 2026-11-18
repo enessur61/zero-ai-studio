@@ -223,7 +223,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         }
         setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
       }
-      if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+      if (!completed && wanJobState === 'cancel_requested') {
+        setWanProgress('Der Worker hat den Abbruch noch nicht final bestätigt. Der Auftrag kann weiterhin GPU-Ressourcen belegen; bitte später den Status erneut prüfen.');
+      } else if (!completed) {
+        throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+      }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         setWanJobState('stopped');
@@ -484,6 +488,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             </div>}
             {!wanBusy && wanJobState === 'stopped' && <p className="text-xs text-amber-300">{wanProgress}</p>}
             {!wanBusy && wanJobState === 'cancelled' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'cancel_requested' && <p className="text-xs text-amber-300">{wanProgress}</p>}
             {!wanBusy && wanJobState === 'failed' && <p className="text-xs text-rose-300">Auftrag fehlgeschlagen. Du kannst die Szene erneut starten.</p>}
             {!wanBusy && wanJobState === 'succeeded' && <p className="text-xs text-emerald-300">Auftrag abgeschlossen.</p>}
             {!wanBusy && wanProgress && !['cancelled', 'failed', 'stopped'].includes(wanJobState) && <p className="text-xs text-emerald-300">{wanProgress}</p>}
