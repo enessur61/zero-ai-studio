@@ -56,13 +56,21 @@ export class VideoObjectUrlRegistry {
   releaseProjectRestored(projectId: string): string[] {
     const revoked: string[] = [];
     for (const [url, entry] of this.entries) {
+      let releasedProjectReference = false;
       for (const [key, ref] of entry.scenes) {
-        if (ref.projectId === projectId && ref.kind === 'restored') entry.scenes.delete(key);
+        if (ref.projectId === projectId && ref.kind === 'restored') {
+          entry.scenes.delete(key);
+          releasedProjectReference = true;
+        }
       }
       for (const [key, ref] of entry.previews) {
-        if (ref.projectId === projectId && ref.kind === 'restored') entry.previews.delete(key);
+        if (ref.projectId === projectId && ref.kind === 'restored') {
+          entry.previews.delete(key);
+          releasedProjectReference = true;
+        }
       }
-      if (this.revokeIfUnused(url)) revoked.push(url);
+      // Do not sweep unrelated unreferenced URLs (for example an in-flight image import).
+      if (releasedProjectReference && this.revokeIfUnused(url)) revoked.push(url);
     }
     return revoked;
   }
