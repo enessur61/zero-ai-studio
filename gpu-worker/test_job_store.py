@@ -186,6 +186,27 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             with self.assertRaises(ValueError):
                 store.list_jobs(51)
 
+    def test_list_jobs_exposes_every_lifecycle_state_and_hides_quota_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            statuses = ["queued", "running", "cancel_requested", "cancelled", "succeeded", "failed"]
+            for index, status in enumerate(statuses):
+                store.save({
+                    "id": f"state-{index}",
+                    "status": status,
+                    "created_at": f"2026-11-18T12:0{index}:00Z",
+                })
+            store.save({
+                "id": "zero-daily-usage:2026-11-18",
+                "kind": "daily_usage",
+                "status": "quota",
+                "created_at": "2026-11-18T12:10:00Z",
+            })
+            listed = store.list_jobs()
+            self.assertEqual({job["status"] for job in listed}, set(statuses))
+            self.assertEqual(len(listed), len(statuses))
+            self.assertNotIn("quota", {job["status"] for job in listed})
+
     def test_list_jobs_preserves_project_and_scene_recovery_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
