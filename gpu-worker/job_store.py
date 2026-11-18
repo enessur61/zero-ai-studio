@@ -268,6 +268,18 @@ class PersistentJobStore:
             jobs[str(job_id)] = job
         return jobs
 
+    def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the newest persisted jobs after applying safe restart recovery."""
+        if not 1 <= limit <= 50:
+            raise ValueError("Job list limit must be between 1 and 50.")
+        jobs = self.load_all()
+        ordered = sorted(
+            jobs.values(),
+            key=lambda job: str(job.get("created_at") or ""),
+            reverse=True,
+        )
+        return ordered[:limit]
+
     def prune_completed(self, max_jobs: int = 50, retain_jobs: int = 40) -> list[dict[str, Any]]:
         if max_jobs < 1 or retain_jobs < 1 or retain_jobs >= max_jobs:
             raise ValueError("Invalid job retention limits.")
