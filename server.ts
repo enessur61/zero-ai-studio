@@ -2029,6 +2029,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
   const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
