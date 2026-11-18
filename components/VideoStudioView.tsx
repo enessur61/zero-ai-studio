@@ -659,7 +659,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>
               <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-sky-400" /></div>
               {wanJobId && <p className="text-[10px] text-slate-500 break-all">Auftrags-ID: {wanJobId}</p>}
-              <button type="button" onClick={handleCancelWanJob} disabled={!wanJobId || wanJobState === 'cancel_requested'} className="min-h-[44px] w-full rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 text-xs font-medium text-rose-200 disabled:opacity-50">{wanJobState === 'cancel_requested' ? 'Abbruch angefordert – GPU-Schritt läuft aus' : 'Wan-Auftrag abbrechen'}</button>
+              <button type="button" onClick={() => void handleCancelWanJob()} disabled={!wanJobId || wanJobState === 'cancel_requested'} className="min-h-[44px] w-full rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 text-xs font-medium text-rose-200 disabled:opacity-50">{wanJobState === 'cancel_requested' ? 'Abbruch angefordert – GPU-Schritt läuft aus' : 'Wan-Auftrag abbrechen'}</button>
             </div>}
             {!wanBusy && wanJobState === 'stopped' && <p className="text-xs text-amber-300">{wanProgress}</p>}
             {!wanBusy && wanJobState === 'cancelled' && <p className="text-xs text-amber-300">{wanProgress}</p>}
