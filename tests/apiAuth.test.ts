@@ -30,6 +30,7 @@ for (const path of [
   '/video/engine/status',
   '/video/engine/jobs',
   '/video/engine/jobs/00000000-0000-4000-8000-000000000001',
+  '/video/engine/jobs/00000000-0000-4000-8000-000000000001/cancel',
   '/video/engine/jobs/00000000-0000-4000-8000-000000000001/video',
 ]) {
   let sessionChecks = 0;
