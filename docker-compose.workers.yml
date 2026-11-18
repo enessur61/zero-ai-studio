@@ -42,14 +42,18 @@ services:
       - ./.env.workers
     environment:
       WAN_OUTPUT_DIR: /data/zero-wan-jobs
+      HF_HOME: /data/huggingface-cache
+      HUGGINGFACE_HUB_CACHE: /data/huggingface-cache/hub
       WAN_REQUIRE_PERSISTENT_STORAGE: "true"
     ports:
       - "127.0.0.1:8001:8000"
     volumes:
       - wan-video-jobs:/data/zero-wan-jobs
+      - wan-model-cache:/data/huggingface-cache
     gpus: all
 
 volumes:
   piper-voice-cache:
   searxng-cache:
   wan-video-jobs:
+  wan-model-cache:
