@@ -42,7 +42,7 @@ export function normalizeWanJobList(value: unknown, limit = 50): WanJobListItem[
     if (seen.has(job.id)) continue;
     seen.add(job.id);
     const duration = typeof job.duration_sec === 'number' && Number.isFinite(job.duration_sec)
-      ? Math.min(60, Math.max(1, Math.round(job.duration_sec)))
+      ? Math.min(5, Math.max(1, Math.round(job.duration_sec)))
       : 5;
     jobs.push({
       id: job.id,
