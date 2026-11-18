@@ -7,6 +7,14 @@ from typing import Any
 
 
 
+WAN_MIN_GPU_VRAM_MB = 12 * 1024
+
+
+def has_sufficient_gpu_memory(total_bytes: int, minimum_mb: int = WAN_MIN_GPU_VRAM_MB) -> bool:
+    """Require a realistic minimum GPU memory budget before accepting inference."""
+    return total_bytes >= minimum_mb * 1024 * 1024
+
+
 _PERSISTENT_FILESYSTEMS = {
     "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs",
     "nfs", "nfs4", "cifs", "ceph", "glusterfs",
