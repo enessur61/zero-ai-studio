@@ -3,6 +3,7 @@ import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles }
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { matchWanJobScene } from '../server/wanJobList.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -235,8 +236,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       const clipUrl = URL.createObjectURL(blob);
       setWanClipUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return clipUrl; });
       setWanJobState('succeeded');
-      const canAttach = Boolean(currentProject?.id && job.projectId === currentProject.id && job.sceneId);
-      const targetScene = canAttach ? scenes.find((scene) => scene.id === job.sceneId) : undefined;
+      const targetScene = matchWanJobScene(job, currentProject?.id, scenes) ?? undefined;
       if (targetScene && currentProject) {
         setScenes((previous) => previous.map((scene) =>
           scene.id === targetScene.id ? { ...scene, videoUrl: clipUrl, status: 'Szenenbereit' } : scene
