@@ -486,7 +486,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             {!wanBusy && wanJobState === 'cancelled' && <p className="text-xs text-amber-300">{wanProgress}</p>}
             {!wanBusy && wanJobState === 'failed' && <p className="text-xs text-rose-300">Auftrag fehlgeschlagen. Du kannst die Szene erneut starten.</p>}
             {!wanBusy && wanJobState === 'succeeded' && <p className="text-xs text-emerald-300">Auftrag abgeschlossen.</p>}
-            {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
+            {!wanBusy && wanProgress && !['cancelled', 'failed', 'stopped'].includes(wanJobState) && <p className="text-xs text-emerald-300">{wanProgress}</p>}
             {wanClipUrl && (
               <div className="space-y-2">
                 <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
