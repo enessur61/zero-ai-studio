@@ -515,6 +515,7 @@ export default function App() {
               projects={projects}
               activeProjectId={videoProjectId}
               soundtrack={videoSoundtrack}
+              onProjectUpdated={handleProjectUpdated}
             />
           )}
 
