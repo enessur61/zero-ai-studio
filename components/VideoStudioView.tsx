@@ -238,14 +238,18 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       const canAttach = Boolean(currentProject?.id && job.projectId === currentProject.id && job.sceneId);
       const targetScene = canAttach ? scenes.find((scene) => scene.id === job.sceneId) : undefined;
       if (targetScene && currentProject) {
-        const storage = await saveSceneVideoClip(currentProject.id, targetScene.id, blob);
         setScenes((previous) => previous.map((scene) =>
           scene.id === targetScene.id ? { ...scene, videoUrl: clipUrl, status: 'Szenenbereit' } : scene
         ));
         setWanClipScene(targetScene.title);
-        setWanProgress(storage.serverPersisted
-          ? 'Gespeicherter Wan-Clip wiederhergestellt und dem aktuellen ZERO-Projekt zugeordnet.'
-          : 'Clip wiederhergestellt, aber nicht dauerhaft synchronisiert. Bitte vor Gerätewechsel exportieren.');
+        try {
+          const storage = await saveSceneVideoClip(currentProject.id, targetScene.id, blob);
+          setWanProgress(storage.serverPersisted
+            ? 'Gespeicherter Wan-Clip wiederhergestellt und dem aktuellen ZERO-Projekt zugeordnet.'
+            : 'Clip wiederhergestellt und in der Szene angezeigt, aber nicht dauerhaft synchronisiert. Bitte vor Gerätewechsel exportieren.');
+        } catch {
+          setWanProgress('Clip wiederhergestellt und in der Szene angezeigt. Die dauerhafte Serversynchronisierung ist fehlgeschlagen; bitte vor Gerätewechsel exportieren.');
+        }
       } else {
         setWanClipScene('Wiederhergestellter Wan-Clip');
         setWanProgress('MP4 wiederhergestellt. Es wurde keinem anderen Projekt oder keiner anderen Szene zugeordnet.');
