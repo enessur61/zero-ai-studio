@@ -143,6 +143,29 @@ function makeVideo(durationSec: number) {
 }
 
 {
+  const project = makeProject([makeScene(1, 20), makeScene(2, 20)]);
+  let renderAttempts = 0;
+  const result = await runAutonomousFilmProduction({
+    createDraft: async () => ({ project }),
+    generateVoiceover: async () => ({ audioDataUrl: 'data:audio/wav;base64,AAAA' }),
+    generateVideoClip: async () => URL.createObjectURL(new Blob(['valid temporary clip'])),
+    saveProject: async (_id, scenes) => ({ ...project, scenes }),
+    renderVideo: async (renderProject) => {
+      renderAttempts += 1;
+      if (renderAttempts === 1) {
+        assert.ok(renderProject.scenes.some((scene) => scene.videoUrl));
+        throw new Error('Browser kann MP4-Codec nicht dekodieren');
+      }
+      assert.ok(renderProject.scenes.every((scene) => !scene.videoUrl), 'retry must use local storyboard frames only');
+      return makeVideo(40);
+    },
+  });
+  assert.equal(renderAttempts, 2);
+  assert.equal(result.video.durationSec, 40);
+  assert.ok(result.warnings.some((warning) => warning.includes('lokalem Storyboard-Schnitt')));
+}
+
+{
   const overLimit = makeProject([makeScene(1, 31), makeScene(2, 30)]);
   let providerCalls = 0;
   await assert.rejects(
