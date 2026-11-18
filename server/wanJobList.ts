@@ -72,3 +72,35 @@ export function matchWanJobScene<T extends { id: string }>(
   if (!currentProjectId || job.projectId !== currentProjectId || !job.sceneId) return null;
   return scenes.find((scene) => scene.id === job.sceneId) ?? null;
 }
+
+
+export function normalizeWanJobStatus(value: unknown, expectedId: string): WanJobListItem | null {
+  const job = normalizeWanJobList([value], 1)[0];
+  return job?.id === expectedId ? job : null;
+}
+
+export type WanJobListLoadResult =
+  | { kind: 'ok'; jobs: WanJobListItem[] }
+  | { kind: 'invalid' }
+  | { kind: 'unavailable' };
+
+/** Production-used transport boundary; distinguish an offline worker from malformed data. */
+export async function loadWanJobList(
+  fetcher: typeof fetch,
+  url: URL,
+  init: RequestInit,
+  limit = 50,
+): Promise<WanJobListLoadResult> {
+  let response: Response;
+  try {
+    response = await fetcher(url, init);
+  } catch {
+    return { kind: 'unavailable' };
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok || !payload || typeof payload !== 'object' ||
+      !Array.isArray((payload as Record<string, unknown>).jobs)) {
+    return { kind: 'invalid' };
+  }
+  return { kind: 'ok', jobs: normalizeWanJobList((payload as { jobs: unknown[] }).jobs, limit) };
+}
