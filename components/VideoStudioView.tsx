@@ -116,15 +116,16 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     });
     return () => {
       active = false;
+      const leavingProject = activeProjectIdRef.current !== projectId;
       const restoredUrls = new Set(objectUrlRegistry.getProjectUrls(projectId, 'restored'));
-      if (restoredUrls.size) {
+      if (leavingProject && restoredUrls.size) {
         updateScenes((previous) => previous.map((scene) =>
           scene.videoUrl && restoredUrls.has(scene.videoUrl) ? { ...scene, videoUrl: undefined } : scene
         ));
-        if (wanClipUrlRef.current && restoredUrls.has(wanClipUrlRef.current)) {
-          wanClipUrlRef.current = null;
-          setWanClipUrl(null);
-        }
+      }
+      if (leavingProject && wanClipUrlRef.current &&
+          objectUrlRegistry.getProjectUrls(projectId).includes(wanClipUrlRef.current)) {
+        replaceWanClipPreview(null);
       }
       objectUrlRegistry.releaseProjectRestored(projectId);
     };
