@@ -134,7 +134,7 @@ class PersistentJobStore:
                     existing = json.loads(raw_payload)
                 except (TypeError, json.JSONDecodeError):
                     continue
-                if isinstance(existing, dict) and existing.get("status") in {"queued", "running"}:
+                if isinstance(existing, dict) and existing.get("status") in {"queued", "running", "cancel_requested"}:
                     active += 1
             if active >= max_concurrent:
                 connection.rollback()
@@ -159,6 +159,51 @@ class PersistentJobStore:
             )
             connection.commit()
             return True, "accepted", accepted + 1
+    def request_cancel(self, job_id: str) -> dict[str, Any] | None:
+        """Persist a cancellation request without pretending active inference stopped."""
+        from datetime import datetime, timezone
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM zero_video_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                return None
+            try:
+                job = json.loads(row[0])
+            except (TypeError, json.JSONDecodeError):
+                connection.rollback()
+                return None
+            if not isinstance(job, dict) or job.get("id") != job_id:
+                connection.rollback()
+                return None
+            status = job.get("status")
+            if status == "queued":
+                job.update({
+                    "status": "cancelled",
+                    "cancelled_at": datetime.now(timezone.utc).isoformat(),
+                    "cancel_reason": "Auftrag vor GPU-Start abgebrochen.",
+                })
+            elif status == "running":
+                job.update({
+                    "status": "cancel_requested",
+                    "cancel_requested_at": datetime.now(timezone.utc).isoformat(),
+                    "cancel_reason": "Abbruch angefordert; laufender GPU-Inferenzschritt wird sicher beendet.",
+                })
+            elif status in {"cancel_requested", "cancelled", "succeeded", "failed"}:
+                pass
+            else:
+                connection.rollback()
+                return None
+            payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
+            connection.execute(
+                "UPDATE zero_video_jobs SET payload = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (payload, job_id),
+            )
+            connection.commit()
+            return job
+
     def save(self, job: dict[str, Any]) -> None:
         payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
         with self._connect() as connection:
@@ -201,6 +246,13 @@ class PersistentJobStore:
                     "status": "failed",
                     "finished_at": job.get("finished_at") or job.get("updated_at") or job.get("created_at"),
                     "error": "GPU-Worker wurde während dieses Auftrags neu gestartet. Auftrag wurde nicht automatisch erneut ausgeführt.",
+                })
+                self.save(job)
+            elif job.get("status") == "cancel_requested":
+                job.update({
+                    "status": "cancelled",
+                    "finished_at": job.get("finished_at") or job.get("cancel_requested_at"),
+                    "cancel_reason": "Worker-Neustart beendet den zuvor angeforderten Abbruch; kein GPU-Prozess läuft weiter.",
                 })
                 self.save(job)
             elif job.get("status") == "succeeded":
