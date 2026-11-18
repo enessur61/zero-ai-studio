@@ -1934,6 +1934,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
         workerUrlConfigured: true,
         workerTokenConfigured: true,
         workerReachable: false,
+        zeroCostGateOpen,
       });
       return res.json({ ...base, ...readiness });
     }
