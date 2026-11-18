@@ -378,5 +378,80 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
         self.assertEqual(worker.list_jobs(50, authorization=self.auth)["jobs"], [])
 
 
+    def test_http_restart_recovers_status_and_keeps_completed_clip(self) -> None:
+        client = TestClient(worker.app)
+        completed_id = str(UUID("00000000-0000-4000-8000-000000000041"))
+        interrupted_id = str(UUID("00000000-0000-4000-8000-000000000042"))
+        video_path = self.output / f"{completed_id}.mp4"
+        video_path.write_bytes(b"ZERO-CI-MP4" + bytes(2048))
+        worker._JOB_STORE.save({
+            "id": completed_id, "status": "succeeded", "filename": video_path.name,
+            "duration_sec": 5, "project_id": "project_123", "scene_id": "scene_456",
+        })
+        worker._JOB_STORE.save({"id": interrupted_id, "status": "running", "duration_sec": 5})
+        # Simulate a fresh worker process: startup recovery is performed once,
+        # then the HTTP status/list endpoints must expose the recovered state.
+        restarted_store = worker.PersistentJobStore(self.output)
+        worker._JOB_STORE = restarted_store
+        worker._jobs = restarted_store.load_all()
+        completed_status = client.get(f"/jobs/{completed_id}", headers={"Authorization": self.auth})
+        interrupted_status = client.get(f"/jobs/{interrupted_id}", headers={"Authorization": self.auth})
+        self.assertEqual(completed_status.status_code, 200)
+        self.assertEqual(completed_status.json()["status"], "succeeded")
+        self.assertEqual(interrupted_status.status_code, 200)
+        self.assertEqual(interrupted_status.json()["status"], "failed")
+        self.assertEqual(client.get(f"/jobs/{completed_id}/video", headers={"Authorization": self.auth}).content[:11], b"ZERO-CI-MP4")
+
+    def test_http_rejects_invalid_generation_bounds_and_unauthorized_mutations(self) -> None:
+        client = TestClient(worker.app)
+        invalid_duration = client.post("/jobs", json={
+            "prompt": "A cinematic five second test scene", "duration_sec": 6,
+        }, headers={"Authorization": self.auth})
+        self.assertEqual(invalid_duration.status_code, 422)
+        short_prompt = client.post("/jobs", json={"prompt": "short"}, headers={"Authorization": self.auth})
+        self.assertEqual(short_prompt.status_code, 422)
+        job_id = str(UUID("00000000-0000-4000-8000-000000000043"))
+        worker._JOB_STORE.save({"id": job_id, "status": "queued"})
+        worker._jobs[job_id] = {"id": job_id, "status": "queued"}
+        self.assertEqual(client.post(f"/jobs/{job_id}/cancel").status_code, 401)
+        self.assertEqual(client.get(f"/jobs/{job_id}").status_code, 401)
+        self.assertEqual(client.get(f"/jobs/{job_id}/video").status_code, 401)
+
+    def test_http_missing_mp4_and_unsafe_filename_never_return_file_bytes(self) -> None:
+        client = TestClient(worker.app)
+        missing_id = str(UUID("00000000-0000-4000-8000-000000000044"))
+        traversal_id = str(UUID("00000000-0000-4000-8000-000000000045"))
+        outside = self.output.parent / "zero-wan-http-outside.mp4"
+        outside.write_bytes(b"PRIVATE" + bytes(2048))
+        try:
+            for job in [
+                {"id": missing_id, "status": "succeeded", "filename": "absent.mp4"},
+                {"id": traversal_id, "status": "succeeded", "filename": "../zero-wan-http-outside.mp4"},
+            ]:
+                worker._JOB_STORE.save(job)
+                worker._jobs[job["id"]] = dict(job)
+            missing = client.get(f"/jobs/{missing_id}/video", headers={"Authorization": self.auth})
+            traversal = client.get(f"/jobs/{traversal_id}/video", headers={"Authorization": self.auth})
+            self.assertEqual(missing.status_code, 404)
+            self.assertEqual(traversal.status_code, 404)
+            self.assertNotIn(b"PRIVATE", traversal.content)
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_each_cost_confirmation_is_independently_required(self) -> None:
+        client = TestClient(worker.app)
+        payload = {"prompt": "A cinematic five second test scene", "duration_sec": 5}
+        worker.WAN_GPU_ENABLED = True
+        worker.WAN_GPU_COSTS_CONFIRMED = False
+        blocked_cost = client.post("/jobs", json=payload, headers={"Authorization": self.auth})
+        self.assertEqual(blocked_cost.status_code, 403)
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 0)
+        worker.WAN_GPU_ENABLED = False
+        worker.WAN_GPU_COSTS_CONFIRMED = True
+        blocked_enabled = client.post("/jobs", json=payload, headers={"Authorization": self.auth})
+        self.assertEqual(blocked_enabled.status_code, 403)
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
