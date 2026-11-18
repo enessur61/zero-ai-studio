@@ -131,6 +131,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   }, []);
 
   useEffect(() => {
+    if (wanBusy || !wanJobId) return;
+    const selected = wanJobs.find((job) => job.id === wanJobId);
+    if (selected) setWanJobState(selected.status);
+  }, [wanJobs, wanJobId, wanBusy]);
+
+  useEffect(() => {
     let active = true;
     fetch('/api/video/engine/status', { credentials: 'include', cache: 'no-store' })
       .then(async (response) => {
