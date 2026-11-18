@@ -160,13 +160,27 @@ export async function runAutonomousFilmProduction(
         ...(clipsBySceneId.get(scene.id) ? { videoUrl: clipsBySceneId.get(scene.id) } : {}),
       })),
     };
-    const video = await services.renderVideo(projectForRender, (percent, label) => {
+    const reportRenderProgress = (percent: number, label: string) => {
       onProgress?.({
         percent: Math.min(98, 70 + Math.round(Math.max(0, Math.min(100, percent)) * 0.28)),
         label,
         stage: 'rendering',
       });
-    });
+    };
+    let video: VideoRenderResult;
+    try {
+      video = await services.renderVideo(projectForRender, reportRenderProgress);
+    } catch (clipRenderError) {
+      if (temporaryClipUrls.length === 0) throw clipRenderError;
+      const detail = clipRenderError instanceof Error ? clipRenderError.message : 'KI-Clip konnte nicht dekodiert werden.';
+      warnings.push(`KI-Clip-Wiedergabe fehlgeschlagen – ${detail}. ZERO rendert erneut mit lokalem Storyboard-Schnitt.`);
+      onProgress?.({ percent: 70, label: 'KI-Clip nicht kompatibel – wechsle zum lokalen Storyboard-Schnitt...', stage: 'rendering' });
+      const storyboardProject: StudioProject = {
+        ...savedProject,
+        scenes: savedProject.scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene),
+      };
+      video = await services.renderVideo(storyboardProject, reportRenderProgress);
+    }
     if (!Number.isFinite(video.durationSec) || video.durationSec > FILM_PRODUCTION_MAX_DURATION_SEC) {
       throw new Error('Der Videoexport hat das harte 60-Sekunden-Limit verletzt und wird nicht als Ergebnis freigegeben.');
     }
