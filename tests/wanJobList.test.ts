@@ -42,9 +42,10 @@ assert.equal(filtered.length, 1, 'invalid and duplicate worker records must be d
 const bounded = normalizeWanJobList([
   { ...source[0], duration_sec: 999 },
   { ...source[1], id: ids[1], duration_sec: -50 },
-], 1);
-assert.equal(bounded.length, 1);
+], 2);
+assert.equal(bounded.length, 2);
 assert.equal(bounded[0].durationSec, 60);
+assert.equal(bounded[1].durationSec, 1);
 assert.deepEqual(normalizeWanJobList(source, 0), []);
 assert.deepEqual(normalizeWanJobList({ jobs: source }), []);
 
