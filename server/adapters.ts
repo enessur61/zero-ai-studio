@@ -14,6 +14,7 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit, saveDb } from './store.ts';
 import { createCloudflareBudgetAuditRecorder } from './cloudflareAudit.ts';
+import { PiperWorkerGateError, probePiperWorker } from './piperTtsWorker.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio, CloudflareWorkersAiGateError, type CloudflareAuditEvent } from './cloudflareWorkersAi.ts';
 
@@ -242,7 +243,26 @@ export async function runLiveModelTest(
   // Cloudflare Workers AI is a real server-side free-tier provider. Its provider-side daily
   // Neuron limit is authoritative; ZERO never retries through a paid provider.
   try {
-    if (model.id === 'cloudflare-moondream-3.1-9b-a2b') {
+    if (model.id === 'piper-tts-de-worker') {
+      const result = await probePiperWorker();
+      model.testPassed = result.modelUsed === 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)';
+      model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
+      model.lastTestMessage = model.testPassed
+        ? 'Piper-Worker erreichbar; authentifizierter Health-Check und echte deutsche WAV-Probe erfolgreich (Thorsten medium).'
+        : 'Piper-Worker lieferte keine gültige WAV-Probe.';
+      if (model.testPassed) {
+        recordBudgetAudit(db, {
+          adapterId: 'piper-worker',
+          modelId: model.id,
+          action: 'MODEL_HEALTH_TEST',
+          decision: 'ERLAUBT_0_EUR',
+          reason: 'Authentifizierter Piper-Worker-Health-Check und kurze WAV-Probe erfolgreich; 0,00 € Providerkosten.',
+          costEur: 0,
+          provider: 'piper-worker',
+          outcome: 'success',
+        });
+      }
+    } else if (model.id === 'cloudflare-moondream-3.1-9b-a2b') {
       // A tiny valid PNG verifies the actual vision endpoint and answer schema.
       const result = await analyzeCloudflareImage({
         imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRx8AAAAASUVORK5CYII=',
@@ -426,7 +446,12 @@ export async function runLiveModelTest(
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
     const kind = classifyProviderError(err);
-    if (err instanceof CloudflareWorkersAiGateError) {
+    if (err instanceof PiperWorkerGateError) {
+      model.testPassed = false;
+      model.enabled = false;
+      model.status = 'INSTALLATION ERFORDERLICH';
+      model.lastTestMessage = err.message;
+    } else if (err instanceof CloudflareWorkersAiGateError) {
       model.testPassed = false;
       model.enabled = false;
       model.status = 'INSTALLATION ERFORDERLICH';

@@ -76,8 +76,23 @@ def synthesize(text:str,speed:float)->bytes:
  return audio
 
 @app.get("/health")
-def health():
- return {"ok":True,"engine":"Piper ONNX","voice":VOICE,"voice_loaded":voice is not None,"cost_eur":0,"paid_fallback":False}
+def health(authorization:str|None=Header(default=None)):
+ auth(authorization)
+ return {
+  "ok":True,
+  "engine":"Piper ONNX",
+  "model_id":VOICE,
+  "voice":VOICE,
+  "voice_loaded":voice is not None,
+  "model_files_present":MODEL.is_file() and CONFIG.is_file(),
+  "model_revision":REV,
+  "engine_license":"GPL-3.0-or-later",
+  "voice_dataset_license":"CC0",
+  "voice_training_base":"lessac-medium (legacy pinned checkpoint)",
+  "commercial_use_confirmed":False,
+  "cost_eur":0,
+  "paid_fallback":False,
+ }
 
 @app.post("/tts")
 def tts(request:Request,authorization:str|None=Header(default=None)):
