@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_gpu_memory, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
@@ -70,11 +70,19 @@ def require_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def gpu_vram_total_mb() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    return round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024))
+
+
 def get_pipeline() -> WanPipeline:
     global _pipeline
     if _pipeline is None:
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU not detected. Wan worker requires an NVIDIA CUDA GPU.")
+        if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+            raise RuntimeError("Wan worker requires at least 12 GB of NVIDIA GPU VRAM; 24 GB is recommended.")
         # Load lazily so health checks do not download multi-GB model weights.
         _pipeline = WanPipeline.from_pretrained(
             MODEL_ID,
@@ -142,7 +150,7 @@ def health() -> dict[str, Any]:
         "model_loaded": _pipeline is not None,
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "gpu_vram_total_mb": round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)) if torch.cuda.is_available() else 0,
+        "gpu_vram_total_mb": gpu_vram_total_mb(),
         "gpu_vram_free_mb": round(torch.cuda.mem_get_info(0)[0] / (1024 * 1024)) if torch.cuda.is_available() else 0,
         "gpu_vram_recommended_min_mb": 12 * 1024,
         "max_shot_duration_sec": 5,
@@ -169,10 +177,13 @@ def create_job(
     require_cost_gate()
     try:
         require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+        require_persistent_storage(MODEL_CACHE_PERSISTENT)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
+    if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+        raise HTTPException(status_code=503, detail="Wan requires at least 12 GB GPU VRAM; 24 GB is recommended.")
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     with _jobs_lock:
