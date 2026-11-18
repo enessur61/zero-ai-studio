@@ -27,6 +27,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [error, setError] = useState<string | null>(null);
   const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
+  const [wanJobs, setWanJobs] = useState<Array<{
+    id: string; status: 'queued' | 'running' | 'cancel_requested' | 'cancelled' | 'succeeded' | 'failed';
+    createdAt: string | null; startedAt: string | null; finishedAt: string | null;
+    durationSec: number; engine: string; projectId: string | null; sceneId: string | null;
+    error: string | null; cancelReason: string | null;
+  }>>([]);
+  const [wanJobsLoading, setWanJobsLoading] = useState(true);
+  const [wanJobsError, setWanJobsError] = useState('');
   const [wanJobId, setWanJobId] = useState<string | null>(null);
   const [wanJobState, setWanJobState] = useState<'idle' | 'queued' | 'running' | 'downloading' | 'cancel_requested' | 'cancelled' | 'stopped' | 'failed' | 'succeeded'>('idle');
   const wanAbortRef = useRef<AbortController | null>(null);
@@ -71,6 +79,56 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setSelectedAudioUrl(soundtrack.url);
     }
   }, [soundtrack]);
+
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    let controller: AbortController | null = null;
+    const refreshJobs = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const response = await fetch('/api/video/engine/jobs?limit=50', {
+          credentials: 'include',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        const payload = await response.json();
+        if (!response.ok || !Array.isArray(payload.jobs)) {
+          throw new Error(payload.error || 'Persistente Wan-Auftragsliste nicht verfügbar.');
+        }
+        if (active) {
+          setWanJobs(payload.jobs.filter((job: unknown) =>
+            Boolean(job && typeof job === 'object'
+              && typeof (job as { id?: unknown }).id === 'string'
+              && ['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String((job as { status?: unknown }).status)))
+          ));
+          setWanJobsError('');
+        }
+      } catch (loadError) {
+        if (active && !(loadError instanceof Error && loadError.name === 'AbortError')) {
+          setWanJobsError(loadError instanceof Error ? loadError.message : 'Wan-Auftragsliste konnte nicht geladen werden.');
+        }
+      } finally {
+        inFlight = false;
+        controller = null;
+        if (active) setWanJobsLoading(false);
+      }
+    };
+    void refreshJobs();
+    const interval = window.setInterval(() => { void refreshJobs(); }, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshJobs();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      controller?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
