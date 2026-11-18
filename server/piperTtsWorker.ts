@@ -26,6 +26,9 @@ interface PiperWorkerHealth {
   voice: string;
   engine_license: string;
   voice_dataset_license: string;
+  engine_version: string;
+  model_revision: string;
+  voice_training_base: string;
   cost_eur: number;
   paid_fallback: boolean;
 }
@@ -109,6 +112,9 @@ async function readHealth(fetchImpl: typeof fetch, timeoutMs: number): Promise<P
     payload.voice !== PIPER_WORKER_MODEL_ID ||
     payload.engine_license !== "GPL-3.0-or-later" ||
     payload.voice_dataset_license !== "CC0" ||
+    payload.engine_version !== "1.8.0" ||
+    payload.model_revision !== "cf910fb59f1d79ab3b625a63993a108751c6c25d" ||
+    payload.voice_training_base !== "rdh (nl_BE, one Flemish speaker, CC0)" ||
     payload.paid_fallback !== false ||
     payload.cost_eur !== 0
   ) {
