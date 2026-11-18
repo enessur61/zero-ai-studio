@@ -39,4 +39,20 @@ function target() {
   await assert.rejects(() => streamWanVideoResponse(response, target().stream), /Dateigröße/);
 }
 
+
+{
+  const response = new Response(new Uint8Array(2048), { headers: { 'content-type': 'video/mp4', 'content-length': '4096' } });
+  await assert.rejects(() => streamWanVideoResponse(response, target().stream), /unvollständig/);
+}
+
+{
+  const response = new Response(new Uint8Array(4096), { headers: { 'content-type': 'video/mp4', 'content-length': '2048' } });
+  await assert.rejects(() => streamWanVideoResponse(response, target().stream), /überschreitet/);
+}
+
+{
+  const response = new Response(null, { headers: { 'content-type': 'video/mp4', 'content-length': '4096' } });
+  await assert.rejects(() => streamWanVideoResponse(response, target().stream), /keinen Videostream/);
+}
+
 console.log('Wan MP4 streaming validation tests passed.');
