@@ -5,6 +5,7 @@ import { createRestoreHandlers } from './server/restoreHandlers.ts';
 import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/concurrencyGate.ts';
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
+import { lookupProjectSceneVideo } from './server/projectSceneVideo.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { buildStorySupervisorAiPrompt, parseStorySupervisorAiResponse } from './server/storySupervisorAI.ts';
 import { buildContinuityDirectorContext, recordFilmProductionContinuity, recordFilmSceneRevision, detectSemanticContinuityConflicts, resolveFilmCameraMovement } from './server/filmDirection.ts';
@@ -2736,14 +2737,13 @@ app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) =
 
 app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
   const db = await loadDb();
-  const project = db.projects.find((item) => item.id === req.params.id);
-  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
-  const assetKey = `zero-scene-video:${req.params.sceneId}`;
-  const asset = project.assets.find((item) => item.type === 'video' && item.modelId === assetKey);
-  if (!asset || !isSafeProjectAssetUrl(asset.url, 'video')) {
+  const result = lookupProjectSceneVideo(db.projects, req.params.id, req.params.sceneId);
+  if (result.kind === 'project_not_found') return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  if (result.kind === 'scene_not_found') return res.status(404).json({ error: 'Szene nicht gefunden.' });
+  if (result.kind === 'media_not_found' || result.kind === 'invalid_media') {
     return res.status(404).json({ error: 'Für diese Szene ist kein dauerhaft gespeicherter Videoclip vorhanden.' });
   }
-  return res.json({ dataUrl: asset.url, serverPersisted: true });
+  return res.json({ dataUrl: result.dataUrl, serverPersisted: true });
 }));
 
 app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
