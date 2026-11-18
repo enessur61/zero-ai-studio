@@ -63,7 +63,7 @@ import { createContinuityRouter } from './src/routes/continuity.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { evaluateWanWorkerReadiness } from './server/wanWorkerReadiness.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
-import { loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
+import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -2018,7 +2018,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     });
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
-    if (typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || payload.status !== 'queued') {
+    if (typeof payload.id !== 'string' || !isValidWanJobId(payload.id) || payload.status !== 'queued') {
       return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
     }
     return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
@@ -2064,7 +2064,7 @@ app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
@@ -2100,7 +2100,7 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
@@ -2123,7 +2123,7 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   try {
