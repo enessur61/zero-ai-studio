@@ -32,6 +32,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 try {
   assert.equal((await projectService.get('project-1')).id, 'project-1');
   assert.equal((await sceneService.get('project-1', 'scene-1')).id, 'scene-1');
+  await projectService.update('project-1', { title: 'Updated title' }, 1);
+  assert.ok(requests.some((request) => request.url === '/api/projects/project-1' && request.method === 'PUT' && request.body?.expectedVersion === 1));
   await assert.rejects(() => sceneService.get('project-1', 'scene-missing'), /gehört nicht/);
   const job = await wanJobService.create({
     projectId: 'project-1', sceneId: 'scene-1', prompt: 'Cinematic scene', aspectRatio: '9:16',
