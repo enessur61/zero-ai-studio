@@ -152,19 +152,24 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     return () => { active = false; };
   }, []);
 
-  async function handleCancelWanJob() {
-    if (!wanJobId || !wanBusy || wanJobState === 'cancel_requested') return;
+  async function handleCancelWanJob(jobIdOverride?: string) {
+    const targetJobId = jobIdOverride || wanJobId;
+    if (!targetJobId) return;
+    const selectedJob = wanJobs.find((job) => job.id === targetJobId);
+    if (selectedJob?.status === 'cancel_requested' || selectedJob?.status === 'cancelled' || selectedJob?.status === 'succeeded' || selectedJob?.status === 'failed') return;
+    setWanJobId(targetJobId);
     setWanProgress('Sende echte Abbruchanforderung an den Worker...');
     try {
-      const response = await fetch(`/api/video/engine/jobs/${wanJobId}/cancel`, {
+      const response = await fetch(`/api/video/engine/jobs/${targetJobId}/cancel`, {
         method: 'POST',
         credentials: 'include',
         cache: 'no-store',
       });
       const payload = await response.json();
-      if (!response.ok || payload.job?.id !== wanJobId) {
+      if (!response.ok || payload.job?.id !== targetJobId) {
         throw new Error(payload.error || 'Der Worker hat den Abbruch nicht bestätigt.');
       }
+      setWanJobs((previous) => previous.map((job) => job.id === targetJobId ? { ...job, status: payload.job.status } : job));
       if (payload.job.status === 'cancelled') {
         setWanJobState('cancelled');
         setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
@@ -178,6 +183,69 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Abbruchstatus konnte nicht bestätigt werden.');
       setWanProgress('Keine Abbruchbestätigung erhalten. ZERO prüft den Workerstatus weiter.');
+    }
+  }
+
+  async function handleResumeWanJob(jobId: string) {
+    setWanJobId(jobId);
+    const job = wanJobs.find((item) => item.id === jobId);
+    if (job) {
+      setWanJobState(job.status);
+      setWanProgress(job.status === 'cancel_requested'
+        ? 'Abbruch angefordert – ZERO fragt den Workerstatus weiter automatisch ab.'
+        : job.status === 'queued' || job.status === 'running'
+          ? 'Statusüberwachung aus der persistenten Worker-Auftragsliste wieder aufgenommen.'
+          : job.status === 'cancelled'
+            ? 'Auftrag wurde abgebrochen.'
+            : job.status === 'succeeded'
+              ? 'Auftrag ist fertig. Du kannst den gespeicherten Clip wiederherstellen.'
+              : job.error || 'Auftrag fehlgeschlagen.');
+    }
+    try {
+      const response = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok || payload.job?.id !== jobId) throw new Error(payload.error || 'Jobstatus konnte nicht wieder aufgenommen werden.');
+      const status = payload.job.status;
+      if (['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(status)) {
+        setWanJobState(status);
+        setWanJobs((previous) => previous.map((item) => item.id === jobId ? { ...item, status } : item));
+      }
+    } catch (resumeError) {
+      setWanJobsError(resumeError instanceof Error ? resumeError.message : 'Jobstatus konnte nicht aktualisiert werden.');
+    }
+  }
+
+  async function handleRestoreWanClip(job: typeof wanJobs[number]) {
+    if (job.status !== 'succeeded') return;
+    try {
+      setWanJobId(job.id);
+      setWanProgress('Gespeichertes Wan-MP4 wird wiederhergestellt...');
+      const response = await fetch(`/api/video/engine/jobs/${job.id}/video`, { credentials: 'include', cache: 'no-store' });
+      if (!response.ok) throw new Error('Das gespeicherte MP4 ist nicht mehr verfügbar.');
+      const blob = await response.blob();
+      if (!blob.type.includes('video') || blob.size < 1024 || blob.size > 100 * 1024 * 1024) {
+        throw new Error('Das gespeicherte Wan-MP4 ist ungültig.');
+      }
+      const clipUrl = URL.createObjectURL(blob);
+      setWanClipUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return clipUrl; });
+      setWanJobState('succeeded');
+      const canAttach = Boolean(currentProject?.id && job.projectId === currentProject.id && job.sceneId);
+      const targetScene = canAttach ? scenes.find((scene) => scene.id === job.sceneId) : undefined;
+      if (targetScene && currentProject) {
+        const storage = await saveSceneVideoClip(currentProject.id, targetScene.id, blob);
+        setScenes((previous) => previous.map((scene) =>
+          scene.id === targetScene.id ? { ...scene, videoUrl: clipUrl, status: 'Szenenbereit' } : scene
+        ));
+        setWanClipScene(targetScene.title);
+        setWanProgress(storage.serverPersisted
+          ? 'Gespeicherter Wan-Clip wiederhergestellt und dem aktuellen ZERO-Projekt zugeordnet.'
+          : 'Clip wiederhergestellt, aber nicht dauerhaft synchronisiert. Bitte vor Gerätewechsel exportieren.');
+      } else {
+        setWanClipScene('Wiederhergestellter Wan-Clip');
+        setWanProgress('MP4 wiederhergestellt. Es wurde keinem anderen Projekt oder keiner anderen Szene zugeordnet.');
+      }
+    } catch (restoreError) {
+      setWanJobsError(restoreError instanceof Error ? restoreError.message : 'Wan-Clip konnte nicht wiederhergestellt werden.');
     }
   }
 
@@ -198,7 +266,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio, ...(currentProject?.id ? { projectId: currentProject.id } : {}), sceneId: scene.id }),
         signal: controller.signal,
       });
       const createdPayload = await created.json();
@@ -291,7 +359,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         setWanJobState('stopped');
-        setWanProgress('ZERO verfolgt diesen Auftrag nicht weiter. Der GPU-Worker kann ihn trotzdem weiter ausführen; eine serverseitige Abbruchfunktion ist derzeit nicht vorhanden.');
+        setWanProgress('ZERO hat die Live-Überwachung in diesem Fenster beendet. Der Auftrag bleibt in der persistenten Auftragsliste und wird nach Rückkehr erneut abgefragt; der GPU-Worker läuft dadurch nicht automatisch aus.');
       } else {
         setWanJobState('failed');
         setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
