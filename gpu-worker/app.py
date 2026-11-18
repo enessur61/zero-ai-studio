@@ -145,7 +145,6 @@ def health() -> dict[str, Any]:
         "gpu_vram_total_mb": round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)) if torch.cuda.is_available() else 0,
         "gpu_vram_free_mb": round(torch.cuda.mem_get_info(0)[0] / (1024 * 1024)) if torch.cuda.is_available() else 0,
         "gpu_vram_recommended_min_mb": 12 * 1024,
-        "model_cache_persistent": MODEL_CACHE_PERSISTENT,
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
