@@ -127,9 +127,10 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
         with _generation_lock, torch.inference_mode():
             with _jobs_lock:
-                if _jobs[job_id].get("status") == "cancel_requested":
-                    finish_cancelled_job(job_id, output_path)
-                    return
+                cancelled_before_gpu = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_before_gpu:
+                finish_cancelled_job(job_id, output_path)
+                return
             pipe = get_pipeline()
             result = pipe(
                 prompt=prompt,
