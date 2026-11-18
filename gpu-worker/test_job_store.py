@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -189,7 +190,9 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             store.save({"id": "running-cancel", "status": "running"})
             result = store.request_cancel("running-cancel")
             self.assertEqual(result["status"], "cancel_requested")
-            self.assertEqual(PersistentJobStore(directory).load_all()["running-cancel"]["status"], "cancel_requested")
+            with sqlite3.connect(store.database_path) as connection:
+                payload = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", ("running-cancel",)).fetchone()[0]
+            self.assertEqual(__import__("json").loads(payload)["status"], "cancel_requested")
 
     def test_cancel_is_idempotent_and_does_not_overwrite_completed_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
