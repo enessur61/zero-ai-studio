@@ -63,7 +63,7 @@ import { createContinuityRouter } from './src/routes/continuity.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { evaluateWanWorkerReadiness } from './server/wanWorkerReadiness.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
-import { normalizeWanJobList } from './server/wanJobList.ts';
+import { loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import {
   buildFullProjectZip,
   EXCLUDED_SECRETS_DOC,
@@ -2040,17 +2040,19 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(new URL(`/jobs?limit=${requestedLimit}`, worker.baseUrl), {
-      headers: worker.headers,
-      signal: controller.signal,
-      redirect: 'error',
-    });
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok || !Array.isArray(payload.jobs)) {
-      return res.status(502).json({ error: 'Persistente Wan-Auftragsliste konnte nicht geladen werden.' });
+    const result = await loadWanJobList(
+      fetch,
+      new URL(`/jobs?limit=${requestedLimit}`, worker.baseUrl),
+      { headers: worker.headers, signal: controller.signal, redirect: 'error' },
+      requestedLimit,
+    );
+    if (result.kind === 'unavailable') {
+      return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar. Die Auftragsliste konnte nicht aktualisiert werden.' });
     }
-    const jobs = normalizeWanJobList(payload.jobs, requestedLimit);
-    return res.json({ jobs, costFallback: false });
+    if (result.kind === 'invalid') {
+      return res.status(502).json({ error: 'Wan-Worker hat eine ungültige Auftragsliste zurückgegeben.' });
+    }
+    return res.json({ jobs: result.jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar. Die Auftragsliste konnte nicht aktualisiert werden.' });
   } finally {
@@ -2105,9 +2107,11 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
     const response = await fetch(new URL(`/jobs/${id}`, worker.baseUrl), {
       headers: worker.headers, signal: controller.signal, redirect: 'error',
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => null);
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
-    return res.json({ job: payload, costFallback: false });
+    const job = normalizeWanJobStatus(payload, id);
+    if (!job) return res.status(502).json({ error: 'Wan-Worker hat einen ungültigen Jobstatus zurückgegeben.' });
+    return res.json({ job, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
   } finally {
