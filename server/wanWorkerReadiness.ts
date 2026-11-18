@@ -3,6 +3,10 @@ export interface WanWorkerHealthPayload {
   engine?: unknown;
   model?: unknown;
   cuda_available?: unknown;
+  gpu_name?: unknown;
+  gpu_vram_total_mb?: unknown;
+  gpu_vram_free_mb?: unknown;
+  model_cache_persistent?: unknown;
   persistent_storage_configured?: unknown;
   cost_gate_open?: unknown;
   daily_job_limit?: unknown;
@@ -22,6 +26,10 @@ export interface WanWorkerReadiness {
   status: string;
   message: string;
   gpuAvailable: boolean;
+  gpuName: string | null;
+  gpuVramTotalMb: number | null;
+  gpuVramFreeMb: number | null;
+  modelCachePersistent: boolean;
   persistentStorageConfigured: boolean;
   costGateOpen: boolean;
   dailyJobLimit: number | null;
@@ -50,6 +58,10 @@ export function evaluateWanWorkerReadiness(input: {
   const maxConcurrentJobs = typeof payload.max_concurrent_jobs === 'number' && Number.isInteger(payload.max_concurrent_jobs)
     ? Number(payload.max_concurrent_jobs)
     : null;
+  const gpuVramTotalMb = typeof payload.gpu_vram_total_mb === 'number' && Number.isFinite(payload.gpu_vram_total_mb) ? payload.gpu_vram_total_mb : null;
+  const gpuVramFreeMb = typeof payload.gpu_vram_free_mb === 'number' && Number.isFinite(payload.gpu_vram_free_mb) ? payload.gpu_vram_free_mb : null;
+  const gpuVramReady = gpuVramTotalMb !== null && gpuVramTotalMb >= 12 * 1024;
+  const modelCachePersistent = payload.model_cache_persistent === true;
   const dailyLimitReady = dailyJobLimit !== null
     && dailyJobLimit >= 1
     && dailyJobLimit <= 3
@@ -89,10 +101,22 @@ export function evaluateWanWorkerReadiness(input: {
       detail: payload.cuda_available === true ? 'CUDA-GPU verfügbar.' : 'Keine verfügbare CUDA-GPU bestätigt.',
     },
     {
+      id: 'gpu_vram',
+      label: 'GPU-VRAM',
+      ready: gpuVramReady,
+      detail: gpuVramReady ? `${Math.round((gpuVramTotalMb ?? 0) / 1024)} GB GPU-VRAM erkannt.` : 'Mindestens 12 GB GPU-VRAM müssen bestätigt sein; 24 GB werden empfohlen.',
+    },
+    {
       id: 'persistent_storage',
       label: 'Persistenter Speicher',
       ready: payload.persistent_storage_configured === true,
       detail: payload.persistent_storage_configured === true ? 'Persistentes Worker-Volume bestätigt.' : 'Persistentes Worker-Volume fehlt oder ist nicht bestätigt.',
+    },
+    {
+      id: 'model_cache',
+      label: 'Persistenter Modell-Cache',
+      ready: modelCachePersistent,
+      detail: modelCachePersistent ? 'Hugging-Face-Modell-Cache liegt auf persistentem Speicher.' : 'Persistenter Hugging-Face-Modell-Cache fehlt.',
     },
     {
       id: 'cost_gate',
@@ -125,7 +149,9 @@ export function evaluateWanWorkerReadiness(input: {
   else if (!input.workerReachable || payload.ok !== true) status = 'WORKER_OFFLINE';
   else if (!engine) status = 'WORKER_PROTOCOL_MISMATCH';
   else if (payload.cuda_available !== true) status = 'WORKER_GPU_UNAVAILABLE';
+  else if (!gpuVramReady) status = 'WORKER_GPU_VRAM_INSUFFICIENT';
   else if (payload.persistent_storage_configured !== true) status = 'WORKER_STORAGE_NOT_PERSISTENT';
+  else if (!modelCachePersistent) status = 'WORKER_MODEL_CACHE_NOT_PERSISTENT';
   else if (payload.cost_gate_open !== true) status = 'WORKER_COST_GATE_CLOSED';
   else if (!input.zeroCostGateOpen) status = 'ZERO_COST_GATE_CLOSED';
   else if (!dailyLimitReady) status = 'WORKER_DAILY_LIMIT_REACHED';
@@ -137,6 +163,10 @@ export function evaluateWanWorkerReadiness(input: {
       ? `Nicht startbereit: ${failed.label} – ${failed.detail}`
       : 'Wan-Worker vollständig bereit: Verbindung, CUDA, persistenter Speicher, Kostensperren und Tageskontingent sind bestätigt.',
     gpuAvailable: payload.cuda_available === true,
+    gpuName: typeof payload.gpu_name === 'string' ? payload.gpu_name : null,
+    gpuVramTotalMb,
+    gpuVramFreeMb,
+    modelCachePersistent,
     persistentStorageConfigured: payload.persistent_storage_configured === true,
     costGateOpen: payload.cost_gate_open === true,
     dailyJobLimit,
