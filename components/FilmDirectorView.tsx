@@ -10,6 +10,7 @@ import { apiRequest } from '../lib/api.ts';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import { runAutonomousFilmProduction } from '../lib/filmProductionPipeline.ts';
 import { projectMediaService } from '../lib/services/projectMediaService.ts';
+import { projectService } from '../lib/services/projectService.ts';
 import { wanJobService } from '../lib/services/wanJobService.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
 import type { CharacterKnowledge, ContinuityEvent, ContinuitySeries, SemanticContinuityConflict } from '../src/types/continuity.ts';
@@ -305,12 +306,14 @@ export function FilmDirectorView({
           return { serverPersisted: saved.serverPersisted };
         },
         saveProject: async (projectId, scenes) => {
+          const currentProject = await projectService.get(projectId);
           const saved = await apiRequest<{ project: StudioProject }>(`/api/projects/${projectId}`, {
             method: 'PUT',
             body: JSON.stringify({
               scenes,
               status: 'Schnittbereit',
               snapshotNote: 'ZERO autonome Episode: Szenen und verfügbare Voiceovers',
+              expectedVersion: currentProject.version,
             }),
           });
           onProjectCreated(saved.project);
@@ -392,6 +395,7 @@ export function FilmDirectorView({
           body: JSON.stringify({
             scenes: updatedScenes,
             snapshotNote: `Sprachaufnahme für Szene generiert`,
+            expectedVersion: activeProject.version,
           }),
         }
       );
