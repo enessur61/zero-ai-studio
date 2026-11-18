@@ -267,9 +267,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function handleProjectUpdated(updated: StudioProject) {
+  const handleProjectUpdated = useCallback((updated: StudioProject) => {
     setProjects((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-  }
+  }, []);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === activeTab) ?? NAV_ITEMS[0];
 
