@@ -608,6 +608,47 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               </details>
             )}
             <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
+            <section className="space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-3" aria-label="Persistente Wan-Aufträge">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-white">Wan-Aufträge</h3>
+                <span className="text-[10px] text-slate-500">{wanJobs.length} gespeichert · automatische Aktualisierung alle 5 s</span>
+              </div>
+              {wanJobsLoading && <p className="text-[11px] text-slate-500">Lade gespeicherte Aufträge...</p>}
+              {wanJobsError && <p className="text-[11px] text-rose-300">{wanJobsError}</p>}
+              {!wanJobsLoading && !wanJobsError && wanJobs.length === 0 && <p className="text-[11px] text-slate-500">Noch keine Wan-Aufträge gespeichert.</p>}
+              <div className="max-h-72 space-y-2 overflow-y-auto">
+                {wanJobs.map((job) => {
+                  const statusLabel = ({
+                    queued: 'Wartet auf GPU',
+                    running: 'Wird generiert',
+                    cancel_requested: 'Abbruch angefordert · GPU läuft aus',
+                    cancelled: 'Abgebrochen',
+                    succeeded: 'Erfolgreich',
+                    failed: 'Fehlgeschlagen',
+                  } as const)[job.status];
+                  const active = job.status === 'queued' || job.status === 'running' || job.status === 'cancel_requested';
+                  const statusClass = job.status === 'succeeded' ? 'text-emerald-300' : job.status === 'failed' || job.status === 'cancelled' ? 'text-slate-400' : 'text-amber-300';
+                  return (
+                    <div key={job.id} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="break-all text-[10px] text-slate-400">{job.id}</p>
+                          <p className={`mt-1 text-[11px] font-medium ${statusClass}`}>{statusLabel}</p>
+                          <p className="mt-0.5 text-[10px] text-slate-500">{job.createdAt ? new Date(job.createdAt).toLocaleString('de-DE') : 'Zeit unbekannt'} · {job.durationSec}s</p>
+                          {job.error && <p className="mt-1 text-[10px] text-rose-300">{job.error}</p>}
+                          {job.cancelReason && <p className="mt-1 text-[10px] text-slate-500">{job.cancelReason}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-1">
+                          <button type="button" onClick={() => void handleResumeWanJob(job.id)} className="min-h-[34px] rounded-md border border-white/10 px-2 text-[10px] text-slate-200">Status übernehmen</button>
+                          {active && job.status !== 'cancel_requested' && <button type="button" onClick={() => void handleCancelWanJob(job.id)} className="min-h-[34px] rounded-md border border-rose-400/30 px-2 text-[10px] text-rose-200">Abbrechen</button>}
+                          {job.status === 'succeeded' && <button type="button" onClick={() => void handleRestoreWanClip(job)} className="min-h-[34px] rounded-md border border-emerald-400/30 px-2 text-[10px] text-emerald-200">Clip wiederherstellen</button>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
             {wanBusy && <div className="space-y-2">
               <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>
               <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-sky-400" /></div>
