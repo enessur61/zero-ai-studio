@@ -95,19 +95,41 @@ def get_pipeline() -> WanPipeline:
 def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
     with _jobs_lock:
         job = _jobs[job_id]
+        if job.get("status") == "cancelled":
+            return dict(job)
+        if job.get("status") == "cancel_requested" and changes.get("status") == "running":
+            return dict(job)
         job.update(changes)
         _JOB_STORE.save(dict(job))
         return dict(job)
 
 
+def finish_cancelled_job(job_id: str, output_path: Path) -> None:
+    output_path.unlink(missing_ok=True)
+    with _jobs_lock:
+        job = _jobs[job_id]
+        job.update({
+            "status": "cancelled",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "cancel_reason": "Abbruch abgeschlossen; es wird kein MP4 bereitgestellt.",
+        })
+        _JOB_STORE.save(dict(job))
+
+
 def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None) -> None:
     output_path = OUTPUT_DIR / f"{job_id}.mp4"
     try:
-        update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        started = update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        if started.get("status") != "running":
+            return
         # Wan T2V-1.3B generates one short 480p shot (81 frames / about 5s).
         width, height = (832, 480) if aspect_ratio == "16:9" else (480, 832)
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
         with _generation_lock, torch.inference_mode():
+            with _jobs_lock:
+                if _jobs[job_id].get("status") == "cancel_requested":
+                    finish_cancelled_job(job_id, output_path)
+                    return
             pipe = get_pipeline()
             result = pipe(
                 prompt=prompt,
@@ -120,6 +142,11 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
                 generator=generator,
             )
             frames = result.frames[0]
+            with _jobs_lock:
+                cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+            if cancellation_requested:
+                finish_cancelled_job(job_id, output_path)
+                return
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
@@ -132,6 +159,11 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             duration_sec=5,
         )
     except Exception as exc:  # Report failure; never fall back to a paid API.
+        with _jobs_lock:
+            cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+        if cancellation_requested:
+            finish_cancelled_job(job_id, output_path)
+            return
         update_job(
             job_id,
             status="failed",
@@ -220,6 +252,27 @@ def create_job(
         request.seed,
     )
     return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1", "daily_jobs_accepted": count, "daily_job_limit": WAN_DAILY_JOB_LIMIT}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_auth(authorization)
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    with _jobs_lock:
+        job = _JOB_STORE.request_cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        _jobs[job_id] = dict(job)
+        return {
+            "id": job_id,
+            "status": job["status"],
+            "cancel_requested": job["status"] == "cancel_requested",
+            "cancelled": job["status"] == "cancelled",
+            "message": job.get("cancel_reason", "Auftrag ist bereits abgeschlossen."),
+        }
 
 
 @app.get("/jobs/{job_id}")
