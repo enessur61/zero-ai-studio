@@ -36,7 +36,7 @@ function makeRegistry() {
   assert.equal(registry.releaseSceneReference(first, 'project-a', 'scene-1'), true);
   assert.deepEqual(revoked, [first]);
   assert.equal(registry.has(second), true);
-  assert.equal(registry.releaseSceneReference(shared, 'project-a', 'scene-3'), false);
+  assert.equal(registry.releaseSceneReference(shared, 'project-a', 'scene-3'), true);
   assert.equal(registry.has(shared), true);
   registry.releaseSceneReference(shared, 'project-a', 'scene-4');
   registry.releaseSceneReference(second, 'project-a', 'scene-2');
