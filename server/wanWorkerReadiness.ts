@@ -161,7 +161,7 @@ export function evaluateWanWorkerReadiness(input: {
     status,
     message: failed
       ? `Nicht startbereit: ${failed.label} – ${failed.detail}`
-      : 'Wan-Worker vollständig bereit: Verbindung, CUDA, persistenter Speicher, Kostensperren und Tageskontingent sind bestätigt.',
+      : 'Wan-Worker vollständig bereit: Verbindung, CUDA, ausreichender VRAM, persistenter Job- und Modell-Cache, Kostensperren und Tageskontingent sind bestätigt.',
     gpuAvailable: payload.cuda_available === true,
     gpuName: typeof payload.gpu_name === 'string' ? payload.gpu_name : null,
     gpuVramTotalMb,
