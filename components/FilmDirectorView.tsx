@@ -269,7 +269,7 @@ export function FilmDirectorView({
             const accepted = await apiRequest<{ job: { id: string; status: string; durationSec: number }; maxFinalDurationSec: number; costFallback: false }>('/api/video/engine/jobs', {
               method: 'POST',
               body: JSON.stringify({
-                prompt: `${scene.videoPrompt}. Cinematic continuity, preserve the established character appearance. Shot length exactly 5 seconds.`,
+                prompt: `${scene.videoPrompt}. Cinematic continuity, preserve the established character appearance. Shot length exactly 5 seconds.`.slice(0, 1800),
                 aspectRatio: '9:16',
               }),
             });
