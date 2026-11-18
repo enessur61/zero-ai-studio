@@ -28,7 +28,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
   const [wanJobId, setWanJobId] = useState<string | null>(null);
-  const [wanJobState, setWanJobState] = useState<'idle' | 'queued' | 'running' | 'downloading' | 'stopped' | 'failed' | 'succeeded'>('idle');
+  const [wanJobState, setWanJobState] = useState<'idle' | 'queued' | 'running' | 'downloading' | 'cancel_requested' | 'cancelled' | 'stopped' | 'failed' | 'succeeded'>('idle');
   const wanAbortRef = useRef<AbortController | null>(null);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
@@ -94,6 +94,35 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     return () => { active = false; };
   }, []);
 
+  async function handleCancelWanJob() {
+    if (!wanJobId || !wanBusy || wanJobState === 'cancel_requested') return;
+    setWanProgress('Sende echte Abbruchanforderung an den Worker...');
+    try {
+      const response = await fetch(`/api/video/engine/jobs/${wanJobId}/cancel`, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.job?.id !== wanJobId) {
+        throw new Error(payload.error || 'Der Worker hat den Abbruch nicht bestätigt.');
+      }
+      if (payload.job.status === 'cancelled') {
+        setWanJobState('cancelled');
+        setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
+      } else if (payload.job.status === 'cancel_requested') {
+        setWanJobState('cancel_requested');
+        setWanProgress('Abbruch angefordert. Der aktuelle GPU-Inferenzschritt läuft noch und wird sicher beendet; erst danach bestätigt ZERO den Abbruch.');
+      } else {
+        setWanJobState(payload.job.status === 'succeeded' ? 'succeeded' : 'failed');
+        setWanProgress(payload.job.status === 'succeeded' ? 'Der Clip war bereits fertig; ein Abbruch war nicht mehr möglich.' : 'Der Auftrag war bereits beendet.');
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Abbruchstatus konnte nicht bestätigt werden.');
+      setWanProgress('Keine Abbruchbestätigung erhalten. ZERO prüft den Workerstatus weiter.');
+    }
+  }
+
   async function handleWanSceneGeneration(scene: FilmScene) {
     if (wanBusy || !wanWorker.online) return;
     const controller = new AbortController();
@@ -142,7 +171,18 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
         const job = statusPayload.job;
         if (job.status === 'failed') { setWanJobState('failed'); throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.')); }
-        setWanJobState(job.status === 'queued' ? 'queued' : 'running');
+        if (job.status === 'cancelled') {
+          setWanJobState('cancelled');
+          setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
+          completed = true;
+          break;
+        }
+        if (job.status === 'cancel_requested') {
+          setWanJobState('cancel_requested');
+          setWanProgress('Abbruch angefordert. Der Worker beendet den laufenden GPU-Schritt; ZERO wartet auf die endgültige Bestätigung.');
+        } else {
+          setWanJobState(job.status === 'queued' ? 'queued' : 'running');
+        }
         if (job.status === 'succeeded') {
           setWanJobState('downloading');
           setWanProgress('MP4 wird auf ZERO übertragen...');
@@ -440,9 +480,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>
               <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-sky-400" /></div>
               {wanJobId && <p className="text-[10px] text-slate-500 break-all">Auftrags-ID: {wanJobId}</p>}
-              <button type="button" onClick={() => wanAbortRef.current?.abort()} className="min-h-[40px] w-full rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 text-xs font-medium text-amber-200">Überwachung beenden</button>
+              <button type="button" onClick={handleCancelWanJob} disabled={!wanJobId || wanJobState === 'cancel_requested'} className="min-h-[44px] w-full rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 text-xs font-medium text-rose-200 disabled:opacity-50">{wanJobState === 'cancel_requested' ? 'Abbruch angefordert – GPU-Schritt läuft aus' : 'Wan-Auftrag abbrechen'}</button>
             </div>}
             {!wanBusy && wanJobState === 'stopped' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'cancelled' && <p className="text-xs text-amber-300">{wanProgress}</p>}
             {!wanBusy && wanJobState === 'failed' && <p className="text-xs text-rose-300">Auftrag fehlgeschlagen. Du kannst die Szene erneut starten.</p>}
             {!wanBusy && wanJobState === 'succeeded' && <p className="text-xs text-emerald-300">Auftrag abgeschlossen.</p>}
             {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
