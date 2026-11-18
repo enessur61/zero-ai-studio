@@ -2,13 +2,15 @@
 
 CPU-only German WAV voiceovers through Piper ONNX using the pinned de_DE-thorsten-medium checkpoint.
 
-## Licensing — engine and voice are separate
+## Licensing and provenance — engine and voice are separate
 
-- **Piper engine:** GPL-3.0-or-later (piper-tts==1.3.0).
-- **Voice dataset:** the Thorsten recordings are marked CC0 in the voice MODEL_CARD.
-- **Important checkpoint caveat:** the pinned revision used here is fine-tuned from the U.S. English Lessac medium voice. The CC0 dataset label does not itself grant rights to the Lessac-derived checkpoint. Do not treat this pinned artifact as commercially cleared. For commercial use, first pin and verify a newer rdh-based Thorsten-medium revision and carry its exact MODEL_CARD with the model files.
+- **Piper engine:** `piper-tts==1.8.0`, GPL-3.0-or-later.
+- **Voice:** pinned upstream revision `cf910fb59f1d79ab3b625a63993a108751c6c25d`.
+- **Training provenance:** the upstream Thorsten model card identifies the Thorsten-Voice dataset as CC0 and the `rdh` base (one Flemish speaker, nl_BE) as CC0. The old Lessac-derived checkpoint is no longer used.
+- **Compatibility:** the pinned model card requires Piper 1.5 or higher. ZERO pins Piper 1.8.0.
+- **Integrity:** ONNX file SHA-256 and exact size are checked before loading. The JSON config is parsed and checked against the pinned language, sample rate, Piper metadata and inference defaults. The pinned upstream model card is bundled at `voice/MODEL_CARD.md`.
 
-The engine and voice have different licenses. Keep their notices and the exact voice MODEL_CARD with any redistributed artifacts. This README does not provide legal advice.
+The model card's provenance is recorded faithfully; ZERO does not make a blanket legal determination or mark commercial use as legally cleared. Keep the engine license and exact voice model card with redistributed artifacts. This README is not legal advice.
 
 ## Default-deny cost gate
 
@@ -31,7 +33,7 @@ Create a Docker web service from this repository:
 - Configure a long random ZERO_TTS_WORKER_TOKEN on the worker and the same secret on ZERO.
 - Set ZERO_TTS_WORKER_URL on ZERO to the worker's HTTPS URL.
 
-Do not assume a free hosting plan is permanent or guaranteed. Free instances may sleep while idle and have ephemeral filesystems. The ~63-MB voice may be downloaded again after restart; cold-start synthesis can take longer. A paid hosting plan or usage charge must never be enabled implicitly.
+Do not assume a free hosting plan is permanent or guaranteed. Free instances may sleep while idle and have ephemeral filesystems. The ~63-MB voice may be downloaded again after restart; cold-start synthesis can take longer. The worker verifies the pinned ONNX SHA-256 and rejects incompatible or modified voice configuration files. A paid hosting plan or usage charge must never be enabled implicitly.
 
 ## API
 
