@@ -1,5 +1,29 @@
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
+
+private final class AudioConverterInputState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let buffer: AVAudioPCMBuffer
+    private var didProvideBuffer = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func nextBuffer(status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !didProvideBuffer else {
+            status.pointee = .endOfStream
+            return nil
+        }
+
+        didProvideBuffer = true
+        status.pointee = .haveData
+        return buffer
+    }
+}
 
 public struct WhisperSegment: Codable, Sendable {
     public let index: Int
@@ -126,16 +150,10 @@ public final class WhisperMetalAdapter: @unchecked Sendable {
         }
 
         try file.read(into: inputBuf)
-        var consumed = false
+        let inputState = AudioConverterInputState(buffer: inputBuf)
         var err: NSError?
         converter.convert(to: outputBuf, error: &err) { _, outStatus in
-            if consumed {
-                outStatus.pointee = .endOfStream
-                return nil
-            }
-            consumed = true
-            outStatus.pointee = .haveData
-            return inputBuf
+            inputState.nextBuffer(status: outStatus)
         }
         if let err {
             throw WhisperAdapterError.invalidAudioFormat(err.localizedDescription)
