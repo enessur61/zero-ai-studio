@@ -35,6 +35,6 @@ Do not assume a free hosting plan is permanent or guaranteed. Free instances may
 
 ## API
 
-- GET /health is authenticated with the worker bearer token; it returns engine, exact model revision, voice, file-presence and loaded-state diagnostics without downloading weights.
+- GET /health is public and returns engine, exact model revision, voice, file-presence and loaded-state diagnostics without downloading weights.
 - POST /tts accepts authenticated JSON with text and speed and returns a WAV file.
 - Max 5,000 characters; speed 0.75–1.25; maximum WAV size 20 MB.

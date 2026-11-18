@@ -76,8 +76,7 @@ def synthesize(text:str,speed:float)->bytes:
  return audio
 
 @app.get("/health")
-def health(authorization:str|None=Header(default=None)):
- auth(authorization)
+def health():
  return {
   "ok":True,
   "engine":"Piper ONNX",
