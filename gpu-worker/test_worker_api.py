@@ -12,6 +12,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 from fastapi import BackgroundTasks, HTTPException
+from fastapi.testclient import TestClient
 
 
 # The worker API tests exercise real FastAPI route functions and SQLite state,
@@ -123,6 +124,64 @@ class WanWorkerApiLifecycleTests(unittest.TestCase):
             self.create()
         self.assertEqual(gpu_blocked.exception.status_code, 503)
         self.assertEqual(worker._JOB_STORE.daily_usage(), 0)
+
+    def test_http_api_auth_create_list_status_cancel_and_mp4_restore(self) -> None:
+        client = TestClient(worker.app)
+        unauthorized = client.get("/jobs")
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(client.get("/jobs", headers={"Authorization": self.auth}).status_code, 200)
+
+        payload = {
+            "prompt": "A cinematic five second test scene",
+            "duration_sec": 5,
+            "aspect_ratio": "9:16",
+            "project_id": "project_123",
+            "scene_id": "scene_456",
+        }
+        # FastAPI executes BackgroundTasks after sending the response; keep the
+        # task inert so this HTTP integration test never invokes GPU inference.
+        with patch.object(worker, "run_generation", return_value=None):
+            created_response = client.post("/jobs", json=payload, headers={"Authorization": self.auth})
+        self.assertEqual(created_response.status_code, 202, created_response.text)
+        created = created_response.json()
+        job_id = created["id"]
+        self.assertEqual(created["status"], "queued")
+        self.assertEqual(created["project_id"], "project_123")
+        self.assertEqual(created["scene_id"], "scene_456")
+
+        listing = client.get("/jobs?limit=50", headers={"Authorization": self.auth})
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["jobs"][0]["id"], job_id)
+        status = client.get(f"/jobs/{job_id}", headers={"Authorization": self.auth})
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["status"], "queued")
+
+        cancelled = client.post(f"/jobs/{job_id}/cancel", headers={"Authorization": self.auth})
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        self.assertEqual(client.get(f"/jobs/{job_id}/video", headers={"Authorization": self.auth}).status_code, 409)
+
+        # Persist a completed fixture and prove the authenticated MP4 endpoint
+        # returns only the file owned by this job.
+        video_id = str(UUID("00000000-0000-4000-8000-000000000099"))
+        video_path = self.output / f"{video_id}.mp4"
+        video_path.write_bytes(b"ZERO-CI-MP4" + bytes(4096))
+        completed = {
+            "id": video_id,
+            "status": "succeeded",
+            "created_at": "2026-11-18T12:00:00Z",
+            "duration_sec": 5,
+            "filename": video_path.name,
+            "project_id": "project_123",
+            "scene_id": "scene_456",
+        }
+        worker._JOB_STORE.save(completed)
+        worker._jobs[video_id] = dict(completed)
+        restored = client.get(f"/jobs/{video_id}/video", headers={"Authorization": self.auth})
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.headers["content-type"], "video/mp4")
+        self.assertEqual(restored.content[:11], b"ZERO-CI-MP4")
+        self.assertEqual(client.get(f"/jobs/{video_id}/video").status_code, 401)
 
     def test_authenticated_create_persists_job_and_project_scene_metadata(self) -> None:
         created, tasks = self.create()
