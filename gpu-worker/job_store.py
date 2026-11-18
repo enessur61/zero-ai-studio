@@ -64,7 +64,7 @@ def require_persistent_storage(configured: bool) -> None:
     """Fail closed before accepting jobs when the worker volume is ephemeral."""
     if not configured:
         raise RuntimeError(
-            "GPU worker storage is ephemeral. Configure WAN_OUTPUT_DIR on a persistent volume before accepting jobs."
+            "GPU worker storage is ephemeral. Configure WAN_OUTPUT_DIR and HF_HOME on persistent volumes before accepting jobs."
         )
 
 
