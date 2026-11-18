@@ -28,6 +28,8 @@ export async function streamWanVideoResponse(
   target.setHeader('Content-Type', 'video/mp4');
   target.setHeader('Content-Disposition', 'attachment; filename="zero-wan-video.mp4"');
   target.setHeader('Content-Length', String(declaredLength));
+  target.setHeader('Cache-Control', 'no-store');
+  target.setHeader('X-Content-Type-Options', 'nosniff');
   let transferred = 0;
   const limiter = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
