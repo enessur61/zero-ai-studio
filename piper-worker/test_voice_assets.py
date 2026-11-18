@@ -63,7 +63,7 @@ class PinnedVoiceAssetTests(unittest.TestCase):
             path.write_bytes(payload)
             with patch.object(voice_assets, "MODEL_SIZE_BYTES", len(payload)), patch.object(voice_assets, "MODEL_SHA256", expected):
                 voice_assets.validate_model_file(path)
-                path.write_bytes(b"tampered model")
+                path.write_bytes(b"pinned test modes")
                 with self.assertRaisesRegex(RuntimeError, "SHA-256"):
                     voice_assets.validate_model_file(path)
 
