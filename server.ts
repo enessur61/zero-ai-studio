@@ -36,7 +36,7 @@ import {
 } from './server/adapters.ts';
 import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, isCloudflareWorkersAiAllowed, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import { createCloudflareBudgetAuditRecorder } from './server/cloudflareAudit.ts';
-import { synthesizePiperWorker } from './server/piperTtsWorker.ts';
+import { PiperWorkerGateError, synthesizePiperWorker } from './server/piperTtsWorker.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -1628,6 +1628,17 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
   } catch (err) {
     if (modelId === 'piper-tts-de-worker') {
       const message = err instanceof Error ? err.message : 'Piper-Worker nicht verfügbar.';
+      recordBudgetAudit(db!, {
+        adapterId: 'piper-worker',
+        modelId,
+        action: 'AUDIO_TTS',
+        decision: err instanceof PiperWorkerGateError ? 'BLOCKIERT_BUDGET_GUARD' : 'PROVIDER_FEHLER',
+        reason: message,
+        costEur: 0,
+        provider: 'piper-worker',
+        outcome: err instanceof PiperWorkerGateError ? 'blocked' : 'error',
+      });
+      try { await saveDb(db!); } catch (auditError) { console.error('[ZERO PIPER] Audit-Eintrag konnte nicht gespeichert werden:', auditError); }
       return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
     }
     if (db && isQuotaExhaustionError(err) && db.budgetGuard.freeQuotaUsage[modelId]) {

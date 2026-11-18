@@ -228,6 +228,18 @@ assert.equal(
   chooseZeroMediaModel([ttsModel], ttsBudget, 'text-to-speech', [], now, 'gemini-3.8-flash-lite-tts')?.modelId,
   'gemini-3.8-flash-lite-tts',
 );
+const piperWorker = makeMediaModel('piper-tts-de-worker', 'Sprache & Audio');
+piperWorker.adapterId = 'piper-worker';
+piperWorker.provider = 'ZERO self-hosted Piper Worker';
+piperWorker.executionMode = 'FREE CLOUD';
+piperWorker.status = 'FUNKTIONIERT';
+assert.equal(
+  chooseZeroMediaModel([piperWorker], budget, 'text-to-speech', [], now, 'piper-tts-de-worker')?.modelId,
+  'piper-tts-de-worker',
+  'a verified Piper worker must route without a Gemini quota record',
+);
+const disabledPiperWorker = { ...piperWorker, enabled: false };
+assert.equal(chooseZeroMediaModel([disabledPiperWorker], budget, 'text-to-speech', [], now), null, 'disabled Piper worker must remain unroutable');
 
 const localVideo = makeMediaModel('zero-timeline-video-60s', 'Videogenerierung');
 localVideo.executionMode = 'LOCAL ON-DEVICE';

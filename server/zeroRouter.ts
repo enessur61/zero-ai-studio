@@ -161,3 +161,8 @@ export function chooseZeroMediaModel(
   return {
     modelId: selected.id,
     consideredModelIds: eligible.map((model) => model.id),
+    reason: selected.executionMode === 'LOCAL ON-DEVICE'
+      ? 'Lokale Ausführung wird an einen vom Client gemeldeten Geräte-Runtime weitergereicht; der Server zertifiziert weder Adapter noch Inferenztest.'
+      : 'Cloud-Modell hat einen echten Adaptertest bestanden und verfügt über ein verfügbares Free-Tier-Kontingent.',
+  };
+}

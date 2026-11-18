@@ -1037,7 +1037,8 @@ export const INITIAL_MODEL_CATALOG: ModelDefinition[] = [
     testPassed: false,
     version: 'de_DE-thorsten-medium · Piper 1.3.0 · revision 95119a449dcd66ed7ad199313f76bda3eda7e286',
     limitations: 'Eigener Worker und Hosting müssen vom Betreiber kontrolliert werden. Kostenfreier Hosting-Tarif ist nicht garantiert; Render-Free-Instanzen können schlafen und Dateien nach Neustarts erneut laden. Kein kostenpflichtiger Fallback. Native iPhone-Runtime ist separat und nicht enthalten.',
-  },  {
+  },
+  {
     id: 'whisper-cpp-small',
     name: 'whisper.cpp (small.q5_1 CoreML/Metal)',
     family: 'Whisper',
