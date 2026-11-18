@@ -44,7 +44,7 @@ export interface ProjectService {
   list(): Promise<StudioProject[]>;
   get(projectId: string): Promise<StudioProject>;
   create(input: CreateProjectInput): Promise<StudioProject>;
-  update(projectId: string, input: UpdateProjectInput): Promise<StudioProject>;
+  update(projectId: string, input: UpdateProjectInput, expectedVersion?: number): Promise<StudioProject>;
 }
 
 export interface SceneService {
