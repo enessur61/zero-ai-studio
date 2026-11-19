@@ -2507,6 +2507,7 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
     ...project,
     ...snapshot.state,
     id: project.id,
+    ownerId: project.ownerId,
     scenes: restoredScenes,
     assets: sanitizeProjectAssets(snapshot.state.assets),
     targetDurationSec: restoredDuration,

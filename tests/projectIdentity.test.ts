@@ -7,7 +7,7 @@ import {
   resolveOwnedProject,
 } from '../server/projectIdentity.ts';
 
-const legacyProjects = [
+const legacyProjects: Array<{ id: string; ownerId?: unknown; title: string }> = [
   { id: 'project-legacy', title: 'Legacy project' },
   { id: 'project-owned', ownerId: ZERO_ADMIN_PRINCIPAL_ID, title: 'Owned project' },
 ];
@@ -18,6 +18,8 @@ assert.equal(legacyProjects[1].title, 'Owned project', 'migration must preserve 
 
 assert.equal(resolveOwnedProject(legacyProjects, ZERO_ADMIN_PRINCIPAL, 'project-legacy'), legacyProjects[0]);
 assert.equal(resolveOwnedProject(legacyProjects, ZERO_ADMIN_PRINCIPAL, 'missing'), null);
+assert.equal(resolveOwnedProject([{ id: 'foreign', ownerId: 'admin:other' }], ZERO_ADMIN_PRINCIPAL, 'foreign'), null,
+  'a project with another owner must not resolve');
 assert.equal(resolveOwnedProject(legacyProjects, ZERO_ADMIN_PRINCIPAL, ''), null);
 assert.equal(resolveOwnedProject(legacyProjects, ZERO_ADMIN_PRINCIPAL, ['project-legacy']), null);
 
