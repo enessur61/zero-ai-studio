@@ -18,7 +18,7 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
-import { reserveZeroCostProviderRequestWithPool } from '../server/zeroCostGuard.ts';
+import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -123,6 +123,24 @@ try {
   } finally {
     await restartPool.end();
   }
+
+  const exhaustedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
+  assert.equal(exhaustedStatus.requestsUsed, 5);
+  assert.equal(exhaustedStatus.remainingRequests, 0);
+  assert.equal(exhaustedStatus.recentEvents.length > 0, true);
+  await setZeroCostGuardPaused(poolA, true, 5);
+  const pausedStatus = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(pausedStatus.paused, true, 'manual pause must persist across independent pools');
+  assert.equal(pausedStatus.providers.cloudflare, 'GESPERRT');
+  await assert.rejects(
+    () => reserveZeroCostProviderRequestWithPool(poolB, costRequest, costGuardEnv),
+    /manuell gesperrt/,
+    'manual pause must block reservations before provider execution'
+  );
+  await setZeroCostGuardPaused(poolB, false, 5);
+  const resumedStatus = await getZeroCostGuardStatus(restartPool, costGuardEnv);
+  assert.equal(resumedStatus.paused, false, 'manual resume must persist across fresh connections');
+  assert.equal(resumedStatus.remainingRequests, 0, 'manual resume must not refill the exhausted daily budget');
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
