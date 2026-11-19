@@ -483,6 +483,7 @@ export async function finishZeroCostResourceOperationWithPool(
   pool: Pool,
   operationId: string,
   leaseToken: string,
+  leaseGeneration: number,
   outcome: Exclude<ZeroOperationStatus, 'RESERVED'>,
   now = new Date()
 ): Promise<void> {
@@ -498,10 +499,11 @@ export async function finishZeroCostResourceOperationWithPool(
       FROM zero_cost_operations o
       JOIN zero_cost_active_leases l ON l.operation_id = o.operation_id
       WHERE o.operation_id = $1::uuid AND l.lease_token_hash = $2
+        AND l.lease_generation = $3 AND l.status = 'ACTIVE' AND l.expires_at > $4::timestamptz
       FOR UPDATE OF o, l
-    `, [operationId, digest(leaseToken)]);
+    `, [operationId, digest(leaseToken), leaseGeneration, now]);
     const op = result.rows[0];
-    if (!op) throw new ZeroResourceGuardError('ZERO-Lease fehlt oder Token ist ungültig.', 'LEASE_INVALID');
+    if (!op) throw new ZeroResourceGuardError('ZERO-Lease fehlt, ist abgelaufen oder Generation/Token ist veraltet.', 'LEASE_INVALID');
     if (op.status !== 'RESERVED') throw new ZeroResourceGuardError('ZERO-Vorgang wurde bereits abgeschlossen.', 'OPERATION_FINAL');
     if (outcome === 'SUCCEEDED') {
       await client.query(`
@@ -510,6 +512,12 @@ export async function finishZeroCostResourceOperationWithPool(
             consumed_units = consumed_units + $1, updated_at = NOW()
         WHERE day_utc = $2::date AND scope_hash = $3 AND resource_type = $4
       `, [op.reserved_units, op.day_utc, digest('global'), op.resource_type]);
+      await client.query(`
+        UPDATE zero_cost_principal_resource_usage
+        SET reserved_units = GREATEST(0, reserved_units - $1),
+            consumed_units = consumed_units + $1, updated_at = NOW()
+        WHERE day_utc = $2::date AND principal_hash = $3 AND resource_type = $4
+      `, [op.reserved_units, op.day_utc, op.principal_hash, op.resource_type]);
       await client.query("UPDATE zero_cost_active_leases SET status = 'RELEASED', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, now]);
     } else if (outcome === 'FAILED') {
       await client.query(`
@@ -517,12 +525,17 @@ export async function finishZeroCostResourceOperationWithPool(
         SET reserved_units = GREATEST(0, reserved_units - $1), updated_at = NOW()
         WHERE day_utc = $2::date AND scope_hash = $3 AND resource_type = $4
       `, [op.reserved_units, op.day_utc, digest('global'), op.resource_type]);
+      await client.query(`
+        UPDATE zero_cost_principal_resource_usage
+        SET reserved_units = GREATEST(0, reserved_units - $1), updated_at = NOW()
+        WHERE day_utc = $2::date AND principal_hash = $3 AND resource_type = $4
+      `, [op.reserved_units, op.day_utc, op.principal_hash, op.resource_type]);
       await client.query("UPDATE zero_cost_active_leases SET status = 'RELEASED', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, now]);
     } else {
       await client.query("UPDATE zero_cost_active_leases SET status = 'UNKNOWN', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, new Date(now.getTime() + UNKNOWN_LEASE_TTL_SECONDS * 1000)]);
       // UNKNOWN remains charged as reserved and is never retried/refunded automatically.
     }
-    await client.query('UPDATE zero_cost_operations SET status = $2, updated_at = NOW() WHERE operation_id = $1::uuid', [operationId, outcome]);
+    await client.query('UPDATE zero_cost_operations SET status = $2, finished_at = $3, updated_at = NOW() WHERE operation_id = $1::uuid', [operationId, outcome, now]);
     await client.query('COMMIT');
   } catch (error) {
     try {
