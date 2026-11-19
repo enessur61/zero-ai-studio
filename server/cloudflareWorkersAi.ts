@@ -5,7 +5,7 @@ const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 type CostGuardOverride = (modelId: string, action: string) => Promise<void>;
 
 async function authorizeCloudflareRequest(modelId: string, action: string, override?: CostGuardOverride): Promise<void> {
-  if (override) return override(modelId, action);
+  if (override && process.env.NODE_ENV === 'test') return override(modelId, action);
   try {
     await reserveZeroCostProviderRequest({
       provider: 'cloudflare-workers-ai',
