@@ -88,6 +88,7 @@ export async function reserveZeroCostProviderRequestWithPool(
   }
   const client = await pool.connect();
   const dayUtc = utcDay();
+  let committed = false;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(1514480207, 71)');
@@ -154,6 +155,7 @@ export async function reserveZeroCostProviderRequestWithPool(
       `, [dayUtc, reservation.provider, reservation.modelId, reservation.studio, reservation.action,
         row?.requests_used ?? null, row?.daily_limit ?? dailyLimit, reason]);
       await client.query('COMMIT');
+      committed = true;
       throw new ZeroCostGuardError(reason + ' Kein kostenpflichtiger Fallback.', 'BUDGET_EXHAUSTED');
     }
 
@@ -165,9 +167,10 @@ export async function reserveZeroCostProviderRequestWithPool(
     `, [dayUtc, reservation.provider, reservation.modelId, reservation.studio, reservation.action,
       row.requests_used, row.daily_limit]);
     await client.query('COMMIT');
+    committed = true;
     return { allowed: true, dayUtc, requestsUsed: row.requests_used, dailyLimit: row.daily_limit };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    if (!committed) await client.query('ROLLBACK').catch(() => undefined);
     if (error instanceof ZeroCostGuardError) throw error;
     throw new ZeroCostGuardError('Persistente Kostenreservierung fehlgeschlagen. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_ERROR');
   } finally {
