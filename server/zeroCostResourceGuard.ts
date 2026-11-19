@@ -72,8 +72,22 @@ export interface ZeroResourceOperation {
 }
 
 export interface ZeroResourceOperationReplay {
+  kind: 'ZERO_OPERATION_REPLAY';
   operation: ZeroResourceOperation;
   replayed: true;
+}
+
+export class ZeroResourceOperationReplayError extends Error {
+  readonly code = 'OPERATION_REPLAY';
+  constructor(readonly operation: ZeroResourceOperation) {
+    super('ZERO-Vorgang existiert bereits; Provider wird nicht erneut aufgerufen.');
+    this.name = 'ZeroResourceOperationReplayError';
+  }
+}
+
+export function isZeroResourceOperationReplay(value: unknown): value is ZeroResourceOperationReplay {
+  return typeof value === 'object' && value !== null &&
+    (value as { kind?: unknown }).kind === 'ZERO_OPERATION_REPLAY';
 }
 
 export class ZeroResourceGuardError extends Error {
@@ -561,7 +575,7 @@ export async function withZeroCostResourceOperation<T>(
   if (!env.DATABASE_URL) throw new ZeroResourceGuardError('PostgreSQL fehlt; Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   const databasePool = pool ?? getPostgresPool();
   const { operation, leaseToken } = await reserveZeroCostResourceOperationWithPool(databasePool, input, env);
-  if (operation.replayed || !leaseToken) return { operation, replayed: true };
+  if (operation.replayed || !leaseToken) return { kind: 'ZERO_OPERATION_REPLAY', operation, replayed: true };
   const leaseGeneration = operation.leaseGeneration;
   if (leaseGeneration === null) throw new ZeroResourceGuardError('ZERO-Lease-Generation fehlt.', 'LEASE_INVALID');
   let result: T;
