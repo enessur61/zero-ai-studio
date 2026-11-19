@@ -31,6 +31,10 @@ assert.equal(getZeroResourceLimits(env).text.concurrency, 3);
 assert.equal(getZeroResourceLimits(env).image.concurrency, 1);
 assert.equal(getZeroResourceLimits(env).audio.concurrency, 1);
 assert.equal(getZeroResourceLimits(env).video.concurrency, 1);
+assert.equal(getZeroResourceLimits(env).text.perMinute, 5);
+assert.equal(getZeroResourceLimits(env).image.perMinute, 1);
+assert.equal(getZeroResourceLimits(env).audio.perMinute, 2);
+assert.equal(getZeroResourceLimits(env).video.perMinute, 1);
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"video/mp4"}'), 'video');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"image/png"}'), 'image');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"audio/wav"}'), 'audio');
@@ -61,6 +65,8 @@ assert.throws(() => validateZeroResourceOperation({ ...base, resourceType: 'audi
 assert.throws(() => validateZeroResourceOperation({ ...base, idempotencyKey: 'tiny' }, env), rejectsCode('INVALID_IDEMPOTENCY_KEY'));
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_TEXT_DAILY_LIMIT: '0' }), rejectsCode('INVALID_LIMIT'));
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_IMAGE_CONCURRENCY: '21' }), rejectsCode('INVALID_LIMIT'));
+assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_VIDEO_PER_MINUTE_LIMIT: '0' }), rejectsCode('INVALID_LIMIT'));
+assert.equal(getZeroResourceLimits({ ...env, ZERO_RESOURCE_TEXT_PER_MINUTE_LIMIT: '8' }).text.perMinute, 8);
 assert.equal(validateZeroResourceOperation({ ...base, idempotencyKey: 'request-0001' }, env).text.dailyUnits, 20);
 let providerExecutedWithoutDatabase = false;
 await assert.rejects(
