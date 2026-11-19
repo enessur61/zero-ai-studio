@@ -3,6 +3,18 @@ import { getPostgresPool } from './persistence.ts';
 
 export type ZeroCostProvider = 'cloudflare-workers-ai' | 'google-gemini-free';
 
+const ALLOWED_CLOUDFLARE_MODELS = new Set([
+  '@cf/zai-org/glm-4.7-flash',
+  '@cf/black-forest-labs/flux-1-schnell',
+  '@cf/openai/whisper-large-v3-turbo',
+  '@cf/moondream/moondream3.1-9B-A2B',
+]);
+const ALLOWED_GEMINI_FREE_MODELS = new Set([
+  'gemini-3.8-flash', 'gemini-2.5-flash-lite', 'gemini-3.6-flash',
+  'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash-lite-tts',
+  'gemini-3.8-flash-tts', 'gemini-3.5-transcribe', 'gemini-embedding-2', 'gemini-web-grounding',
+]);
+
 export interface ZeroCostGuardEnvironment {
   ZERO_COST_GUARD_ENABLED?: string;
   ZERO_COST_GUARD_FREE_ONLY_CONFIRMED?: string;
@@ -59,12 +71,18 @@ export function assertZeroCostProviderAllowed(
   }
   const limit = validateZeroCostGuardConfig(env);
   if (reservation.provider === 'cloudflare-workers-ai') {
+    if (!ALLOWED_CLOUDFLARE_MODELS.has(reservation.modelId)) {
+      throw new ZeroCostGuardError('Cloudflare-Modell ist nicht in der kostenlosen ZERO-Freigabeliste.', 'MODEL_NOT_ALLOWLISTED');
+    }
     if (env.ZERO_CLOUDFLARE_AI_ENABLED !== 'true' || env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED !== 'true') {
       throw new ZeroCostGuardError('Cloudflare ist ohne beide expliziten Free-Plan-Freigaben gesperrt.', 'PROVIDER_DISABLED');
     }
     return limit;
   }
   if (reservation.provider === 'google-gemini-free') {
+    if (!ALLOWED_GEMINI_FREE_MODELS.has(reservation.modelId)) {
+      throw new ZeroCostGuardError('Gemini-Modell ist nicht in der kostenlosen ZERO-Freigabeliste.', 'MODEL_NOT_ALLOWLISTED');
+    }
     if (env.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
       throw new ZeroCostGuardError('Gemini ist nicht ausdrücklich auf Free-Tier-only begrenzt.', 'PROVIDER_DISABLED');
     }
