@@ -91,6 +91,7 @@ try {
     ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '5',
     ZERO_CLOUDFLARE_AI_ENABLED: 'true',
     ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+    ZERO_GEMINI_FREE_TIER_ONLY: 'true',
   };
   const costRequest = {
     provider: 'cloudflare-workers-ai' as const,
@@ -99,7 +100,12 @@ try {
     action: 'POSTGRES_CONCURRENCY_TEST',
   };
   const costReservations = await Promise.all(Array.from({ length: 10 }, (_, index) =>
-    reserveZeroCostProviderRequestWithPool(index % 2 ? poolA : poolB, costRequest, costGuardEnv)
+    reserveZeroCostProviderRequestWithPool(index % 2 ? poolA : poolB, index % 2 ? costRequest : {
+      provider: 'google-gemini-free' as const,
+      modelId: 'gemini-2.5-flash-lite',
+      studio: 'ZERO MEMORY',
+      action: 'POSTGRES_CONCURRENCY_TEST',
+    }, costGuardEnv)
       .then(() => true)
       .catch((error: unknown) => {
         assert.match(error instanceof Error ? error.message : String(error), /Tagesbudget ausgeschöpft/);
