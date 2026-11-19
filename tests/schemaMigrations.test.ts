@@ -62,6 +62,8 @@ assert.match(migration.sql, /zero_cost_resource_rate_events/);
 assert.match(migration.sql, /created_at/);
 assert.match(principalMigration.sql, /zero_cost_principal_resource_usage/);
 assert.match(principalMigration.sql, /principal_hash CHAR\(64\)/);
+assert.match(principalMigration.sql, /FROM zero_cost_operations/);
+assert.match(principalMigration.sql, /status IN \('RESERVED', 'UNKNOWN'\)/);
 
 const client = new FakeMigrationClient();
 await runZeroSchemaMigrations(poolFor(client));
