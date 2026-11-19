@@ -62,6 +62,26 @@ export function validateZeroCostGuardConfig(env: ZeroCostGuardEnvironment): numb
   return limit;
 }
 
+/** Strict browser Origin validation for state-changing same-origin endpoints. */
+export function isSameOriginRequest(
+  origin: string | undefined,
+  host: string | undefined,
+  protocol: string
+): boolean {
+  if (!origin || !host || (protocol !== 'http' && protocol !== 'https')) return false;
+  try {
+    const parsedOrigin = new URL(origin);
+    const expectedOrigin = new URL(`${protocol}://${host}`);
+    return parsedOrigin.origin === origin &&
+      parsedOrigin.protocol === protocol + ':' &&
+      parsedOrigin.username === '' && parsedOrigin.password === '' &&
+      parsedOrigin.pathname === '/' && parsedOrigin.search === '' && parsedOrigin.hash === '' &&
+      parsedOrigin.origin === expectedOrigin.origin;
+  } catch {
+    return false;
+  }
+}
+
 export function assertZeroCostProviderAllowed(
   reservation: ZeroCostReservation,
   env: ZeroCostGuardEnvironment
@@ -238,10 +258,14 @@ export async function getZeroCostGuardStatus(
   env: ZeroCostGuardEnvironment = process.env
 ): Promise<ZeroCostGuardStatus> {
   const today = utcDay();
-  const configured = env.ZERO_COST_GUARD_ENABLED === 'true' &&
-    env.ZERO_COST_GUARD_FREE_ONLY_CONFIRMED === 'true' &&
-    Number.isSafeInteger(Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT)) &&
-    Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) > 0;
+  let configured = false;
+  try {
+    validateZeroCostGuardConfig(env);
+    configured = true;
+  } catch {
+    // The dashboard must use the exact same validation as provider reservations.
+    configured = false;
+  }
   const client = await pool.connect();
   try {
     await client.query(`
