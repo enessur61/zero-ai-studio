@@ -368,7 +368,9 @@ export function formatGermanApiError(err: unknown): string {
 
 export async function withTransientRetry<T>(
   operation: () => Promise<T>,
-  maxRetries = 1
+  // Retries are disabled by default: provider requests must each reserve budget first.
+  // Callers may opt in only when they supply per-attempt budget reservations.
+  maxRetries = 0
 ): Promise<T> {
   let attempt = 0;
   while (true) {
