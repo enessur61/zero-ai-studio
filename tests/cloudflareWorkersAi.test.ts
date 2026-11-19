@@ -4,6 +4,7 @@ import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
+const originalCostGuardEnabled = process.env.ZERO_COST_GUARD_ENABLED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -245,6 +246,24 @@ try {
     /keinen kostenpflichtigen Fallback/,
   );
   assert.equal(rateLimitAttempts, 1, '429 rate limits must not be retried');
+  // A caller-supplied no-op callback must never bypass the production guard.
+  process.env.NODE_ENV = 'production';
+  process.env.ZERO_COST_GUARD_ENABLED = 'false';
+  let bypassFetchAttempts = 0;
+  await assert.rejects(
+    () => generateCloudflareText({
+      prompt: 'guard bypass regression',
+      costGuard: async () => undefined,
+      fetchImpl: async () => {
+        bypassFetchAttempts += 1;
+        return new Response('{}', { status: 200 });
+      },
+    }),
+    /ZERO COST GUARD|Kostenfreigabe|gesperrt/i,
+  );
+  assert.equal(bypassFetchAttempts, 0, 'production callback injection must not bypass the central guard');
+  process.env.NODE_ENV = 'test';
+
 
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
@@ -252,4 +271,7 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
+  if (originalCostGuardEnabled === undefined) delete process.env.ZERO_COST_GUARD_ENABLED;
+  else process.env.ZERO_COST_GUARD_ENABLED = originalCostGuardEnabled;
+  process.env.NODE_ENV = 'test';
 }
