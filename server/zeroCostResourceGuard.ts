@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { getPostgresPool } from './persistence.ts';
 import { assertZeroCostProviderAllowed, ZeroCostGuardError, ZERO_COST_ADVISORY_LOCK } from './zeroCostGuard.ts';
+import { applyZeroSchemaMigrationsWithClient } from './schemaMigrations.ts';
 
 export type ZeroResourceType = 'text' | 'image' | 'audio' | 'video';
 export type ZeroOperationStatus = 'RESERVED' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN';
@@ -13,6 +14,7 @@ export interface ZeroResourceLimit {
   maxInputBytes: number;
   maxInputChars: number;
   maxDurationSeconds: number;
+  perMinute: number;
 }
 export type ZeroResourceLimits = Record<ZeroResourceType, ZeroResourceLimit>;
 
@@ -71,10 +73,10 @@ export class ZeroResourceGuardError extends Error {
 
 const RESOURCE_TYPES = new Set<ZeroResourceType>(['text', 'image', 'audio', 'video']);
 const MAX_LIMITS: ZeroResourceLimits = {
-  text: { dailyUnits: 20, concurrency: 3, maxInputBytes: 128_000, maxInputChars: 32_768, maxDurationSeconds: 0 },
-  image: { dailyUnits: 5, concurrency: 1, maxInputBytes: 8 * 1024 * 1024, maxInputChars: 2_048, maxDurationSeconds: 0 },
-  audio: { dailyUnits: 10, concurrency: 1, maxInputBytes: 10 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 300 },
-  video: { dailyUnits: 12, concurrency: 1, maxInputBytes: 100 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 60 },
+  text: { dailyUnits: 20, concurrency: 3, maxInputBytes: 128_000, maxInputChars: 32_768, maxDurationSeconds: 0, perMinute: 5 },
+  image: { dailyUnits: 5, concurrency: 1, maxInputBytes: 8 * 1024 * 1024, maxInputChars: 2_048, maxDurationSeconds: 0, perMinute: 1 },
+  audio: { dailyUnits: 10, concurrency: 1, maxInputBytes: 10 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 300, perMinute: 2 },
+  video: { dailyUnits: 12, concurrency: 1, maxInputBytes: 100 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 60, perMinute: 1 },
 };
 const MAX_DAILY = 10_000;
 const MAX_CONCURRENCY = 20;
@@ -102,6 +104,7 @@ export function getZeroResourceLimits(env: ZeroResourceEnvironment = process.env
     const key = type.toUpperCase();
     result[type].dailyUnits = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_DAILY_LIMIT`], result[type].dailyUnits, 1, MAX_DAILY, `${key}_DAILY_LIMIT`);
     result[type].concurrency = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_CONCURRENCY`], result[type].concurrency, 1, MAX_CONCURRENCY, `${key}_CONCURRENCY`);
+    result[type].perMinute = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_PER_MINUTE_LIMIT`], result[type].perMinute, 1, 1_000, `${key}_PER_MINUTE_LIMIT`);
   }
   return result;
 }
@@ -169,7 +172,6 @@ async function createSchema(client: PoolClient): Promise<void> {
       reason TEXT NOT NULL
     )
   `);
-  await client.query("DELETE FROM zero_cost_audit_events WHERE created_at < NOW() - INTERVAL '90 days'");
   await client.query(`
     CREATE TABLE IF NOT EXISTS zero_cost_resource_usage (
       day_utc DATE NOT NULL,
@@ -210,8 +212,6 @@ async function createSchema(client: PoolClient): Promise<void> {
   `);
   await client.query('CREATE INDEX IF NOT EXISTS zero_cost_resource_usage_day_idx ON zero_cost_resource_usage (day_utc, resource_type)');
   await client.query("CREATE INDEX IF NOT EXISTS zero_cost_active_leases_expiry_idx ON zero_cost_active_leases (resource_type, expires_at) WHERE status IN ('ACTIVE','UNKNOWN')");
-  await client.query("DELETE FROM zero_cost_operations WHERE created_at < NOW() - INTERVAL '90 days'");
-  await client.query("DELETE FROM zero_cost_resource_usage WHERE day_utc < CURRENT_DATE - INTERVAL '90 days'");
 }
 
 const schemaReadyByPool = new WeakMap<Pool, Promise<void>>();
@@ -221,16 +221,22 @@ export async function ensureZeroCostResourceSchema(pool: Pool): Promise<void> {
   if (ready) return ready;
   const initialization = (async () => {
     const client = await pool.connect();
+    let destroyClient = false;
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
       await createSchema(client);
+      await applyZeroSchemaMigrationsWithClient(client);
       await client.query('COMMIT');
     } catch {
-      await client.query('ROLLBACK').catch(() => undefined);
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
       throw new ZeroResourceGuardError('ZERO-Ressourcenschema konnte nicht sicher initialisiert werden.', 'SCHEMA_ERROR');
     } finally {
-      client.release();
+      client.release(destroyClient);
     }
   })();
   schemaReadyByPool.set(pool, initialization);
@@ -263,6 +269,7 @@ export async function reserveZeroCostResourceOperationWithPool(
   await ensureZeroCostResourceSchema(pool);
   const client = await pool.connect();
   let committed = false;
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
@@ -290,6 +297,20 @@ export async function reserveZeroCostResourceOperationWithPool(
       throw new ZeroResourceGuardError(`Idempotente Wiederholung blockiert; bestehender Vorgang ${prior.rows[0].operation_id} hat Status ${prior.rows[0].status}.`, 'IDEMPOTENT_REPLAY');
     }
 
+    const rate = await client.query<{ principal_count: number; global_count: number }>(`
+      SELECT
+        COUNT(*) FILTER (WHERE principal_hash = $1)::int AS principal_count,
+        COUNT(*)::int AS global_count
+      FROM zero_cost_resource_rate_events
+      WHERE resource_type = $2
+        AND created_at > $3::timestamptz - INTERVAL '60 seconds'
+        AND created_at <= $3::timestamptz
+    `, [principalHash, input.resourceType, now]);
+    const principalRate = Number(rate.rows[0]?.principal_count ?? 0);
+    const globalRate = Number(rate.rows[0]?.global_count ?? 0);
+    if (principalRate >= limit.perMinute || globalRate >= limit.perMinute) {
+      throw new ZeroResourceGuardError('ZERO-Ressourcen-Minutenlimit erreicht.', 'RATE_LIMITED');
+    }
     const budget = await client.query<{ requests_used: number; daily_limit: number }>(`
       INSERT INTO zero_cost_daily_budget (scope, day_utc, requests_used, daily_limit)
       VALUES ('global', $1::date, 1, $2)
@@ -330,9 +351,13 @@ export async function reserveZeroCostResourceOperationWithPool(
 
     await client.query(`
       INSERT INTO zero_cost_operations
-        (operation_id, principal_hash, idempotency_hash, payload_hash, provider, model_id, resource_type, day_utc, status, reserved_units)
-      VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::date, 'RESERVED', $9)
-    `, [operationId, principalHash, idempotencyHash, payloadHash, input.provider, input.modelId, input.resourceType, dayUtc, units]);
+        (operation_id, principal_hash, idempotency_hash, payload_hash, request_fingerprint, provider, model_id, resource_type, day_utc, status, reserved_units)
+      VALUES ($1::uuid, $2, $3, $4, $5::char(64), $6, $7, $8, $9::date, 'RESERVED', $10)
+    `, [operationId, principalHash, idempotencyHash, payloadHash, payloadHash, input.provider, input.modelId, input.resourceType, dayUtc, units]);
+    await client.query(`
+      INSERT INTO zero_cost_resource_rate_events (operation_id, principal_hash, resource_type, created_at)
+      VALUES ($1::uuid, $2, $3, $4::timestamptz)
+    `, [operationId, principalHash, input.resourceType, now]);
     await client.query(`
       INSERT INTO zero_cost_active_leases (operation_id, resource_type, lease_token_hash, expires_at, status)
       VALUES ($1::uuid, $2, $3, $4, 'ACTIVE')
@@ -346,11 +371,17 @@ export async function reserveZeroCostResourceOperationWithPool(
     committed = true;
     return { operation: { operationId, status: 'RESERVED', dayUtc, resourceType: input.resourceType, reservedUnits: units, replayed: false }, leaseToken };
   } catch (error) {
-    if (!committed) await client.query('ROLLBACK').catch(() => undefined);
+    if (!committed) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
     if (error instanceof ZeroResourceGuardError) throw error;
     throw new ZeroResourceGuardError('Atomare ZERO-Ressourcenreservierung fehlgeschlagen; Provider-Aufruf blockiert.', 'PERSISTENCE_ERROR');
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -362,6 +393,7 @@ export async function finishZeroCostResourceOperationWithPool(
   now = new Date()
 ): Promise<void> {
   const client = await pool.connect();
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
@@ -399,11 +431,15 @@ export async function finishZeroCostResourceOperationWithPool(
     await client.query('UPDATE zero_cost_operations SET status = $2, updated_at = NOW() WHERE operation_id = $1::uuid', [operationId, outcome]);
     await client.query('COMMIT');
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      destroyClient = true;
+    }
     if (error instanceof ZeroResourceGuardError) throw error;
     throw new ZeroResourceGuardError('ZERO-Ergebnisstatus konnte nicht sicher gespeichert werden.', 'PERSISTENCE_ERROR');
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 

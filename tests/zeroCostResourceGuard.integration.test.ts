@@ -11,6 +11,7 @@ import {
   type ZeroResourceOperationInput,
 } from '../server/zeroCostResourceGuard.ts';
 import { reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
+import { runZeroSchemaMigrations } from '../server/schemaMigrations.ts';
 
 const connectionString = process.env.DATABASE_URL;
 if (process.env.ZERO_POSTGRES_TESTS !== 'true' || !connectionString) throw new Error('ZERO PostgreSQL resource integration requires ZERO_POSTGRES_TESTS=true and DATABASE_URL.');
@@ -28,6 +29,8 @@ const env = {
   ZERO_RESOURCE_TEXT_DAILY_LIMIT: '3', ZERO_RESOURCE_TEXT_CONCURRENCY: '3',
   ZERO_RESOURCE_IMAGE_DAILY_LIMIT: '5', ZERO_RESOURCE_IMAGE_CONCURRENCY: '1',
   ZERO_RESOURCE_VIDEO_DAILY_LIMIT: '20', ZERO_RESOURCE_VIDEO_CONCURRENCY: '20',
+  ZERO_RESOURCE_TEXT_PER_MINUTE_LIMIT: '1000', ZERO_RESOURCE_IMAGE_PER_MINUTE_LIMIT: '1000',
+  ZERO_RESOURCE_AUDIO_PER_MINUTE_LIMIT: '1000', ZERO_RESOURCE_VIDEO_PER_MINUTE_LIMIT: '1000',
 };
 const base: ZeroResourceOperationInput = {
   provider: 'cloudflare-workers-ai', modelId: '@cf/zai-org/glm-4.7-flash', resourceType: 'text',
@@ -41,6 +44,16 @@ try {
   await admin.query(`CREATE SCHEMA "${schema}"`);
   await ensureZeroCostResourceSchema(poolA);
   await ensureZeroCostResourceSchema(poolB);
+  await runZeroSchemaMigrations(poolB);
+  const migration = await poolA.query('SELECT version FROM zero_schema_migrations WHERE version = 1');
+  assert.equal(migration.rows.length, 1, 'versioned additive migration is applied exactly once');
+  const fingerprintColumn = await poolA.query(`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_schema = $1 AND table_name = 'zero_cost_operations' AND column_name = 'request_fingerprint'
+  `, [schema]);
+  assert.equal(fingerprintColumn.rows.length, 1, 'operation request fingerprint column exists');
+  const rateTable = await poolA.query('SELECT to_regclass($1) AS name', ['zero_cost_resource_rate_events']);
+  assert.ok(rateTable.rows[0].name, 'rolling rate event table exists');
 
   // 1–4: schema exists, common budget, resource usage and operations tables exist.
   for (const table of ['zero_cost_daily_budget','zero_cost_audit_events','zero_cost_resource_usage','zero_cost_operations','zero_cost_active_leases']) {
@@ -175,6 +188,20 @@ try {
     ...base, resourceType: 'video', idempotencyKey: 'compat-resumed-resource-0001',
   }, env);
   await finishZeroCostResourceOperationWithPool(poolA, resumed.operation.operationId, resumed.leaseToken, 'SUCCEEDED');
+
+  // Rolling 60-second rate limit is atomic across independent pools.
+  const rateNow = new Date(Date.now() + 120_000);
+  const rateEnv = { ...env, ZERO_RESOURCE_VIDEO_DAILY_LIMIT: '1000', ZERO_RESOURCE_VIDEO_PER_MINUTE_LIMIT: '2' };
+  const rateOne = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'video', idempotencyKey: 'rolling-rate-video-0001' }, rateEnv, rateNow);
+  const rateTwo = await reserveZeroCostResourceOperationWithPool(poolB, { ...base, resourceType: 'video', idempotencyKey: 'rolling-rate-video-0002' }, rateEnv, rateNow);
+  await assert.rejects(
+    () => reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'video', idempotencyKey: 'rolling-rate-video-0003' }, rateEnv, rateNow),
+    code('RATE_LIMITED'),
+  );
+  const rateRows = await poolA.query('SELECT COUNT(*)::int AS count FROM zero_cost_resource_rate_events WHERE operation_id = ANY($1::uuid[])', [[rateOne.operation.operationId, rateTwo.operation.operationId]]);
+  assert.equal(rateRows.rows[0].count, 2, 'only the two allowed requests are recorded in the rolling minute');
+  await finishZeroCostResourceOperationWithPool(poolA, rateOne.operation.operationId, rateOne.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolB, rateTwo.operation.operationId, rateTwo.leaseToken, 'SUCCEEDED');
 
   console.log('ZERO resource PostgreSQL 16.16 integration passed: exact PostgreSQL 16.16 version, PR #98/#100 shared budget/audit/lock/pause, cross-guard atomicity, resource quotas, idempotency, leases, UNKNOWN handling, cross-pool concurrency and rollback.');
 } finally {
