@@ -1,5 +1,18 @@
+import { reserveZeroCostProviderRequest } from './zeroCostGuard.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
+
+type CostGuardOverride = (modelId: string, action: string) => Promise<void>;
+
+async function authorizeCloudflareRequest(modelId: string, action: string, override?: CostGuardOverride): Promise<void> {
+  if (override) return override(modelId, action);
+  await reserveZeroCostProviderRequest({
+    provider: 'cloudflare-workers-ai',
+    modelId,
+    studio: action.split(':')[0] || 'ZERO CORE',
+    action,
+  });
+}
 
 export class CloudflareWorkersAiError extends Error {
   constructor(message: string, readonly status: number | null = null) {
@@ -18,6 +31,7 @@ export async function generateCloudflareText(params: {
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ text: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -31,6 +45,7 @@ export async function generateCloudflareText(params: {
   if (params.systemPrompt && params.systemPrompt.length > 8_000) {
     throw new CloudflareWorkersAiError('Systemanweisung überschreitet das sichere 8.000-Zeichen-Limit.');
   }
+  await authorizeCloudflareRequest(CLOUDFLARE_MODEL_ID, 'ZERO CORE:TEXT_GENERATION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
@@ -106,6 +121,7 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -117,6 +133,7 @@ export async function generateCloudflareImage(params: {
     throw new CloudflareWorkersAiError('Bild-Prompt muss zwischen 1 und 2.048 Zeichen lang sein.');
   }
   const steps = Math.min(Math.max(Math.floor(params.steps ?? 4), 1), 8);
+  await authorizeCloudflareRequest(CLOUDFLARE_IMAGE_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_GENERATION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
@@ -181,6 +198,7 @@ export async function transcribeCloudflareAudio(params: {
   language?: string;
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{
   text: string;
   vtt: string | null;
@@ -195,6 +213,7 @@ export async function transcribeCloudflareAudio(params: {
   if (!params.audioBase64 || params.audioBase64.length > 24_000_000) {
     throw new CloudflareWorkersAiError('Audiodaten fehlen oder überschreiten das sichere 18-MB-Eingabelimit.');
   }
+  await authorizeCloudflareRequest(CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'ZERO AUDIO STUDIO:TRANSCRIPTION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
@@ -276,6 +295,7 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ answer: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
