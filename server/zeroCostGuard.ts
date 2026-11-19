@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import { getPostgresPool } from './persistence.ts';
 
 export type ZeroCostProvider = 'cloudflare-workers-ai' | 'google-gemini-free';
+export const ZERO_COST_ADVISORY_LOCK: [number, number] = [1514480207, 71];
 
 const ALLOWED_CLOUDFLARE_MODELS = new Set([
   '@cf/zai-org/glm-4.7-flash',
@@ -22,6 +23,8 @@ export interface ZeroCostGuardEnvironment {
   ZERO_CLOUDFLARE_AI_ENABLED?: string;
   ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED?: string;
   ZERO_GEMINI_FREE_TIER_ONLY?: string;
+  ZERO_COST_RESOURCE_GUARD_ENABLED?: string;
+  ZERO_COST_RESOURCE_GUARD_FREE_ONLY_CONFIRMED?: string;
   DATABASE_URL?: string;
   NODE_ENV?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
@@ -138,7 +141,7 @@ export async function reserveZeroCostProviderRequestWithPool(
   let committed = false;
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(1514480207, 71)');
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
     await client.query(`
       CREATE TABLE IF NOT EXISTS zero_cost_daily_budget (
         scope TEXT PRIMARY KEY,
@@ -266,14 +269,17 @@ export async function getZeroCostGuardStatus(
   env: ZeroCostGuardEnvironment = process.env
 ): Promise<ZeroCostGuardStatus> {
   const today = utcDay();
-  let configured = false;
+  let costGuardConfigured = false;
   try {
     validateZeroCostGuardConfig(env);
-    configured = true;
+    costGuardConfigured = true;
   } catch {
-    // The dashboard must use the exact same validation as provider reservations.
-    configured = false;
+    costGuardConfigured = false;
   }
+  // The effective provider gate also requires Phase 2.1's resource guard.
+  const resourceGuardConfigured = env.ZERO_COST_RESOURCE_GUARD_ENABLED === 'true' &&
+    env.ZERO_COST_RESOURCE_GUARD_FREE_ONLY_CONFIRMED === 'true';
+  const configured = costGuardConfigured && resourceGuardConfigured;
   const client = await pool.connect();
   try {
     await client.query(`
@@ -307,7 +313,7 @@ export async function getZeroCostGuardStatus(
     const row = budget.rows[0];
     const currentDay = row?.day_utc === today;
     const requestsUsed = currentDay ? Number(row?.requests_used ?? 0) : 0;
-    const configuredLimit = configured ? Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) : 0;
+    const configuredLimit = costGuardConfigured ? Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) : 0;
     const dailyLimit = configuredLimit > 0 && currentDay && row
       ? Math.min(configuredLimit, Number(row.daily_limit))
       : configuredLimit;
@@ -359,7 +365,7 @@ export async function setZeroCostGuardPaused(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(1514480207, 71)');
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
     await client.query(`
       CREATE TABLE IF NOT EXISTS zero_cost_daily_budget (
         scope TEXT PRIMARY KEY,
