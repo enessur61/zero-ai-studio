@@ -18,6 +18,7 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
+import { reserveZeroCostProviderRequestWithPool } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -79,6 +80,43 @@ try {
     loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
   );
   assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
+
+  // The shared ZERO cost ledger is atomic across independent pools and survives
+  // a fresh pool (process-restart simulation). No provider or network is called.
+  const costGuardEnv = {
+    DATABASE_URL: connectionString,
+    NODE_ENV: 'test',
+    ZERO_COST_GUARD_ENABLED: 'true',
+    ZERO_COST_GUARD_FREE_ONLY_CONFIRMED: 'true',
+    ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '5',
+    ZERO_CLOUDFLARE_AI_ENABLED: 'true',
+    ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+  };
+  const costRequest = {
+    provider: 'cloudflare-workers-ai' as const,
+    modelId: '@cf/zai-org/glm-4.7-flash',
+    studio: 'ZERO CORE',
+    action: 'POSTGRES_CONCURRENCY_TEST',
+  };
+  const costReservations = await Promise.all(Array.from({ length: 10 }, (_, index) =>
+    reserveZeroCostProviderRequestWithPool(index % 2 ? poolA : poolB, costRequest, costGuardEnv)
+      .then(() => true)
+      .catch((error: unknown) => {
+        assert.match(error instanceof Error ? error.message : String(error), /Tagesbudget ausgeschöpft/);
+        return false;
+      })
+  ));
+  assert.equal(costReservations.filter(Boolean).length, 5, 'global budget must admit exactly five concurrent reservations across pools');
+  const restartPool = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
+  try {
+    await assert.rejects(
+      () => reserveZeroCostProviderRequestWithPool(restartPool, costRequest, costGuardEnv),
+      /Tagesbudget ausgeschöpft/,
+      'a new pool must observe the persisted exhausted budget after a process restart'
+    );
+  } finally {
+    await restartPool.end();
+  }
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
