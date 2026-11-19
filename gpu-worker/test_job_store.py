@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, create_job_if_absent, has_persistent_mount, require_persistent_storage
 
 
 class PersistentJobStoreTests(unittest.TestCase):
@@ -109,6 +109,29 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             )
             self.assertIn('"completed": "succeeded"', result.stdout)
             self.assertIn('"interrupted": "failed"', result.stdout)
+
+    def test_idempotent_job_creation_never_overwrites_or_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            jobs = {}
+            lock = __import__("threading").Lock()
+            first = {
+                "id": "6e9fdb6a-15e6-42ec-93d1-84e9a4308a5d",
+                "status": "queued",
+                "prompt": "first prompt",
+            }
+            with lock:
+                created_job, created = create_job_if_absent(jobs, store, first)
+            self.assertTrue(created)
+            self.assertEqual(created_job["prompt"], "first prompt")
+
+            with lock:
+                duplicate_job, duplicate_created = create_job_if_absent(
+                    jobs, store, {**first, "prompt": "different retry prompt"}
+                )
+            self.assertFalse(duplicate_created)
+            self.assertEqual(duplicate_job["prompt"], "first prompt")
+            self.assertEqual(PersistentJobStore(directory).load_all()[first["id"]]["prompt"], "first prompt")
 
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

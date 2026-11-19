@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.github
+.env
+# Runtime secret files must never enter the Docker build context.
+production.env
+.env.workers
+/searxng/searxng.env
+.env.*
+!.env.example
+data
+exports
+zero-studio-db.json
+*.zip
+*.log
+coverage

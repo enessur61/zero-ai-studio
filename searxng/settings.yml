@@ -11,6 +11,7 @@ search:
     - json
 
 server:
+  # Overridden by the independent SEARXNG_SECRET in searxng/searxng.env.
   secret_key: "REPLACE_WITH_SEARXNG_SECRET"
   limiter: false
   image_proxy: false

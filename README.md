@@ -70,7 +70,7 @@ CLOUDFLARE_API_TOKEN="DEIN_WORKERS_AI_API_TOKEN"
 Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pro Tag für Workers AI bereit. Das Kontingent wird von allen verwendeten Workers-AI-Modellen gemeinsam genutzt und providerseitig begrenzt. Bei 429/ausgeschöpftem Kontingent stoppt ZERO; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX und Whisper müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
 
 ### Voraussetzungen
-- **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
+- **Node.js 22 LTS** (`.nvmrc` und `package.json` begrenzen die unterstützte Major-Version)
 - **npm**
 - Optional: eigener **Google Gemini API Key** im Free Tier für zusätzliche Gemini-basierte Funktionen
 
@@ -154,7 +154,8 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 
 | Methode | Endpunkt | Funktion |
 | --- | --- | --- |
-| `GET` | `/api/health` | Minimaler öffentlicher Health-Check (keine privaten Projekt-/Kontodaten) |
+| `GET` | `/api/live` | Prozess-Liveness ohne Datenbankzugriff; für Reverse Proxy/Orchestrator |
+| `GET` | `/api/health` | Öffentliche Readiness-Prüfung inkl. PostgreSQL- und Schema-Initialisierung |
 | `GET` | `/api/system/audit` | Ist-Zustand, 12-Phasen-Plan, Budget-Guard, Backups |
 | `POST` | `/api/system/backup` | Erstellt manuelles Datenbank-Backup in `data/backups/` |
 | `POST` | `/api/system/restore` | Stellt gespeichertes JSON-Backup wieder her |
@@ -225,3 +226,10 @@ Für lokale Entwicklung (`NODE_ENV` nicht `production`) bleibt die Anmeldung dea
 
 
 `npm start` erzwingt `NODE_ENV=production` und damit den Login-Schutz. Für die tägliche Nutzung muss der Hoster `GEMINI_API_KEY`, `ZERO_GEMINI_FREE_TIER_ONLY`, `ZERO_ADMIN_PASSWORD` und `ZERO_SESSION_SECRET` bereitstellen. Für lokale Entwicklung ausschließlich `npm run dev` verwenden; dieser Befehl startet den ausdrücklich als Development markierten Server.
+
+
+## ARM64 self-hosted production
+
+The root `Dockerfile` builds the Node.js 22 application for the target architecture. The Piper worker uses ONNX Runtime CPU execution and stores its downloaded voice under `/var/lib/zero-piper`; keep the Compose volume mounted. Wan remains a separate NVIDIA/CUDA-only worker and is not supported on Oracle Ampere A1.
+
+For HTTPS, see [deploy/README.md](deploy/README.md) and [deploy/Caddyfile](deploy/Caddyfile). Use `/api/live` for process liveness and `/api/health` for PostgreSQL/schema readiness. Never expose Node, Piper, SearXNG or PostgreSQL ports directly to the public internet.

@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, create_job_if_absent, has_persistent_mount, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
@@ -45,6 +45,7 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    job_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
 def require_auth(authorization: str | None) -> None:
@@ -146,11 +147,19 @@ def create_job(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
-    job_id = str(uuid.uuid4())
+    try:
+        job_id = str(uuid.UUID(request.job_id)) if request.job_id else str(uuid.uuid4())
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid job_id")
     now = datetime.now(timezone.utc).isoformat()
     with _jobs_lock:
-        # Keep only a small in-memory history; do not let an unauthenticated
-        # caller or long-running host grow the job registry without bound.
+        # The central ZERO reservation ID is also the worker job ID. Repeated
+        # submissions with the same idempotency key return the original job
+        # and never enqueue a second GPU generation.
+        existing = _jobs.get(job_id)
+        if existing is not None:
+            return dict(existing)
+        # Keep only a small in-memory history; do not let the registry grow without bound.
         if len(_jobs) >= 50:
             for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
                 old_id = str(old["id"])
@@ -160,14 +169,15 @@ def create_job(
                     old_file.unlink(missing_ok=True)
             if len(_jobs) >= 50:
                 raise HTTPException(status_code=429, detail="Worker job queue is full")
-        _jobs[job_id] = {
+        job, created = create_job_if_absent(_jobs, _JOB_STORE, {
             "id": job_id,
             "status": "queued",
             "created_at": now,
             "duration_sec": 5,
             "engine": "Wan 2.1",
-        }
-        _JOB_STORE.save(dict(_jobs[job_id]))
+        })
+        if not created:
+            return job
     background_tasks.add_task(
         asyncio.to_thread,
         run_generation,
