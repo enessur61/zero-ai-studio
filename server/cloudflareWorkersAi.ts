@@ -311,6 +311,7 @@ export async function analyzeCloudflareImage(params: {
     throw new CloudflareWorkersAiError('Die Bildanalysefrage muss zwischen 1 und 2.000 Zeichen lang sein.');
   }
 
+  await authorizeCloudflareRequest(CLOUDFLARE_VISION_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_ANALYSIS', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
