@@ -134,6 +134,8 @@ try {
   const pausedStatus = await getZeroCostGuardStatus(poolB, costGuardEnv);
   assert.equal(pausedStatus.paused, true, 'manual pause must persist across independent pools');
   assert.equal(pausedStatus.providers.cloudflare, 'GESPERRT');
+  assert.equal(pausedStatus.recentEvents[0]?.action, 'MANUAL_PAUSE');
+  assert.equal(pausedStatus.recentEvents[0]?.decision, 'PAUSED');
   await assert.rejects(
     () => reserveZeroCostProviderRequestWithPool(poolB, costRequest, costGuardEnv),
     /manuell gesperrt/,
@@ -143,6 +145,11 @@ try {
   const resumedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
   assert.equal(resumedStatus.paused, false, 'manual resume must persist across fresh connections');
   assert.equal(resumedStatus.remainingRequests, 0, 'manual resume must not refill the exhausted daily budget');
+  assert.equal(resumedStatus.recentEvents[0]?.action, 'MANUAL_RESUME');
+  assert.equal(resumedStatus.recentEvents[0]?.decision, 'RESUMED');
+  await assert.rejects(() => setZeroCostGuardPaused(poolA, true, 0), /Ungültiges Tagesbudget/);
+  const afterInvalidPause = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(afterInvalidPause.paused, false, 'invalid budget configuration must not alter persisted pause state');
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
