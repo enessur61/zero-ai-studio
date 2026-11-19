@@ -1,4 +1,4 @@
-import { getZeroResourceRequestFingerprint, isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
@@ -40,7 +40,7 @@ function guardedCloudflareFetcher(
     };
     const operationResult = await withZeroCostResourceOperation(
       { ...operationInput, principal: requireZeroPrincipal(),
-        idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
+        idempotencyKey: createZeroIdempotencyKey() },
       () => fetcher(input, init),
       process.env,
       undefined,
