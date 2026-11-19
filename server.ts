@@ -2699,7 +2699,8 @@ app.post('/api/system/cost-guard/pause', asyncRoute(async (req, res) => {
   if (typeof req.body?.paused !== 'boolean') {
     return res.status(400).json({ error: 'paused muss true oder false sein.' });
   }
-  await setZeroCostGuardPaused(getPostgresPool(), req.body.paused);
+  const configuredLimit = Number(process.env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT);
+  await setZeroCostGuardPaused(getPostgresPool(), req.body.paused, Number.isSafeInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : 1);
   const status = await getZeroCostGuardStatus(getPostgresPool());
   res.json({ ok: true, ...status, persistenceAvailable: true });
 }));
