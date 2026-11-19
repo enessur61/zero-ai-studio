@@ -12,7 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
-import { ZERO_ADMIN_PRINCIPAL, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
+import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
@@ -229,15 +229,7 @@ app.use('/api', (req, res, next) => {
 app.use(express.json({ limit: '26mb' }));
 
 // Every project-id route is ownership-checked before its handler runs.
-app.use('/api/projects/:id', asyncRoute(async (req, res, next) => {
-  const principal = getZeroPrincipal(res.locals);
-  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  const db = await loadDb();
-  const project = resolveOwnedProject(db.projects, principal, req.params.id);
-  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
-  res.locals.zeroProjectId = project.id;
-  next();
-}));
+app.use('/api/projects/:id', createProjectOwnershipMiddleware(async () => (await loadDb()).projects));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =

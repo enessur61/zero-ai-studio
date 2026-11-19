@@ -1,3 +1,6 @@
+import type { RequestHandler } from 'express';
+import { asyncRoute } from './asyncRoute.ts';
+
 export const ZERO_ADMIN_PRINCIPAL_ID = 'admin:primary' as const;
 
 export type ZeroPrincipal = {
@@ -47,4 +50,18 @@ export function migrateProjectOwnership<T extends ProjectIdentityShape>(projects
     }
   }
   return changed;
+}
+
+/** Express middleware that enforces project ownership using the authenticated server principal. */
+export function createProjectOwnershipMiddleware(
+  loadProjects: () => Promise<readonly ProjectIdentityShape[]>,
+): RequestHandler {
+  return asyncRoute(async (req, res, next) => {
+    const principal = getZeroPrincipal(res.locals);
+    if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    const project = resolveOwnedProject(await loadProjects(), principal, req.params.id);
+    if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+    res.locals.zeroProjectId = project.id;
+    next();
+  });
 }
