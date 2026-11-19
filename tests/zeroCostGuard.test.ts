@@ -33,6 +33,10 @@ assert.throws(
   (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'INVALID_BUDGET',
 );
 assert.throws(
+  () => assertZeroCostProviderAllowed({ ...request, modelId: '@cf/vendor/paid-model' }, base),
+  (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'MODEL_NOT_ALLOWLISTED',
+);
+assert.throws(
   () => assertZeroCostProviderAllowed(request, { ...base, ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'false' }),
   (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'PROVIDER_DISABLED',
 );
