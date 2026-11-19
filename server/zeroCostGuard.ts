@@ -275,7 +275,10 @@ export async function getZeroCostGuardStatus(
     const row = budget.rows[0];
     const currentDay = row?.day_utc === today;
     const requestsUsed = currentDay ? Number(row?.requests_used ?? 0) : 0;
-    const dailyLimit = configured ? Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) : 0;
+    const configuredLimit = configured ? Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) : 0;
+    const dailyLimit = configuredLimit > 0 && currentDay && row
+      ? Math.min(configuredLimit, Number(row.daily_limit))
+      : configuredLimit;
     const events = await client.query<{
       created_at: Date; provider: string; model_id: string; studio: string; action: string;
       decision: string; reason: string; requests_used: number | null; daily_limit: number | null;
@@ -314,7 +317,8 @@ export async function getZeroCostGuardStatus(
 
 export async function setZeroCostGuardPaused(
   pool: Pool,
-  paused: boolean
+  paused: boolean,
+  configuredDailyLimit: number
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -332,9 +336,16 @@ export async function setZeroCostGuardPaused(
     `);
     await client.query(`
       INSERT INTO zero_cost_daily_budget (scope, day_utc, requests_used, daily_limit, locked)
-      VALUES ('global', $1::date, 0, 1, $2)
-      ON CONFLICT (scope) DO UPDATE SET locked = EXCLUDED.locked, updated_at = NOW()
-    `, [utcDay(), paused]);
+      VALUES ('global', $1::date, 0, $2, $3)
+      ON CONFLICT (scope) DO UPDATE SET
+        locked = EXCLUDED.locked,
+        daily_limit = CASE
+          WHEN zero_cost_daily_budget.day_utc = EXCLUDED.day_utc
+            THEN LEAST(zero_cost_daily_budget.daily_limit, EXCLUDED.daily_limit)
+          ELSE EXCLUDED.daily_limit
+        END,
+        updated_at = NOW()
+    `, [utcDay(), Math.max(1, Math.min(100_000, Math.floor(configuredDailyLimit) || 1)), paused]);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
