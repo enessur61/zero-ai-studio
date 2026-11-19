@@ -32,6 +32,10 @@ export interface ZeroResourceEnvironment {
   ZERO_RESOURCE_IMAGE_DAILY_LIMIT?: string;
   ZERO_RESOURCE_AUDIO_DAILY_LIMIT?: string;
   ZERO_RESOURCE_VIDEO_DAILY_LIMIT?: string;
+  ZERO_RESOURCE_TEXT_PRINCIPAL_DAILY_LIMIT?: string;
+  ZERO_RESOURCE_IMAGE_PRINCIPAL_DAILY_LIMIT?: string;
+  ZERO_RESOURCE_AUDIO_PRINCIPAL_DAILY_LIMIT?: string;
+  ZERO_RESOURCE_VIDEO_PRINCIPAL_DAILY_LIMIT?: string;
   ZERO_RESOURCE_TEXT_CONCURRENCY?: string;
   ZERO_RESOURCE_IMAGE_CONCURRENCY?: string;
   ZERO_RESOURCE_AUDIO_CONCURRENCY?: string;
@@ -94,6 +98,58 @@ const UNKNOWN_LEASE_TTL_SECONDS = 24 * 60 * 60;
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
+/** JSON-safe canonical serialization: object keys are sorted recursively and array order is preserved. */
+function canonicalJson(value: unknown, seen = new Set<object>()): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new ZeroResourceGuardError('Payload enthält eine ungültige Zahl.', 'INVALID_PAYLOAD');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) throw new ZeroResourceGuardError('Payload enthält eine zyklische Referenz.', 'INVALID_PAYLOAD');
+    seen.add(value);
+    const result = '[' + value.map((item) => canonicalJson(item, seen)).join(',') + ']';
+    seen.delete(value);
+    return result;
+  }
+  if (typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    const prototype = Object.getPrototypeOf(object);
+    if (prototype !== Object.prototype && prototype !== null) throw new ZeroResourceGuardError('Payload muss aus JSON-kompatiblen Objekten bestehen.', 'INVALID_PAYLOAD');
+    if (seen.has(object)) throw new ZeroResourceGuardError('Payload enthält eine zyklische Referenz.', 'INVALID_PAYLOAD');
+    seen.add(object);
+    const entries = Object.keys(object).sort().map((key) => {
+      const item = object[key];
+      if (item === undefined || typeof item === 'function' || typeof item === 'symbol' || typeof item === 'bigint') {
+        throw new ZeroResourceGuardError('Payload enthält einen nicht JSON-kompatiblen Wert.', 'INVALID_PAYLOAD');
+      }
+      return JSON.stringify(key) + ':' + canonicalJson(item, seen);
+    });
+    seen.delete(object);
+    return '{' + entries.join(',') + '}';
+  }
+  throw new ZeroResourceGuardError('Payload ist nicht JSON-kompatibel.', 'INVALID_PAYLOAD');
+}
+
+export function getZeroResourceRequestFingerprint(input: Pick<ZeroResourceOperationInput,
+  'provider' | 'modelId' | 'resourceType' | 'studio' | 'action' | 'payload' |
+  'units' | 'inputBytes' | 'inputChars' | 'durationSeconds'
+>): string {
+  return digest(canonicalJson({
+    provider: input.provider,
+    modelId: input.modelId,
+    resourceType: input.resourceType,
+    studio: input.studio,
+    action: input.action,
+    payload: input.payload ?? null,
+    units: input.units ?? 1,
+    inputBytes: input.inputBytes ?? null,
+    inputChars: input.inputChars ?? null,
+    durationSeconds: input.durationSeconds ?? null,
+  }));
+}
+
 function utcDay(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
@@ -111,6 +167,7 @@ export function getZeroResourceLimits(env: ZeroResourceEnvironment = process.env
   for (const type of RESOURCE_TYPES) {
     const key = type.toUpperCase();
     result[type].dailyUnits = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_DAILY_LIMIT`], result[type].dailyUnits, 1, MAX_DAILY, `${key}_DAILY_LIMIT`);
+    result[type].principalDailyUnits = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_PRINCIPAL_DAILY_LIMIT`], result[type].dailyUnits, 1, result[type].dailyUnits, `${key}_PRINCIPAL_DAILY_LIMIT`);
     result[type].concurrency = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_CONCURRENCY`], result[type].concurrency, 1, MAX_CONCURRENCY, `${key}_CONCURRENCY`);
     result[type].perMinute = parseBounded((env as Record<string, string | undefined>)[`ZERO_RESOURCE_${key}_PER_MINUTE_LIMIT`], result[type].perMinute, 1, 1_000, `${key}_PER_MINUTE_LIMIT`);
   }
@@ -123,6 +180,12 @@ export function validateZeroResourceOperation(input: ZeroResourceOperationInput,
   }
   if (!RESOURCE_TYPES.has(input.resourceType)) {
     throw new ZeroResourceGuardError('Ungültiger ZERO-Ressourcentyp.', 'INVALID_METADATA');
+  }
+  if (typeof input.principal !== 'string' || !input.principal.trim() || input.principal.trim().length > 256) {
+    throw new ZeroResourceGuardError('Serverseitiger ZERO-Principal fehlt oder ist ungültig.', 'PRINCIPAL_REQUIRED');
+  }
+  if (typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 200) {
+    throw new ZeroResourceGuardError('Ein stabiler Idempotenzschlüssel mit 8 bis 200 Zeichen ist erforderlich.', 'INVALID_IDEMPOTENCY_KEY');
   }
   try {
     // The cost guard owns the single canonical provider allowlist and free-tier gates.
@@ -147,9 +210,6 @@ export function validateZeroResourceOperation(input: ZeroResourceOperationInput,
   }
   if (input.durationSeconds !== undefined && (!Number.isFinite(input.durationSeconds) || input.durationSeconds < 0 || (configured.maxDurationSeconds > 0 && input.durationSeconds > configured.maxDurationSeconds))) {
     throw new ZeroResourceGuardError('Dauer überschreitet das serverseitige ZERO-Limit.', 'DURATION_TOO_LONG');
-  }
-  if (input.idempotencyKey !== undefined && (input.idempotencyKey.length < 8 || input.idempotencyKey.length > 200)) {
-    throw new ZeroResourceGuardError('Idempotenzschlüssel muss 8 bis 200 Zeichen lang sein.', 'INVALID_IDEMPOTENCY_KEY');
   }
   return limits;
 }
