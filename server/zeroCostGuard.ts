@@ -9,6 +9,7 @@ export interface ZeroCostGuardEnvironment {
   ZERO_COST_GUARD_DAILY_REQUEST_LIMIT?: string;
   ZERO_CLOUDFLARE_AI_ENABLED?: string;
   ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED?: string;
+  ZERO_GEMINI_FREE_TIER_ONLY?: string;
   DATABASE_URL?: string;
   NODE_ENV?: string;
 }
