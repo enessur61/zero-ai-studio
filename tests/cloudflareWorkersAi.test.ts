@@ -259,7 +259,7 @@ try {
         return new Response('{}', { status: 200 });
       },
     }),
-    /ZERO COST GUARD|Kostenfreigabe|gesperrt/i,
+    /ZERO COST GUARD|Kostenfreigabe|gesperrt|blockiert|PostgreSQL-Kostenkontrolle/i,
   );
   assert.equal(bypassFetchAttempts, 0, 'production callback injection must not bypass the central guard');
   process.env.NODE_ENV = 'test';
