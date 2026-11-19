@@ -1,3 +1,4 @@
+import type { Pool } from 'pg';
 import { getPostgresPool } from './persistence.ts';
 
 export type ZeroCostProvider = 'cloudflare-workers-ai' | 'google-gemini-free';
@@ -76,16 +77,15 @@ export function assertZeroCostProviderAllowed(
  * reservations across all ZERO instances and studios. No local production
  * fallback exists: missing DB/configuration and SQL errors fail closed.
  */
-export async function reserveZeroCostProviderRequest(
+export async function reserveZeroCostProviderRequestWithPool(
+  pool: Pool,
   reservation: ZeroCostReservation,
-  env: ZeroCostGuardEnvironment = process.env
+  env: ZeroCostGuardEnvironment
 ): Promise<ZeroCostReservationResult> {
   const dailyLimit = assertZeroCostProviderAllowed(reservation, env);
   if (!env.DATABASE_URL) {
     throw new ZeroCostGuardError('Persistente PostgreSQL-Kostenkontrolle nicht verfügbar. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   }
-
-  const pool = getPostgresPool();
   const client = await pool.connect();
   const dayUtc = utcDay();
   try {
@@ -173,4 +173,14 @@ export async function reserveZeroCostProviderRequest(
   } finally {
     client.release();
   }
+}
+
+export async function reserveZeroCostProviderRequest(
+  reservation: ZeroCostReservation,
+  env: ZeroCostGuardEnvironment = process.env
+): Promise<ZeroCostReservationResult> {
+  if (!env.DATABASE_URL) {
+    throw new ZeroCostGuardError('Persistente PostgreSQL-Kostenkontrolle nicht verfügbar. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
+  }
+  return reserveZeroCostProviderRequestWithPool(getPostgresPool(), reservation, env);
 }
