@@ -18,6 +18,7 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
+import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -79,6 +80,76 @@ try {
     loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
   );
   assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
+
+  // The shared ZERO cost ledger is atomic across independent pools and survives
+  // a fresh pool (process-restart simulation). No provider or network is called.
+  const costGuardEnv = {
+    DATABASE_URL: connectionString,
+    NODE_ENV: 'test',
+    ZERO_COST_GUARD_ENABLED: 'true',
+    ZERO_COST_GUARD_FREE_ONLY_CONFIRMED: 'true',
+    ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '5',
+    ZERO_CLOUDFLARE_AI_ENABLED: 'true',
+    ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+    ZERO_GEMINI_FREE_TIER_ONLY: 'true',
+  };
+  const costRequest = {
+    provider: 'cloudflare-workers-ai' as const,
+    modelId: '@cf/zai-org/glm-4.7-flash',
+    studio: 'ZERO CORE',
+    action: 'POSTGRES_CONCURRENCY_TEST',
+  };
+  const costReservations = await Promise.all(Array.from({ length: 10 }, (_, index) =>
+    reserveZeroCostProviderRequestWithPool(index % 2 ? poolA : poolB, index % 2 ? costRequest : {
+      provider: 'google-gemini-free' as const,
+      modelId: 'gemini-2.5-flash-lite',
+      studio: 'ZERO MEMORY',
+      action: 'POSTGRES_CONCURRENCY_TEST',
+    }, costGuardEnv)
+      .then(() => true)
+      .catch((error: unknown) => {
+        assert.match(error instanceof Error ? error.message : String(error), /Tagesbudget ausgeschöpft/);
+        return false;
+      })
+  ));
+  assert.equal(costReservations.filter(Boolean).length, 5, 'global budget must admit exactly five concurrent reservations across pools');
+  const restartPool = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
+  try {
+    await assert.rejects(
+      () => reserveZeroCostProviderRequestWithPool(restartPool, costRequest, costGuardEnv),
+      /Tagesbudget ausgeschöpft/,
+      'a new pool must observe the persisted exhausted budget after a process restart'
+    );
+  } finally {
+    await restartPool.end();
+  }
+
+  const exhaustedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
+  assert.equal(exhaustedStatus.requestsUsed, 5);
+  assert.equal(exhaustedStatus.remainingRequests, 0);
+  assert.equal(exhaustedStatus.providers.cloudflare, 'GESPERRT', 'exhausted budget must show Cloudflare blocked in dashboard');
+  assert.equal(exhaustedStatus.providers.gemini, 'GESPERRT', 'exhausted budget must show Gemini blocked in dashboard');
+  assert.equal(exhaustedStatus.recentEvents.length > 0, true);
+  await setZeroCostGuardPaused(poolA, true, 5);
+  const pausedStatus = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(pausedStatus.paused, true, 'manual pause must persist across independent pools');
+  assert.equal(pausedStatus.providers.cloudflare, 'GESPERRT');
+  assert.equal(pausedStatus.recentEvents[0]?.action, 'MANUAL_PAUSE');
+  assert.equal(pausedStatus.recentEvents[0]?.decision, 'PAUSED');
+  await assert.rejects(
+    () => reserveZeroCostProviderRequestWithPool(poolB, costRequest, costGuardEnv),
+    /manuell gesperrt/,
+    'manual pause must block reservations before provider execution'
+  );
+  await setZeroCostGuardPaused(poolB, false, 5);
+  const resumedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
+  assert.equal(resumedStatus.paused, false, 'manual resume must persist across fresh connections');
+  assert.equal(resumedStatus.remainingRequests, 0, 'manual resume must not refill the exhausted daily budget');
+  assert.equal(resumedStatus.recentEvents[0]?.action, 'MANUAL_RESUME');
+  assert.equal(resumedStatus.recentEvents[0]?.decision, 'RESUMED');
+  await assert.rejects(() => setZeroCostGuardPaused(poolA, true, 0), /Ungültiges Tagesbudget/);
+  const afterInvalidPause = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(afterInvalidPause.paused, false, 'invalid budget configuration must not alter persisted pause state');
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.

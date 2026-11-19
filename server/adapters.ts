@@ -13,6 +13,7 @@ import {
 } from './coremlAdapter.ts';
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
+import { reserveZeroCostProviderRequest } from './zeroCostGuard.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
@@ -273,6 +274,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -286,7 +288,7 @@ export async function runLiveModelTest(
                   : {}),
             },
           }),
-        1
+        0
       );
       const text = (res.text ?? '').trim();
       model.testPassed = text.length > 0;
@@ -301,6 +303,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -313,7 +316,7 @@ export async function runLiveModelTest(
               },
             },
           }),
-        1
+        0
       );
       const audioPart = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
       const audioB64 = audioPart?.inlineData?.data;
@@ -329,6 +332,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -341,7 +345,7 @@ export async function runLiveModelTest(
               ],
             },
           }),
-        1
+        0
       );
       const hasCandidate = Boolean(res.candidates?.[0]?.finishReason);
       model.testPassed = hasCandidate;
@@ -356,13 +360,14 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
             model: 'gemini-embedding-2',
             contents: ['ZERO AI STUDIO Test Embedding'],
           }),
-        1
+        0
       );
       const dims = res.embeddings?.[0]?.values?.length ?? 0;
       model.testPassed = dims > 0;
@@ -377,6 +382,12 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({
+        provider: 'google-gemini-free',
+        modelId: 'gemini-2.5-flash-lite',
+        studio: 'ZERO MODEL HUB',
+        action: 'MODEL_HEALTH_TEST_WEB_GROUNDING',
+      });
       const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>
@@ -387,7 +398,7 @@ export async function runLiveModelTest(
               tools: [{ googleSearch: {} }],
             },
           }),
-        1
+        0
       );
       const chunks = res.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
       model.testPassed = Boolean(res.text);
@@ -413,7 +424,7 @@ export async function runLiveModelTest(
           generateFreeOpenText({
             messages: [{ role: 'user', content: 'Antworte mit genau einem Wort: BEREIT' }],
           }),
-        1
+        0
       );
       model.testPassed = res.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';

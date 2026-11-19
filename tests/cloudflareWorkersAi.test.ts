@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+process.env.NODE_ENV = 'test';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
+const originalCostGuardEnabled = process.env.ZERO_COST_GUARD_ENABLED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -25,6 +27,7 @@ try {
     systemPrompt: 'Du bist ZERO.',
     maxTokens: 128,
     enableThinking: false,
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       requestUrl = String(input);
       requestInit = init;
@@ -53,6 +56,7 @@ try {
   const image = await generateCloudflareImage({
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       imageUrl = String(input);
       imageBody = String(init?.body);
@@ -76,6 +80,7 @@ try {
   const vision = await analyzeCloudflareImage({
     imageDataUrl: 'data:image/png;base64,AAAA',
     question: 'Was ist auf diesem Bild?',
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       visionUrl = String(input);
       visionBody = String(init?.body);
@@ -103,7 +108,8 @@ try {
     () => analyzeCloudflareImage({
       imageDataUrl: 'data:image/png;base64,AAAA',
       question: 'Test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         visionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'rate limit' }] }), { status: 429 });
       },
@@ -118,6 +124,7 @@ try {
     audioBase64: 'UklGRg==',
     language: 'de',
     task: 'transcribe',
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       transcriptionUrl = String(input);
       transcriptionBody = String(init?.body);
@@ -146,6 +153,7 @@ try {
   let transcriptionTransientAttempts = 0;
   const recoveredTranscription = await transcribeCloudflareAudio({
     audioBase64: 'UklGRg==',
+    costGuard: async () => undefined,
     fetchImpl: async () => {
       transcriptionTransientAttempts += 1;
       if (transcriptionTransientAttempts === 1) {
@@ -161,7 +169,8 @@ try {
   await assert.rejects(
     () => transcribeCloudflareAudio({
       audioBase64: 'UklGRg==',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         transcriptionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -173,6 +182,7 @@ try {
   let imageTransientAttempts = 0;
   const recoveredImage = await generateCloudflareImage({
     prompt: 'retry test',
+    costGuard: async () => undefined,
     fetchImpl: async () => {
       imageTransientAttempts += 1;
       if (imageTransientAttempts === 1) {
@@ -188,7 +198,8 @@ try {
   await assert.rejects(
     () => generateCloudflareImage({
       prompt: 'rate limit test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         imageRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -198,8 +209,10 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
+  let transientReservations = 0;
   const recovered = await generateCloudflareText({
     prompt: 'zweite Nachricht',
+    costGuard: async () => { transientReservations += 1; },
     fetchImpl: async () => {
       transientAttempts += 1;
       if (transientAttempts < 3) {
@@ -216,13 +229,15 @@ try {
     },
   });
   assert.equal(transientAttempts, 3);
+  assert.equal(transientReservations, 3, 'every HTTP retry must reserve a fresh ZERO budget slot');
   assert.equal(recovered.text, 'Wiederhergestellt');
 
   let rateLimitAttempts = 0;
   await assert.rejects(
     () => generateCloudflareText({
       prompt: 'test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         rateLimitAttempts += 1;
         return new Response(JSON.stringify({
           success: false,
@@ -233,6 +248,24 @@ try {
     /keinen kostenpflichtigen Fallback/,
   );
   assert.equal(rateLimitAttempts, 1, '429 rate limits must not be retried');
+  // A caller-supplied no-op callback must never bypass the production guard.
+  process.env.NODE_ENV = 'production';
+  process.env.ZERO_COST_GUARD_ENABLED = 'false';
+  let bypassFetchAttempts = 0;
+  await assert.rejects(
+    () => generateCloudflareText({
+      prompt: 'guard bypass regression',
+      costGuard: async () => undefined,
+      fetchImpl: async () => {
+        bypassFetchAttempts += 1;
+        return new Response('{}', { status: 200 });
+      },
+    }),
+    /ZERO COST GUARD|Kostenfreigabe|gesperrt|blockiert|PostgreSQL-Kostenkontrolle/i,
+  );
+  assert.equal(bypassFetchAttempts, 0, 'production callback injection must not bypass the central guard');
+  process.env.NODE_ENV = 'test';
+
 
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
@@ -240,4 +273,7 @@ try {
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
+  if (originalCostGuardEnabled === undefined) delete process.env.ZERO_COST_GUARD_ENABLED;
+  else process.env.ZERO_COST_GUARD_ENABLED = originalCostGuardEnabled;
+  process.env.NODE_ENV = 'test';
 }

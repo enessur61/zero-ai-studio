@@ -12,6 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
+import { getZeroCostGuardStatus, isSameOriginRequest, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -135,6 +136,12 @@ async function reserveZeroBudgetModelAllowed(
     else recordBudgetAudit(db, entry);
   });
   if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
+  await reserveZeroCostProviderRequest({
+    provider: 'google-gemini-free',
+    modelId: modelId === 'gemini-web-grounding' ? 'gemini-2.5-flash-lite' : modelId,
+    studio: 'ZERO CORE',
+    action,
+  });
 
   if (process.env.DATABASE_URL) {
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
@@ -1012,7 +1019,6 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
         await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
@@ -1300,7 +1306,6 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
       }
     }
 
-    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
@@ -2667,6 +2672,46 @@ app.post('/api/characters', asyncRoute(async (req, res) => {
   });
   await saveDb(db);
   res.json({ character: char });
+}));
+
+// === ZERO COST GUARD CONTROL (authenticated admin API) ===
+app.get('/api/system/cost-guard', asyncRoute(async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.json({
+      dayUtc: new Date().toISOString().slice(0, 10),
+      requestsUsed: 0,
+      dailyLimit: 0,
+      remainingRequests: 0,
+      paused: true,
+      configured: false,
+      providers: { cloudflare: 'GESPERRT', gemini: 'GESPERRT' },
+      recentEvents: [],
+      persistenceAvailable: false,
+    });
+  }
+  const status = await getZeroCostGuardStatus(getPostgresPool());
+  res.json({ ...status, persistenceAvailable: true });
+}));
+
+app.post('/api/system/cost-guard/pause', asyncRoute(async (req, res) => {
+  // The global production /api middleware authenticates the session first.
+  // Require an exact browser Origin match before any state-changing action.
+  if (!isSameOriginRequest(req.get('origin'), req.get('host'), req.protocol)) {
+    return res.status(403).json({ error: 'Ungültiger oder fehlender Origin-Header.' });
+  }
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'PostgreSQL nicht verfügbar. Kostenwächter bleibt fail-closed.' });
+  }
+  if (typeof req.body?.paused !== 'boolean') {
+    return res.status(400).json({ error: 'paused muss true oder false sein.' });
+  }
+  const configuredLimit = Number(process.env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT);
+  if (!Number.isSafeInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 100_000) {
+    return res.status(400).json({ error: 'ZERO_COST_GUARD_DAILY_REQUEST_LIMIT fehlt oder ist ungültig. Pause/Resume wurde nicht verändert.' });
+  }
+  await setZeroCostGuardPaused(getPostgresPool(), req.body.paused, configuredLimit);
+  const status = await getZeroCostGuardStatus(getPostgresPool());
+  res.json({ ok: true, ...status, persistenceAvailable: true });
 }));
 
 // === ZERO MEMORY ===

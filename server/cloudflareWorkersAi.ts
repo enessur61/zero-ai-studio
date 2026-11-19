@@ -1,5 +1,22 @@
+import { reserveZeroCostProviderRequest } from './zeroCostGuard.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
+
+type CostGuardOverride = (modelId: string, action: string) => Promise<void>;
+
+async function authorizeCloudflareRequest(modelId: string, action: string, override?: CostGuardOverride): Promise<void> {
+  if (override && process.env.NODE_ENV === 'test') return override(modelId, action);
+  try {
+    await reserveZeroCostProviderRequest({
+      provider: 'cloudflare-workers-ai',
+      modelId,
+      studio: action.split(':')[0] || 'ZERO CORE',
+      action,
+    });
+  } catch (error) {
+    throw new CloudflareWorkersAiError(error instanceof Error ? error.message : 'ZERO Kostenfreigabe verweigert.');
+  }
+}
 
 export class CloudflareWorkersAiError extends Error {
   constructor(message: string, readonly status: number | null = null) {
@@ -18,6 +35,7 @@ export async function generateCloudflareText(params: {
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ text: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -39,6 +57,7 @@ export async function generateCloudflareText(params: {
     // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
     // those server failures; never retry 401/403/429 or switch to a paid provider.
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_MODEL_ID, 'ZERO CORE:TEXT_GENERATION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -106,6 +125,7 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -123,6 +143,7 @@ export async function generateCloudflareImage(params: {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_IMAGE_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_GENERATION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -181,6 +202,7 @@ export async function transcribeCloudflareAudio(params: {
   language?: string;
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{
   text: string;
   vtt: string | null;
@@ -201,6 +223,7 @@ export async function transcribeCloudflareAudio(params: {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'ZERO AUDIO STUDIO:TRANSCRIPTION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -276,6 +299,7 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
+  costGuard?: CostGuardOverride;
 }): Promise<{ answer: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -297,6 +321,7 @@ export async function analyzeCloudflareImage(params: {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_VISION_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_ANALYSIS', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
