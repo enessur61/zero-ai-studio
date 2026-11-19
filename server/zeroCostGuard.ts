@@ -24,6 +24,9 @@ export interface ZeroCostGuardEnvironment {
   ZERO_GEMINI_FREE_TIER_ONLY?: string;
   DATABASE_URL?: string;
   NODE_ENV?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  GEMINI_API_KEY?: string;
 }
 
 export interface ZeroCostReservation {
@@ -125,7 +128,12 @@ export async function reserveZeroCostProviderRequestWithPool(
   if (!env.DATABASE_URL) {
     throw new ZeroCostGuardError('Persistente PostgreSQL-Kostenkontrolle nicht verfügbar. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   }
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch {
+    throw new ZeroCostGuardError('PostgreSQL-Verbindung fehlgeschlagen. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_ERROR');
+  }
   const dayUtc = utcDay();
   let committed = false;
   try {
@@ -320,8 +328,8 @@ export async function getZeroCostGuardStatus(
       configured,
       providers: {
         cloudflare: configured && remainingRequests > 0 && !row?.locked && env.ZERO_CLOUDFLARE_AI_ENABLED === 'true' &&
-          env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
-        gemini: configured && remainingRequests > 0 && !row?.locked && env.ZERO_GEMINI_FREE_TIER_ONLY === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
+          env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED === 'true' && Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim()) ? 'FREIGEGEBEN' : 'GESPERRT',
+        gemini: configured && remainingRequests > 0 && !row?.locked && env.ZERO_GEMINI_FREE_TIER_ONLY === 'true' && Boolean(env.GEMINI_API_KEY?.trim()) ? 'FREIGEGEBEN' : 'GESPERRT',
       },
       recentEvents: events.rows.map((event) => ({
         createdAt: new Date(event.created_at).toISOString(),
@@ -345,6 +353,9 @@ export async function setZeroCostGuardPaused(
   paused: boolean,
   configuredDailyLimit: number
 ): Promise<void> {
+  if (!Number.isSafeInteger(configuredDailyLimit) || configuredDailyLimit < 1 || configuredDailyLimit > 100_000) {
+    throw new ZeroCostGuardError('Ungültiges Tagesbudget. Pause/Resume wurde nicht gespeichert.', 'INVALID_BUDGET');
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -360,6 +371,21 @@ export async function setZeroCostGuardPaused(
       )
     `);
     await client.query(`
+      CREATE TABLE IF NOT EXISTS zero_cost_audit_events (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        day_utc DATE NOT NULL,
+        provider TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        studio TEXT NOT NULL,
+        action TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        requests_used INTEGER,
+        daily_limit INTEGER,
+        reason TEXT NOT NULL
+      )
+    `);
+    await client.query(`
       INSERT INTO zero_cost_daily_budget (scope, day_utc, requests_used, daily_limit, locked)
       VALUES ('global', $1::date, 0, $2, $3)
       ON CONFLICT (scope) DO UPDATE SET
@@ -370,10 +396,20 @@ export async function setZeroCostGuardPaused(
           ELSE EXCLUDED.daily_limit
         END,
         updated_at = NOW()
-    `, [utcDay(), Math.max(1, Math.min(100_000, Math.floor(configuredDailyLimit) || 1)), paused]);
+    `, [utcDay(), configuredDailyLimit, paused]);
+    await client.query(`
+      INSERT INTO zero_cost_audit_events
+        (day_utc, provider, model_id, studio, action, decision, requests_used, daily_limit, reason)
+      SELECT $1::date, 'zero-cost-guard', 'manual-control', 'ZERO ADMIN', $2, $3,
+        requests_used, daily_limit, $4
+      FROM zero_cost_daily_budget WHERE scope = 'global'
+    `, [utcDay(), paused ? 'MANUAL_PAUSE' : 'MANUAL_RESUME',
+      paused ? 'PAUSED' : 'RESUMED',
+      paused ? 'Manuelle Pause durch Administrator aktiviert.' : 'Manuelle Pause durch Administrator aufgehoben.']);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
+    if (error instanceof ZeroCostGuardError) throw error;
     throw new ZeroCostGuardError('Manuelle Kostenwächter-Sperre konnte nicht dauerhaft gespeichert werden.', 'PERSISTENCE_ERROR');
   } finally {
     client.release();
