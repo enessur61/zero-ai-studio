@@ -136,9 +136,12 @@ async function reserveZeroBudgetModelAllowed(
     else recordBudgetAudit(db, entry);
   });
   if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
-  if (modelId !== 'gemini-web-grounding') {
-    await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId, studio: 'ZERO CORE', action });
-  }
+  await reserveZeroCostProviderRequest({
+    provider: 'google-gemini-free',
+    modelId: modelId === 'gemini-web-grounding' ? 'gemini-2.5-flash-lite' : modelId,
+    studio: 'ZERO CORE',
+    action,
+  });
 
   if (process.env.DATABASE_URL) {
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
