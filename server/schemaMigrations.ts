@@ -163,6 +163,18 @@ export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS zero_cost_principal_resource_usage_lookup_idx
         ON zero_cost_principal_resource_usage (principal_hash, day_utc, resource_type);
+
+      INSERT INTO zero_cost_principal_resource_usage
+        (day_utc, principal_hash, resource_type, reserved_units, consumed_units)
+      SELECT
+        day_utc,
+        principal_hash,
+        resource_type,
+        SUM(CASE WHEN status IN ('RESERVED', 'UNKNOWN') THEN reserved_units ELSE 0 END)::integer,
+        SUM(CASE WHEN status = 'SUCCEEDED' THEN reserved_units ELSE 0 END)::integer
+      FROM zero_cost_operations
+      GROUP BY day_utc, principal_hash, resource_type
+      ON CONFLICT (day_utc, principal_hash, resource_type) DO NOTHING;
     `,
   },
 ];
