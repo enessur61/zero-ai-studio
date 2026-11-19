@@ -1,4 +1,4 @@
-import { getZeroResourceRequestFingerprint, withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { getZeroResourceRequestFingerprint, isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
@@ -80,11 +80,13 @@ export function getGeminiClient(): GoogleGenAI {
         payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
         inputChars: resourceType === 'text' ? payload.length : undefined,
       };
-      return withZeroCostResourceOperation(
+      const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
           idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
         () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
+      if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
+      return operationResult;
     }) as typeof models.generateContent;
     models.embedContent = (async (request: Parameters<typeof models.embedContent>[0]) => {
       const modelId = String(request.model ?? '');
@@ -96,11 +98,13 @@ export function getGeminiClient(): GoogleGenAI {
         provider: 'google-gemini-free' as const, modelId, resourceType: 'text' as const, studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
         payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
       };
-      return withZeroCostResourceOperation(
+      const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
           idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
         () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
+      if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
+      return operationResult;
     }) as typeof models.embedContent;
   }
   return sharedClient;
