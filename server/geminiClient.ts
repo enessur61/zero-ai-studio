@@ -1,3 +1,4 @@
+import { withZeroCostResourceOperation } from './zeroCostResourceGuard.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
@@ -47,6 +48,35 @@ export function getGeminiClient(): GoogleGenAI {
         },
       },
     });
+    const models = sharedClient.models;
+    const originalGenerateContent = models.generateContent.bind(models);
+    const originalEmbedContent = models.embedContent.bind(models);
+    models.generateContent = (async (request: Parameters<typeof models.generateContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      const resourceType = /tts|transcrib/i.test(modelId) || payload.includes('audio/') ? 'audio' : payload.includes('image/') ? 'image' : 'text';
+      return withZeroCostResourceOperation(
+        { provider: 'google-gemini-free', modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
+          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
+          inputChars: resourceType === 'text' ? payload.length : undefined },
+        () => originalGenerateContent(request),
+      );
+    }) as typeof models.generateContent;
+    models.embedContent = (async (request: Parameters<typeof models.embedContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Embedding-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      return withZeroCostResourceOperation(
+        { provider: 'google-gemini-free', modelId, resourceType: 'text', studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
+          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length },
+        () => originalEmbedContent(request),
+      );
+    }) as typeof models.embedContent;
   }
   return sharedClient;
 }
