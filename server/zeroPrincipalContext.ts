@@ -30,12 +30,9 @@ export function requireZeroPrincipal(): string {
   return context.principal;
 }
 
-/** Derive one stable provider-operation key from the request key and full request fingerprint. */
-export function createZeroIdempotencyKey(requestFingerprint: string): string {
+/** Hash the request-scoped idempotency key; request fingerprints are compared separately. */
+export function createZeroIdempotencyKey(): string {
   const context = zeroPrincipalStorage.getStore();
   if (!context?.requestIdempotencyKey) throw new Error('ZERO Idempotency-Key context is required.');
-  if (!/^[a-f0-9]{64}$/.test(requestFingerprint)) throw new Error('ZERO request fingerprint is invalid.');
-  return createHash('sha256')
-    .update(context.requestIdempotencyKey + ':' + requestFingerprint)
-    .digest('hex');
+  return createHash('sha256').update(context.requestIdempotencyKey).digest('hex');
 }
