@@ -106,6 +106,16 @@ try {
   const row = await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [first.operation.operationId]);
   assert.equal(row.rows[0].status, 'RESERVED');
 
+  let replayProviderCalled = false;
+  const wrappedReplay = await withZeroCostResourceOperation(
+    { ...base, idempotencyKey: 'idem-key-0001' },
+    async () => { replayProviderCalled = true; return 'must-not-run'; },
+    env, poolB,
+  );
+  assert.equal(replayProviderCalled, false, 'wrapper must not dispatch a provider on replay');
+  assert.equal(typeof wrappedReplay, 'object', 'wrapper returns the existing operation on replay');
+  assert.equal((wrappedReplay as { operation?: { operationId?: string } }).operation?.operationId, first.operation.operationId);
+
   // 9–12: successful, failed and unknown transitions have conservative accounting.
   await finishZeroCostResourceOperationWithPool(poolA, first.operation.operationId, first.leaseToken!, first.operation.leaseGeneration!, 'SUCCEEDED');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [first.operation.operationId])).rows[0].status, 'SUCCEEDED');
