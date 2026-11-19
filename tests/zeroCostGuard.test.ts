@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   assertZeroCostProviderAllowed,
+  getZeroCostGuardStatus,
+  isSameOriginRequest,
   reserveZeroCostProviderRequest,
   ZeroCostGuardError,
 } from '../server/zeroCostGuard.ts';
@@ -24,6 +26,37 @@ const request = {
 };
 
 assert.equal(assertZeroCostProviderAllowed(request, base), 250);
+assert.throws(
+  () => assertZeroCostProviderAllowed(request, { ...base, ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '100001' }),
+  (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'INVALID_BUDGET',
+);
+
+// The dashboard must apply the exact same 1..100000 configuration bounds.
+const fakeStatusPool = {
+  connect: async () => ({
+    query: async (sql: string) => {
+      if (sql.includes("SELECT day_utc::text")) return { rows: [] };
+      if (sql.includes('SELECT created_at')) return { rows: [] };
+      return { rows: [] };
+    },
+    release: () => undefined,
+  }),
+} as never;
+const invalidDashboardStatus = await getZeroCostGuardStatus(fakeStatusPool, {
+  ...base,
+  ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '100001',
+});
+assert.equal(invalidDashboardStatus.configured, false);
+assert.equal(invalidDashboardStatus.providers.cloudflare, 'GESPERRT');
+assert.equal(invalidDashboardStatus.providers.gemini, 'GESPERRT');
+
+// State-changing browser requests require a literal, exact same-origin Origin.
+assert.equal(isSameOriginRequest('https://zero.example', 'zero.example', 'https'), true);
+assert.equal(isSameOriginRequest(undefined, 'zero.example', 'https'), false);
+assert.equal(isSameOriginRequest('https://attacker.example', 'zero.example', 'https'), false);
+assert.equal(isSameOriginRequest('null', 'zero.example', 'https'), false);
+assert.equal(isSameOriginRequest('https://zero.example/path', 'zero.example', 'https'), false);
+assert.equal(isSameOriginRequest('http://zero.example', 'zero.example', 'https'), false);
 assert.throws(
   () => assertZeroCostProviderAllowed(request, { ...base, ZERO_COST_GUARD_ENABLED: 'false' }),
   (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'GUARD_DISABLED',
