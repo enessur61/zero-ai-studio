@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-process.env.NODE_ENV = 'test';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
+
+const originalNodeEnv = process.env.NODE_ENV;
+process.env.NODE_ENV = 'test';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 const originalToken = process.env.CLOUDFLARE_API_TOKEN;
-const originalCostGuardEnabled = process.env.ZERO_COST_GUARD_ENABLED;
 
 try {
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -27,7 +28,6 @@ try {
     systemPrompt: 'Du bist ZERO.',
     maxTokens: 128,
     enableThinking: false,
-    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       requestUrl = String(input);
       requestInit = init;
@@ -56,7 +56,6 @@ try {
   const image = await generateCloudflareImage({
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
-    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       imageUrl = String(input);
       imageBody = String(init?.body);
@@ -80,7 +79,6 @@ try {
   const vision = await analyzeCloudflareImage({
     imageDataUrl: 'data:image/png;base64,AAAA',
     question: 'Was ist auf diesem Bild?',
-    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       visionUrl = String(input);
       visionBody = String(init?.body);
@@ -108,8 +106,7 @@ try {
     () => analyzeCloudflareImage({
       imageDataUrl: 'data:image/png;base64,AAAA',
       question: 'Test',
-      costGuard: async () => undefined,
-    fetchImpl: async () => {
+      fetchImpl: async () => {
         visionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'rate limit' }] }), { status: 429 });
       },
@@ -124,7 +121,6 @@ try {
     audioBase64: 'UklGRg==',
     language: 'de',
     task: 'transcribe',
-    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       transcriptionUrl = String(input);
       transcriptionBody = String(init?.body);
@@ -151,26 +147,23 @@ try {
   assert.equal(transcription.segments[0]?.end, 1.25);
 
   let transcriptionTransientAttempts = 0;
-  const recoveredTranscription = await transcribeCloudflareAudio({
-    audioBase64: 'UklGRg==',
-    costGuard: async () => undefined,
-    fetchImpl: async () => {
-      transcriptionTransientAttempts += 1;
-      if (transcriptionTransientAttempts === 1) {
+  await assert.rejects(
+    () => transcribeCloudflareAudio({
+      audioBase64: 'UklGRg==',
+      fetchImpl: async () => {
+        transcriptionTransientAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { text: 'Erholt', segments: [] }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(transcriptionTransientAttempts, 2);
-  assert.equal(recoveredTranscription.text, 'Erholt');
+      },
+    }),
+    /Cloudflare Whisper Fehler \(500\)/,
+  );
+  assert.equal(transcriptionTransientAttempts, 1, 'ambiguous provider responses must not be retried automatically');
 
   let transcriptionRateLimitAttempts = 0;
   await assert.rejects(
     () => transcribeCloudflareAudio({
       audioBase64: 'UklGRg==',
-      costGuard: async () => undefined,
-    fetchImpl: async () => {
+      fetchImpl: async () => {
         transcriptionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -180,26 +173,23 @@ try {
   assert.equal(transcriptionRateLimitAttempts, 1);
 
   let imageTransientAttempts = 0;
-  const recoveredImage = await generateCloudflareImage({
-    prompt: 'retry test',
-    costGuard: async () => undefined,
-    fetchImpl: async () => {
-      imageTransientAttempts += 1;
-      if (imageTransientAttempts === 1) {
+  await assert.rejects(
+    () => generateCloudflareImage({
+      prompt: 'retry test',
+      fetchImpl: async () => {
+        imageTransientAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error' }] }), { status: 500 });
-      }
-      return new Response(JSON.stringify({ success: true, result: { image: 'B'.repeat(256) }, errors: [] }), { status: 200 });
-    },
-  });
-  assert.equal(imageTransientAttempts, 2);
-  assert.ok(recoveredImage.imageDataUrl.startsWith('data:image/jpeg;base64,'));
+      },
+    }),
+    /Cloudflare FLUX Fehler \(500\)/,
+  );
+  assert.equal(imageTransientAttempts, 1, 'ambiguous image operations must not be retried automatically');
 
   let imageRateLimitAttempts = 0;
   await assert.rejects(
     () => generateCloudflareImage({
       prompt: 'rate limit test',
-      costGuard: async () => undefined,
-    fetchImpl: async () => {
+      fetchImpl: async () => {
         imageRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -209,35 +199,23 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
-  let transientReservations = 0;
-  const recovered = await generateCloudflareText({
-    prompt: 'zweite Nachricht',
-    costGuard: async () => { transientReservations += 1; },
-    fetchImpl: async () => {
-      transientAttempts += 1;
-      if (transientAttempts < 3) {
-        return new Response(JSON.stringify({
-          success: false,
-          errors: [{ message: 'Internal server error (test-request-id)' }],
-        }), { status: 500 });
-      }
-      return new Response(JSON.stringify({
-        success: true,
-        result: { response: 'Wiederhergestellt' },
-        errors: [],
-      }), { status: 200 });
-    },
-  });
-  assert.equal(transientAttempts, 3);
-  assert.equal(transientReservations, 3, 'every HTTP retry must reserve a fresh ZERO budget slot');
-  assert.equal(recovered.text, 'Wiederhergestellt');
+  await assert.rejects(
+    () => generateCloudflareText({
+      prompt: 'zweite Nachricht',
+      fetchImpl: async () => {
+        transientAttempts += 1;
+        return new Response(JSON.stringify({ success: false, errors: [{ message: 'Internal server error (test-request-id)' }] }), { status: 500 });
+      },
+    }),
+    /Cloudflare Workers AI Fehler \(500\)/,
+  );
+  assert.equal(transientAttempts, 1, 'ambiguous text operations must not be retried automatically');
 
   let rateLimitAttempts = 0;
   await assert.rejects(
     () => generateCloudflareText({
       prompt: 'test',
-      costGuard: async () => undefined,
-    fetchImpl: async () => {
+      fetchImpl: async () => {
         rateLimitAttempts += 1;
         return new Response(JSON.stringify({
           success: false,
@@ -248,32 +226,28 @@ try {
     /keinen kostenpflichtigen Fallback/,
   );
   assert.equal(rateLimitAttempts, 1, '429 rate limits must not be retried');
-  // A caller-supplied no-op callback must never bypass the production guard.
-  process.env.NODE_ENV = 'production';
-  process.env.ZERO_COST_GUARD_ENABLED = 'false';
-  let bypassFetchAttempts = 0;
+
+  process.env.NODE_ENV = 'development';
+  let developmentFetchCalls = 0;
   await assert.rejects(
     () => generateCloudflareText({
-      prompt: 'guard bypass regression',
-      costGuard: async () => undefined,
+      prompt: 'development must remain guarded',
       fetchImpl: async () => {
-        bypassFetchAttempts += 1;
-        return new Response('{}', { status: 200 });
+        developmentFetchCalls += 1;
+        return new Response(JSON.stringify({ success: true, result: { response: 'must-not-run' } }), { status: 200 });
       },
     }),
-    /ZERO COST GUARD|Kostenfreigabe|gesperrt|blockiert|PostgreSQL-Kostenkontrolle/i,
+    /Cloudflare Workers AI ist momentan nicht erreichbar/,
   );
-  assert.equal(bypassFetchAttempts, 0, 'production callback injection must not bypass the central guard');
+  assert.equal(developmentFetchCalls, 0, 'custom fetch injection must not bypass the resource guard outside test mode');
   process.env.NODE_ENV = 'test';
-
 
   console.log('Cloudflare Workers AI adapter tests passed.');
 } finally {
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
   if (originalAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
   else process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
   if (originalToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
   else process.env.CLOUDFLARE_API_TOKEN = originalToken;
-  if (originalCostGuardEnabled === undefined) delete process.env.ZERO_COST_GUARD_ENABLED;
-  else process.env.ZERO_COST_GUARD_ENABLED = originalCostGuardEnabled;
-  process.env.NODE_ENV = 'test';
 }

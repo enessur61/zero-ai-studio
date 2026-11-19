@@ -1,28 +1,47 @@
-import { reserveZeroCostProviderRequest } from './zeroCostGuard.ts';
+import { withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
-
-type CostGuardOverride = (modelId: string, action: string) => Promise<void>;
-
-async function authorizeCloudflareRequest(modelId: string, action: string, override?: CostGuardOverride): Promise<void> {
-  if (override && process.env.NODE_ENV === 'test') return override(modelId, action);
-  try {
-    await reserveZeroCostProviderRequest({
-      provider: 'cloudflare-workers-ai',
-      modelId,
-      studio: action.split(':')[0] || 'ZERO CORE',
-      action,
-    });
-  } catch (error) {
-    throw new CloudflareWorkersAiError(error instanceof Error ? error.message : 'ZERO Kostenfreigabe verweigert.');
-  }
-}
 
 export class CloudflareWorkersAiError extends Error {
   constructor(message: string, readonly status: number | null = null) {
     super(message);
     this.name = 'CloudflareWorkersAiError';
   }
+}
+
+
+function guardedCloudflareFetcher(
+  fetcher: typeof fetch,
+  modelId: string,
+  resourceType: ZeroResourceType,
+  studio: string,
+  action: string,
+): typeof fetch {
+  // Injected fetch implementations are test doubles; production always uses the guarded path.
+  if (process.env.NODE_ENV === 'test' && fetcher !== fetch) return fetcher;
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = typeof init?.body === 'string' ? init.body : '';
+    let inputBytes = Buffer.byteLength(body);
+    let inputChars = 0;
+    try {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const textFields = [parsed.prompt, parsed.question, parsed.messages]
+        .flatMap((value) => typeof value === 'string' ? [value] : Array.isArray(value) ? value.map((entry) => typeof entry === 'object' && entry !== null && 'content' in entry ? String((entry as {content: unknown}).content) : '') : []);
+      inputChars = textFields.reduce((sum, value) => sum + value.length, 0);
+      for (const key of ['audio', 'image']) {
+        const value = parsed[key];
+        if (typeof value === 'string' && value.length > 100) inputBytes = Math.max(inputBytes, Math.floor(value.length * 0.75));
+      }
+    } catch { /* byte cap still applies to opaque request bodies */ }
+    return withZeroCostResourceOperation(
+      { provider: 'cloudflare-workers-ai', modelId, resourceType, studio, action,
+        payload: { url: String(input), body }, inputBytes, ...(inputChars ? { inputChars } : {}) },
+      () => fetcher(input, init),
+      process.env,
+      undefined,
+      (response) => response.ok ? 'SUCCEEDED' : response.status >= 500 ? 'UNKNOWN' : 'FAILED',
+    );
+  }) as typeof fetch;
 }
 
 export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -35,7 +54,6 @@ export async function generateCloudflareText(params: {
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
-  costGuard?: CostGuardOverride;
 }): Promise<{ text: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -52,12 +70,12 @@ export async function generateCloudflareText(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
-    const fetcher = params.fetchImpl ?? fetch;
+    const fetcher = guardedCloudflareFetcher(params.fetchImpl ?? fetch, CLOUDFLARE_MODEL_ID, 'text', 'ZERO CORE', 'CLOUDFLARE_TEXT');
     let response: Response | undefined;
-    // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
-    // those server failures; never retry 401/403/429 or switch to a paid provider.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await authorizeCloudflareRequest(CLOUDFLARE_MODEL_ID, 'ZERO CORE:TEXT_GENERATION', params.costGuard);
+    // Each attempt is individually budgeted. Ambiguous provider responses are UNKNOWN
+    // and are never refunded or automatically retried.
+    const maxAttempts = 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -78,7 +96,7 @@ export async function generateCloudflareText(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      if (![500, 502, 503, 504].includes(response.status) || attempt === maxAttempts - 1) break;
       await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine HTTP-Antwort geliefert.');
@@ -125,7 +143,6 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
-  costGuard?: CostGuardOverride;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -140,10 +157,10 @@ export async function generateCloudflareImage(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
-    const fetcher = params.fetchImpl ?? fetch;
+    const fetcher = guardedCloudflareFetcher(params.fetchImpl ?? fetch, CLOUDFLARE_IMAGE_MODEL_ID, 'image', 'ZERO IMAGE STUDIO', 'CLOUDFLARE_IMAGE');
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await authorizeCloudflareRequest(CLOUDFLARE_IMAGE_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_GENERATION', params.costGuard);
+    const maxAttempts = 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -159,7 +176,7 @@ export async function generateCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      if (![500, 502, 503, 504].includes(response.status) || attempt === maxAttempts - 1) break;
       await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
@@ -202,7 +219,6 @@ export async function transcribeCloudflareAudio(params: {
   language?: string;
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
-  costGuard?: CostGuardOverride;
 }): Promise<{
   text: string;
   vtt: string | null;
@@ -220,10 +236,10 @@ export async function transcribeCloudflareAudio(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
-    const fetcher = params.fetchImpl ?? fetch;
+    const fetcher = guardedCloudflareFetcher(params.fetchImpl ?? fetch, CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'audio', 'ZERO AUDIO STUDIO', 'CLOUDFLARE_TRANSCRIBE');
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await authorizeCloudflareRequest(CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'ZERO AUDIO STUDIO:TRANSCRIPTION', params.costGuard);
+    const maxAttempts = 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -240,7 +256,7 @@ export async function transcribeCloudflareAudio(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      if (![500, 502, 503, 504].includes(response.status) || attempt === maxAttempts - 1) break;
       await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine HTTP-Antwort geliefert.');
@@ -299,7 +315,6 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
-  costGuard?: CostGuardOverride;
 }): Promise<{ answer: string; modelId: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -318,10 +333,10 @@ export async function analyzeCloudflareImage(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
-    const fetcher = params.fetchImpl ?? fetch;
+    const fetcher = guardedCloudflareFetcher(params.fetchImpl ?? fetch, CLOUDFLARE_VISION_MODEL_ID, 'image', 'ZERO VISION', 'CLOUDFLARE_VISION');
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await authorizeCloudflareRequest(CLOUDFLARE_VISION_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_ANALYSIS', params.costGuard);
+    const maxAttempts = 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
@@ -341,7 +356,7 @@ export async function analyzeCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
+      if (![500, 502, 503, 504].includes(response.status) || attempt === maxAttempts - 1) break;
       await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
     }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine HTTP-Antwort geliefert.');

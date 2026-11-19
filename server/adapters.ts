@@ -13,7 +13,6 @@ import {
 } from './coremlAdapter.ts';
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
-import { reserveZeroCostProviderRequest } from './zeroCostGuard.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
@@ -274,7 +273,6 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -303,7 +301,6 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -332,7 +329,6 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -360,7 +356,6 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
@@ -382,12 +377,6 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      await reserveZeroCostProviderRequest({
-        provider: 'google-gemini-free',
-        modelId: 'gemini-2.5-flash-lite',
-        studio: 'ZERO MODEL HUB',
-        action: 'MODEL_HEALTH_TEST_WEB_GROUNDING',
-      });
       const ai = getGeminiClient();
       const res = await withTransientRetry(
         () =>

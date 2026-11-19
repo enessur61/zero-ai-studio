@@ -15,6 +15,8 @@ const base = {
   ZERO_CLOUDFLARE_AI_ENABLED: 'true',
   ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
   ZERO_GEMINI_FREE_TIER_ONLY: 'true',
+  ZERO_COST_RESOURCE_GUARD_ENABLED: 'true',
+  ZERO_COST_RESOURCE_GUARD_FREE_ONLY_CONFIRMED: 'true',
   DATABASE_URL: 'postgresql://test-only.invalid/never-used',
   NODE_ENV: 'test',
 };
@@ -59,6 +61,13 @@ const credentialsPresentStatus = await getZeroCostGuardStatus(fakeStatusPool, {
 });
 assert.equal(credentialsPresentStatus.providers.cloudflare, 'FREIGEGEBEN');
 assert.equal(credentialsPresentStatus.providers.gemini, 'FREIGEGEBEN');
+const resourceGuardDisabledStatus = await getZeroCostGuardStatus(fakeStatusPool, {
+  ...base, ZERO_COST_RESOURCE_GUARD_ENABLED: 'false',
+  CLOUDFLARE_ACCOUNT_ID: 'test-account', CLOUDFLARE_API_TOKEN: 'test-token', GEMINI_API_KEY: 'test-key',
+});
+assert.equal(resourceGuardDisabledStatus.configured, false, 'dashboard must not report providers enabled while Phase 2.1 is disabled');
+assert.equal(resourceGuardDisabledStatus.providers.cloudflare, 'GESPERRT');
+assert.equal(resourceGuardDisabledStatus.providers.gemini, 'GESPERRT');
 
 await assert.rejects(
   () => reserveZeroCostProviderRequestWithPool({

@@ -58,23 +58,12 @@ jobs:
             console.error('Forbidden local data or secret files are tracked:', forbidden);
             process.exit(1);
           }
-          for (const archive of files.filter((file) => file.toLowerCase().endsWith('.zip'))) {
-            const entries = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).split(String.fromCharCode(10));
-            const unsafeArchiveEntries = entries.filter((file) => {
-              const parts = file.replaceAll(String.fromCharCode(92), '/').split('/');
-              const name = parts.at(-1) ?? '';
-              return name === '.env' ||
-                (name.startsWith('.env.') && name !== '.env.example') ||
-                name === 'zero-studio-db.json' ||
-                parts[0] === 'data' ||
-                ['.pem', '.key', '.p12', '.pfx', '.sqlite', '.db'].some((ext) => name.toLowerCase().endsWith(ext));
-            });
-            if (unsafeArchiveEntries.length) {
-              console.error('Archive contains local data or secrets:', archive, unsafeArchiveEntries);
-              process.exit(1);
-            }
+          const archives = files.filter((file) => file.toLowerCase().endsWith('.zip'));
+          if (archives.length) {
+            console.error('Tracked ZIP archives are not allowed; CI does not open or inspect archive contents:', archives);
+            process.exit(1);
           }
-          console.log('No prohibited local database or credential files are tracked.');
+          console.log('No prohibited local database, credential, or ZIP archive files are tracked.');
           NODE
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
         with:
