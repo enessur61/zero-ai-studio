@@ -127,6 +127,8 @@ try {
   const exhaustedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
   assert.equal(exhaustedStatus.requestsUsed, 5);
   assert.equal(exhaustedStatus.remainingRequests, 0);
+  assert.equal(exhaustedStatus.providers.cloudflare, 'GESPERRT', 'exhausted budget must show Cloudflare blocked in dashboard');
+  assert.equal(exhaustedStatus.providers.gemini, 'GESPERRT', 'exhausted budget must show Gemini blocked in dashboard');
   assert.equal(exhaustedStatus.recentEvents.length > 0, true);
   await setZeroCostGuardPaused(poolA, true, 5);
   const pausedStatus = await getZeroCostGuardStatus(poolB, costGuardEnv);
