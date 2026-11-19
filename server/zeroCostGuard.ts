@@ -294,9 +294,9 @@ export async function getZeroCostGuardStatus(
       paused: row?.locked ?? false,
       configured,
       providers: {
-        cloudflare: env.ZERO_CLOUDFLARE_AI_ENABLED === 'true' &&
+        cloudflare: configured && !row?.locked && env.ZERO_CLOUDFLARE_AI_ENABLED === 'true' &&
           env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
-        gemini: env.ZERO_GEMINI_FREE_TIER_ONLY === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
+        gemini: configured && !row?.locked && env.ZERO_GEMINI_FREE_TIER_ONLY === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
       },
       recentEvents: events.rows.map((event) => ({
         createdAt: new Date(event.created_at).toISOString(),
