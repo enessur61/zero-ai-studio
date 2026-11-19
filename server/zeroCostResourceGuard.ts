@@ -557,10 +557,13 @@ export async function withZeroCostResourceOperation<T>(
   pool: Pool | undefined = undefined,
   classifyResult: (result: T) => 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' = () => 'SUCCEEDED',
   classifyError: (error: unknown) => 'FAILED' | 'UNKNOWN' = () => 'UNKNOWN'
-): Promise<T> {
+): Promise<T | ZeroResourceOperationReplay> {
   if (!env.DATABASE_URL) throw new ZeroResourceGuardError('PostgreSQL fehlt; Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   const databasePool = pool ?? getPostgresPool();
   const { operation, leaseToken } = await reserveZeroCostResourceOperationWithPool(databasePool, input, env);
+  if (operation.replayed || !leaseToken) return { operation, replayed: true };
+  const leaseGeneration = operation.leaseGeneration;
+  if (leaseGeneration === null) throw new ZeroResourceGuardError('ZERO-Lease-Generation fehlt.', 'LEASE_INVALID');
   let result: T;
   try {
     result = await execute();
@@ -570,7 +573,7 @@ export async function withZeroCostResourceOperation<T>(
     let outcome: 'FAILED' | 'UNKNOWN' = 'UNKNOWN';
     try { outcome = classifyError(error); } catch { outcome = 'UNKNOWN'; }
     try {
-      await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, outcome);
+      await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, leaseGeneration, outcome);
     } catch {
       throw new ZeroResourceGuardError('ZERO-Ergebnis konnte nicht dauerhaft gespeichert werden; Reservierung bleibt sicher bestehen.', 'PERSISTENCE_ERROR');
     }
@@ -583,7 +586,7 @@ export async function withZeroCostResourceOperation<T>(
   let outcome: ZeroOperationStatus;
   try { outcome = classifyResult(result); } catch { outcome = 'UNKNOWN'; }
   try {
-    await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, outcome);
+    await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, leaseGeneration, outcome);
   } catch {
     throw new ZeroResourceGuardError('ZERO-Ergebnis konnte nicht dauerhaft gespeichert werden; Reservierung bleibt sicher bestehen.', 'PERSISTENCE_ERROR');
   }
@@ -593,11 +596,50 @@ export async function withZeroCostResourceOperation<T>(
   return result;
 }
 
-export async function heartbeatZeroCostResourceLeaseWithPool(pool: Pool, operationId: string, leaseToken: string): Promise<void> {
-  const result = await pool.query(`
-    UPDATE zero_cost_active_leases
-    SET expires_at = NOW() + INTERVAL '15 minutes'
-    WHERE operation_id = $1::uuid AND lease_token_hash = $2 AND status = 'ACTIVE' AND expires_at > NOW()
-  `, [operationId, digest(leaseToken)]);
-  if (result.rowCount !== 1) throw new ZeroResourceGuardError('ZERO-Lease abgelaufen oder ungültig.', 'LEASE_INVALID');
+export async function heartbeatZeroCostResourceLeaseWithPool(
+  pool: Pool,
+  operationId: string,
+  leaseToken: string,
+  expectedGeneration: number,
+  now = new Date()
+): Promise<number> {
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1) {
+    throw new ZeroResourceGuardError('ZERO-Lease-Generation ist ungültig.', 'LEASE_INVALID');
+  }
+  const client = await pool.connect();
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    const result = await client.query<{ lease_generation: number }>(`
+      UPDATE zero_cost_active_leases l
+      SET heartbeat_at = $4::timestamptz,
+          expires_at = $4::timestamptz + INTERVAL '15 minutes',
+          lease_generation = l.lease_generation + 1
+      FROM zero_cost_operations o
+      WHERE l.operation_id = $1::uuid
+        AND l.lease_token_hash = $2
+        AND l.lease_generation = $3
+        AND l.status = 'ACTIVE'
+        AND l.expires_at > $4::timestamptz
+        AND o.operation_id = l.operation_id
+        AND o.status = 'RESERVED'
+      RETURNING l.lease_generation
+    `, [operationId, digest(leaseToken), expectedGeneration, now]);
+    if (result.rowCount !== 1 || !result.rows[0]) {
+      throw new ZeroResourceGuardError('ZERO-Lease abgelaufen oder Token/Generation ungültig.', 'LEASE_INVALID');
+    }
+    await client.query('COMMIT');
+    return Number(result.rows[0].lease_generation);
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      destroyClient = true;
+    }
+    if (error instanceof ZeroResourceGuardError) throw error;
+    throw new ZeroResourceGuardError('ZERO-Lease-Heartbeat konnte nicht sicher gespeichert werden.', 'PERSISTENCE_ERROR');
+  } finally {
+    client.release(destroyClient);
+  }
 }
