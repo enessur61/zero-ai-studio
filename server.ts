@@ -2630,13 +2630,18 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const db = await loadDb();
-  if (db.projects.length <= 1) {
+  const ownedProjects = db.projects.filter((project) => project.ownerId === principal.id);
+  if (ownedProjects.length <= 1) {
     return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
   }
-  db.projects = db.projects.filter((p) => p.id !== req.params.id);
+  db.projects = db.projects.filter((project) =>
+    !(project.id === req.params.id && project.ownerId === principal.id)
+  );
   await saveDb(db);
-  const projects = db.projects.map((project) => ({
+  const projects = db.projects.filter((project) => project.ownerId === principal.id).map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),
     assets: sanitizeProjectAssets(project.assets),
