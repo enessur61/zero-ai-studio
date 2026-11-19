@@ -103,6 +103,7 @@ try {
   assert.equal(replay.operation.replayed, true);
   assert.equal(replay.leaseToken, null, 'replay never reissues the original lease secret');
   await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, payload: { prompt: 'different' }, idempotencyKey: 'idem-key-0001' }, env), code('IDEMPOTENCY_CONFLICT'));
+  await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, action: 'DIFFERENT_ACTION', idempotencyKey: 'idem-key-0001' }, env), code('IDEMPOTENCY_CONFLICT'));
   const row = await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [first.operation.operationId]);
   assert.equal(row.rows[0].status, 'RESERVED');
 
