@@ -209,9 +209,10 @@ try {
   assert.equal(imageRateLimitAttempts, 1);
 
   let transientAttempts = 0;
+  let transientReservations = 0;
   const recovered = await generateCloudflareText({
     prompt: 'zweite Nachricht',
-    costGuard: async () => undefined,
+    costGuard: async () => { transientReservations += 1; },
     fetchImpl: async () => {
       transientAttempts += 1;
       if (transientAttempts < 3) {
@@ -228,6 +229,7 @@ try {
     },
   });
   assert.equal(transientAttempts, 3);
+  assert.equal(transientReservations, 3, 'every HTTP retry must reserve a fresh ZERO budget slot');
   assert.equal(recovered.text, 'Wiederhergestellt');
 
   let rateLimitAttempts = 0;
