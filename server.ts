@@ -208,6 +208,9 @@ app.use('/api', (req, res, next) => {
   }
   void hasValidSession(req).then((valid) => {
     if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    // This application currently has one authenticated administrator identity.
+    // Bind quotas to that server-owned identity; never accept a principal from request data.
+    res.locals.zeroPrincipal = 'zero-admin';
     return next();
   }).catch(next);
 });
