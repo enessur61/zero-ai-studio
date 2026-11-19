@@ -89,6 +89,7 @@ export function SettingsView({
       const status = await apiRequest<NonNullable<typeof costGuardStatus>>('/api/system/cost-guard');
       setCostGuardStatus(status);
     } catch (err) {
+      setCostGuardStatus(null);
       setErrorMsg(err instanceof Error ? err.message : 'ZERO COST GUARD konnte nicht geladen werden.');
     } finally {
       setLoadingCostGuard(false);
