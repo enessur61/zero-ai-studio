@@ -85,10 +85,10 @@ export class ZeroResourceGuardError extends Error {
 
 const RESOURCE_TYPES = new Set<ZeroResourceType>(['text', 'image', 'audio', 'video']);
 const MAX_LIMITS: ZeroResourceLimits = {
-  text: { dailyUnits: 20, concurrency: 3, maxInputBytes: 128_000, maxInputChars: 32_768, maxDurationSeconds: 0, perMinute: 5 },
-  image: { dailyUnits: 5, concurrency: 1, maxInputBytes: 8 * 1024 * 1024, maxInputChars: 2_048, maxDurationSeconds: 0, perMinute: 1 },
-  audio: { dailyUnits: 10, concurrency: 1, maxInputBytes: 10 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 300, perMinute: 2 },
-  video: { dailyUnits: 12, concurrency: 1, maxInputBytes: 100 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 60, perMinute: 1 },
+  text: { dailyUnits: 20, principalDailyUnits: 20, concurrency: 3, maxInputBytes: 128_000, maxInputChars: 32_768, maxDurationSeconds: 0, perMinute: 5 },
+  image: { dailyUnits: 5, principalDailyUnits: 5, concurrency: 1, maxInputBytes: 8 * 1024 * 1024, maxInputChars: 2_048, maxDurationSeconds: 0, perMinute: 1 },
+  audio: { dailyUnits: 10, principalDailyUnits: 10, concurrency: 1, maxInputBytes: 10 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 300, perMinute: 2 },
+  video: { dailyUnits: 12, principalDailyUnits: 12, concurrency: 1, maxInputBytes: 100 * 1024 * 1024, maxInputChars: 0, maxDurationSeconds: 60, perMinute: 1 },
 };
 const MAX_DAILY = 10_000;
 const MAX_CONCURRENCY = 20;
