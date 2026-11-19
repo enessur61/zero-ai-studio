@@ -12,7 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
-import { reserveZeroCostProviderRequest } from './server/zeroCostGuard.ts';
+import { getZeroCostGuardStatus, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -2671,6 +2671,37 @@ app.post('/api/characters', asyncRoute(async (req, res) => {
   });
   await saveDb(db);
   res.json({ character: char });
+}));
+
+// === ZERO COST GUARD CONTROL (authenticated admin API) ===
+app.get('/api/system/cost-guard', asyncRoute(async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.json({
+      dayUtc: new Date().toISOString().slice(0, 10),
+      requestsUsed: 0,
+      dailyLimit: 0,
+      remainingRequests: 0,
+      paused: true,
+      configured: false,
+      providers: { cloudflare: 'GESPERRT', gemini: 'GESPERRT' },
+      recentEvents: [],
+      persistenceAvailable: false,
+    });
+  }
+  const status = await getZeroCostGuardStatus(getPostgresPool());
+  res.json({ ...status, persistenceAvailable: true });
+}));
+
+app.post('/api/system/cost-guard/pause', asyncRoute(async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'PostgreSQL nicht verfügbar. Kostenwächter bleibt fail-closed.' });
+  }
+  if (typeof req.body?.paused !== 'boolean') {
+    return res.status(400).json({ error: 'paused muss true oder false sein.' });
+  }
+  await setZeroCostGuardPaused(getPostgresPool(), req.body.paused);
+  const status = await getZeroCostGuardStatus(getPostgresPool());
+  res.json({ ok: true, ...status, persistenceAvailable: true });
 }));
 
 // === ZERO MEMORY ===
