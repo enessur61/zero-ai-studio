@@ -1,4 +1,4 @@
-import { getZeroResourceRequestFingerprint, isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
@@ -82,7 +82,7 @@ export function getGeminiClient(): GoogleGenAI {
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
+          idempotencyKey: createZeroIdempotencyKey() },
         () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
