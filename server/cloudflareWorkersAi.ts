@@ -6,12 +6,16 @@ type CostGuardOverride = (modelId: string, action: string) => Promise<void>;
 
 async function authorizeCloudflareRequest(modelId: string, action: string, override?: CostGuardOverride): Promise<void> {
   if (override) return override(modelId, action);
-  await reserveZeroCostProviderRequest({
-    provider: 'cloudflare-workers-ai',
-    modelId,
-    studio: action.split(':')[0] || 'ZERO CORE',
-    action,
-  });
+  try {
+    await reserveZeroCostProviderRequest({
+      provider: 'cloudflare-workers-ai',
+      modelId,
+      studio: action.split(':')[0] || 'ZERO CORE',
+      action,
+    });
+  } catch (error) {
+    throw new CloudflareWorkersAiError(error instanceof Error ? error.message : 'ZERO Kostenfreigabe verweigert.');
+  }
 }
 
 export class CloudflareWorkersAiError extends Error {
@@ -45,7 +49,6 @@ export async function generateCloudflareText(params: {
   if (params.systemPrompt && params.systemPrompt.length > 8_000) {
     throw new CloudflareWorkersAiError('Systemanweisung überschreitet das sichere 8.000-Zeichen-Limit.');
   }
-  await authorizeCloudflareRequest(CLOUDFLARE_MODEL_ID, 'ZERO CORE:TEXT_GENERATION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45_000);
   try {
@@ -54,6 +57,7 @@ export async function generateCloudflareText(params: {
     // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
     // those server failures; never retry 401/403/429 or switch to a paid provider.
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_MODEL_ID, 'ZERO CORE:TEXT_GENERATION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -133,13 +137,13 @@ export async function generateCloudflareImage(params: {
     throw new CloudflareWorkersAiError('Bild-Prompt muss zwischen 1 und 2.048 Zeichen lang sein.');
   }
   const steps = Math.min(Math.max(Math.floor(params.steps ?? 4), 1), 8);
-  await authorizeCloudflareRequest(CLOUDFLARE_IMAGE_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_GENERATION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_IMAGE_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_GENERATION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -213,13 +217,13 @@ export async function transcribeCloudflareAudio(params: {
   if (!params.audioBase64 || params.audioBase64.length > 24_000_000) {
     throw new CloudflareWorkersAiError('Audiodaten fehlen oder überschreiten das sichere 18-MB-Eingabelimit.');
   }
-  await authorizeCloudflareRequest(CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'ZERO AUDIO STUDIO:TRANSCRIPTION', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_TRANSCRIPTION_MODEL_ID, 'ZERO AUDIO STUDIO:TRANSCRIPTION', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -311,13 +315,13 @@ export async function analyzeCloudflareImage(params: {
     throw new CloudflareWorkersAiError('Die Bildanalysefrage muss zwischen 1 und 2.000 Zeichen lang sein.');
   }
 
-  await authorizeCloudflareRequest(CLOUDFLARE_VISION_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_ANALYSIS', params.costGuard);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await authorizeCloudflareRequest(CLOUDFLARE_VISION_MODEL_ID, 'ZERO IMAGE STUDIO:IMAGE_ANALYSIS', params.costGuard);
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
