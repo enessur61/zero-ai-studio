@@ -1019,7 +1019,6 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Google Search grounding is not available on the Gemini 3.8 Free tier.
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
-        await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
         await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
         const searchResponse = await withTransientRetry(() =>
           ai.models.generateContent({
@@ -1307,7 +1306,6 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
       }
     }
 
-    await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'WEB_RESEARCH', db);
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
