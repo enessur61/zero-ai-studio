@@ -1,4 +1,5 @@
-import { withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { getZeroResourceRequestFingerprint, withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
@@ -74,10 +75,14 @@ export function getGeminiClient(): GoogleGenAI {
       }
       const payload = JSON.stringify(request);
       const resourceType = classifyGeminiResourceType(modelId, payload);
+      const operationInput = {
+        provider: 'google-gemini-free' as const, modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
+        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
+        inputChars: resourceType === 'text' ? payload.length : undefined,
+      };
       return withZeroCostResourceOperation(
-        { provider: 'google-gemini-free', modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
-          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
-          inputChars: resourceType === 'text' ? payload.length : undefined },
+        { ...operationInput, principal: requireZeroPrincipal(),
+          idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
         () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
     }) as typeof models.generateContent;
@@ -87,9 +92,13 @@ export function getGeminiClient(): GoogleGenAI {
         throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Embedding-Modell vor dem Provider-Aufruf.');
       }
       const payload = JSON.stringify(request);
+      const operationInput = {
+        provider: 'google-gemini-free' as const, modelId, resourceType: 'text' as const, studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
+        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
+      };
       return withZeroCostResourceOperation(
-        { provider: 'google-gemini-free', modelId, resourceType: 'text', studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
-          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length },
+        { ...operationInput, principal: requireZeroPrincipal(),
+          idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
         () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
     }) as typeof models.embedContent;
