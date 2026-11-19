@@ -321,14 +321,14 @@ export async function reserveZeroCostResourceOperationWithPool(
   input: ZeroResourceOperationInput,
   env: ZeroResourceEnvironment = input.env ?? process.env,
   now = new Date()
-): Promise<{ operation: ZeroResourceOperation; leaseToken: string }> {
+): Promise<{ operation: ZeroResourceOperation; leaseToken: string | null }> {
   const limits = validateZeroResourceOperation(input, env);
   const dailyLimit = Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT);
   const units = input.units ?? 1;
-  const principalHash = digest(input.principal ?? 'zero-server');
-  const idempotencyKey = input.idempotencyKey ?? randomUUID();
-  const idempotencyHash = digest(idempotencyKey);
-  const payloadHash = digest(JSON.stringify(input.payload ?? null));
+  const principalHash = digest(input.principal.trim());
+  const idempotencyHash = digest(input.idempotencyKey);
+  const payloadHash = digest(canonicalJson(input.payload ?? null));
+  const requestFingerprint = getZeroResourceRequestFingerprint(input);
   const operationId = randomUUID();
   const leaseToken = randomBytes(32).toString('hex');
   const dayUtc = utcDay(now);
@@ -354,15 +354,26 @@ export async function reserveZeroCostResourceOperationWithPool(
       WHERE status = 'ACTIVE' AND expires_at <= $2
     `, [new Date(now.getTime() + UNKNOWN_LEASE_TTL_SECONDS * 1000), now]);
 
-    const prior = await client.query<{ operation_id: string; status: ZeroOperationStatus; payload_hash: string; day_utc: string; reserved_units: number }>(
-      'SELECT operation_id, status, payload_hash, day_utc::text, reserved_units FROM zero_cost_operations WHERE principal_hash = $1 AND idempotency_hash = $2 FOR UPDATE',
-      [principalHash, idempotencyHash]
-    );
+    const prior = await client.query<{ operation_id: string; status: ZeroOperationStatus; request_fingerprint: string; day_utc: string; resource_type: ZeroResourceType; reserved_units: number; lease_generation: number | null }>(`
+      SELECT o.operation_id, o.status, o.request_fingerprint, o.day_utc::text, o.resource_type, o.reserved_units, l.lease_generation
+      FROM zero_cost_operations o LEFT JOIN zero_cost_active_leases l ON l.operation_id = o.operation_id
+      WHERE o.principal_hash = $1 AND o.idempotency_hash = $2 FOR UPDATE OF o
+    `, [principalHash, idempotencyHash]);
     if (prior.rows[0]) {
-      if (prior.rows[0].payload_hash !== payloadHash) {
-        throw new ZeroResourceGuardError('Idempotenzschlüssel wurde mit einer anderen Nutzlast wiederverwendet.', 'IDEMPOTENCY_CONFLICT');
+      const existing = prior.rows[0];
+      if (existing.request_fingerprint.trim() !== requestFingerprint) {
+        throw new ZeroResourceGuardError('Idempotenzschlüssel wurde mit abweichenden Anfragedaten wiederverwendet.', 'IDEMPOTENCY_CONFLICT');
       }
-      throw new ZeroResourceGuardError(`Idempotente Wiederholung blockiert; bestehender Vorgang ${prior.rows[0].operation_id} hat Status ${prior.rows[0].status}.`, 'IDEMPOTENT_REPLAY');
+      await client.query('COMMIT');
+      committed = true;
+      return {
+        operation: {
+          operationId: existing.operation_id, status: existing.status, dayUtc: existing.day_utc,
+          resourceType: existing.resource_type, reservedUnits: existing.reserved_units, replayed: true,
+          leaseGeneration: existing.lease_generation === null ? null : Number(existing.lease_generation),
+        },
+        leaseToken: null,
+      };
     }
 
     const rate = await client.query<{ principal_count: number; global_count: number }>(`
@@ -409,6 +420,21 @@ export async function reserveZeroCostResourceOperationWithPool(
     `, [dayUtc, scopeHash, input.resourceType, units, limit.dailyUnits]);
     if (!usage.rows[0]) throw new ZeroResourceGuardError(`ZERO-${input.resourceType}-Tageslimit ausgeschöpft.`, 'RESOURCE_DAILY_LIMIT');
 
+    const principalUsage = await client.query<{ reserved_units: number; consumed_units: number }>(`
+      INSERT INTO zero_cost_principal_resource_usage
+        (day_utc, principal_hash, resource_type, reserved_units, consumed_units)
+      VALUES ($1::date, $2, $3, $4, 0)
+      ON CONFLICT (day_utc, principal_hash, resource_type) DO UPDATE SET
+        reserved_units = zero_cost_principal_resource_usage.reserved_units + EXCLUDED.reserved_units,
+        updated_at = NOW()
+      WHERE zero_cost_principal_resource_usage.reserved_units +
+        zero_cost_principal_resource_usage.consumed_units + EXCLUDED.reserved_units <= $5
+      RETURNING reserved_units, consumed_units
+    `, [dayUtc, principalHash, input.resourceType, units, limit.principalDailyUnits]);
+    if (!principalUsage.rows[0]) {
+      throw new ZeroResourceGuardError(`ZERO-${input.resourceType}-Principal-Tageslimit ausgeschöpft.`, 'PRINCIPAL_DAILY_LIMIT');
+    }
+
     const active = await client.query<{ count: string }>(`
       SELECT COUNT(*)::text AS count FROM zero_cost_active_leases
       WHERE resource_type = $1 AND status IN ('ACTIVE','UNKNOWN') AND expires_at > $2
@@ -421,15 +447,15 @@ export async function reserveZeroCostResourceOperationWithPool(
       INSERT INTO zero_cost_operations
         (operation_id, principal_hash, idempotency_hash, payload_hash, request_fingerprint, provider, model_id, resource_type, day_utc, status, reserved_units)
       VALUES ($1::uuid, $2, $3, $4, $5::char(64), $6, $7, $8, $9::date, 'RESERVED', $10)
-    `, [operationId, principalHash, idempotencyHash, payloadHash, payloadHash, input.provider, input.modelId, input.resourceType, dayUtc, units]);
+    `, [operationId, principalHash, idempotencyHash, payloadHash, requestFingerprint, input.provider, input.modelId, input.resourceType, dayUtc, units]);
     await client.query(`
       INSERT INTO zero_cost_resource_rate_events (operation_id, principal_hash, resource_type, created_at)
       VALUES ($1::uuid, $2, $3, $4::timestamptz)
     `, [operationId, principalHash, input.resourceType, now]);
     await client.query(`
-      INSERT INTO zero_cost_active_leases (operation_id, resource_type, lease_token_hash, expires_at, status)
-      VALUES ($1::uuid, $2, $3, $4, 'ACTIVE')
-    `, [operationId, input.resourceType, digest(leaseToken), new Date(now.getTime() + LEASE_TTL_SECONDS * 1000)]);
+      INSERT INTO zero_cost_active_leases (operation_id, resource_type, lease_token_hash, expires_at, status, heartbeat_at, lease_generation)
+      VALUES ($1::uuid, $2, $3, $4, 'ACTIVE', $5, 1)
+    `, [operationId, input.resourceType, digest(leaseToken), new Date(now.getTime() + LEASE_TTL_SECONDS * 1000), now]);
     await client.query(`
       INSERT INTO zero_cost_audit_events
         (day_utc, provider, model_id, studio, action, decision, requests_used, daily_limit, reason)
@@ -437,7 +463,7 @@ export async function reserveZeroCostResourceOperationWithPool(
     `, [dayUtc, input.provider, input.modelId, input.studio, input.action, budget.rows[0].requests_used, budget.rows[0].daily_limit]);
     await client.query('COMMIT');
     committed = true;
-    return { operation: { operationId, status: 'RESERVED', dayUtc, resourceType: input.resourceType, reservedUnits: units, replayed: false }, leaseToken };
+    return { operation: { operationId, status: 'RESERVED', dayUtc, resourceType: input.resourceType, reservedUnits: units, replayed: false, leaseGeneration: 1 }, leaseToken };
   } catch (error) {
     if (!committed) {
       try {
