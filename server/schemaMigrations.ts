@@ -35,29 +35,24 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
       ALTER TABLE zero_cost_operations
         ALTER COLUMN request_fingerprint SET NOT NULL;
 
-      ALTER TABLE zero_cost_operations
-        ADD CONSTRAINT zero_cost_operations_fingerprint_sha256_check
-        CHECK (request_fingerprint ~ '^[a-f0-9]{64}$');
-
-      ALTER TABLE zero_cost_operations
-        ADD CONSTRAINT zero_cost_operations_dispatch_state_check
-        CHECK (dispatch_state IN ('NOT_SENT', 'SENT', 'ACCEPTED', 'CONFIRMED'));
-
-      ALTER TABLE zero_cost_operations
-        ADD CONSTRAINT zero_cost_operations_worker_kind_check
-        CHECK (worker_kind IS NULL OR worker_kind IN ('wan', 'piper'));
-
-      ALTER TABLE zero_cost_operations
-        ADD CONSTRAINT zero_cost_operations_principal_hash_sha256_check
-        CHECK (principal_hash ~ '^[a-f0-9]{64}$');
-
-      ALTER TABLE zero_cost_active_leases
-        ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ,
-        ADD COLUMN IF NOT EXISTS lease_generation INTEGER NOT NULL DEFAULT 1;
-
-      ALTER TABLE zero_cost_active_leases
-        ADD CONSTRAINT zero_cost_active_leases_generation_check
-        CHECK (lease_generation > 0);
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_operations_fingerprint_sha256_check' AND conrelid = 'zero_cost_operations'::regclass) THEN
+          ALTER TABLE zero_cost_operations ADD CONSTRAINT zero_cost_operations_fingerprint_sha256_check CHECK (request_fingerprint ~ '^[a-f0-9]{64}$');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_operations_dispatch_state_check' AND conrelid = 'zero_cost_operations'::regclass) THEN
+          ALTER TABLE zero_cost_operations ADD CONSTRAINT zero_cost_operations_dispatch_state_check CHECK (dispatch_state IN ('NOT_SENT', 'SENT', 'ACCEPTED', 'CONFIRMED'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_operations_worker_kind_check' AND conrelid = 'zero_cost_operations'::regclass) THEN
+          ALTER TABLE zero_cost_operations ADD CONSTRAINT zero_cost_operations_worker_kind_check CHECK (worker_kind IS NULL OR worker_kind IN ('wan', 'piper'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_operations_principal_hash_sha256_check' AND conrelid = 'zero_cost_operations'::regclass) THEN
+          ALTER TABLE zero_cost_operations ADD CONSTRAINT zero_cost_operations_principal_hash_sha256_check CHECK (principal_hash ~ '^[a-f0-9]{64}$');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_active_leases_generation_check' AND conrelid = 'zero_cost_active_leases'::regclass) THEN
+          ALTER TABLE zero_cost_active_leases ADD CONSTRAINT zero_cost_active_leases_generation_check CHECK (lease_generation > 0);
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS zero_cost_resource_rate_events (
         operation_id UUID PRIMARY KEY
