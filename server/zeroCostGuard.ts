@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { getPostgresPool } from './persistence.ts';
 
 export type ZeroCostProvider = 'cloudflare-workers-ai' | 'google-gemini-free';
@@ -128,7 +128,7 @@ export async function reserveZeroCostProviderRequestWithPool(
   if (!env.DATABASE_URL) {
     throw new ZeroCostGuardError('Persistente PostgreSQL-Kostenkontrolle nicht verfügbar. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   }
-  let client: Awaited<ReturnType<Pool['connect']>>;
+  let client: PoolClient;
   try {
     client = await pool.connect();
   } catch {
