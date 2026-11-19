@@ -207,3 +207,114 @@ export async function reserveZeroCostProviderRequest(
   }
   return reserveZeroCostProviderRequestWithPool(getPostgresPool(), reservation, env);
 }
+
+
+export interface ZeroCostGuardStatus {
+  dayUtc: string;
+  requestsUsed: number;
+  dailyLimit: number;
+  remainingRequests: number;
+  paused: boolean;
+  configured: boolean;
+  providers: {
+    cloudflare: 'FREIGEGEBEN' | 'GESPERRT';
+    gemini: 'FREIGEGEBEN' | 'GESPERRT';
+  };
+  recentEvents: Array<{
+    createdAt: string;
+    provider: string;
+    modelId: string;
+    studio: string;
+    action: string;
+    decision: string;
+    reason: string;
+    requestsUsed: number | null;
+    dailyLimit: number | null;
+  }>;
+}
+
+export async function getZeroCostGuardStatus(
+  pool: Pool,
+  env: ZeroCostGuardEnvironment = process.env
+): Promise<ZeroCostGuardStatus> {
+  const today = utcDay();
+  const configured = env.ZERO_COST_GUARD_ENABLED === 'true' &&
+    env.ZERO_COST_GUARD_FREE_ONLY_CONFIRMED === 'true' &&
+    Number.isSafeInteger(Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT)) &&
+    Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) > 0;
+  const client = await pool.connect();
+  try {
+    const budget = await client.query<{
+      day_utc: string; requests_used: number; daily_limit: number; locked: boolean;
+    }>("SELECT day_utc::text, requests_used, daily_limit, locked FROM zero_cost_daily_budget WHERE scope = 'global'");
+    const row = budget.rows[0];
+    const currentDay = row?.day_utc === today;
+    const requestsUsed = currentDay ? Number(row?.requests_used ?? 0) : 0;
+    const dailyLimit = configured ? Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) : 0;
+    const events = await client.query<{
+      created_at: Date; provider: string; model_id: string; studio: string; action: string;
+      decision: string; reason: string; requests_used: number | null; daily_limit: number | null;
+    }>(`
+      SELECT created_at, provider, model_id, studio, action, decision, reason, requests_used, daily_limit
+      FROM zero_cost_audit_events ORDER BY id DESC LIMIT 20
+    `);
+    return {
+      dayUtc: today,
+      requestsUsed,
+      dailyLimit,
+      remainingRequests: Math.max(0, dailyLimit - requestsUsed),
+      paused: row?.locked ?? false,
+      configured,
+      providers: {
+        cloudflare: env.ZERO_CLOUDFLARE_AI_ENABLED === 'true' &&
+          env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
+        gemini: env.ZERO_GEMINI_FREE_TIER_ONLY === 'true' ? 'FREIGEGEBEN' : 'GESPERRT',
+      },
+      recentEvents: events.rows.map((event) => ({
+        createdAt: new Date(event.created_at).toISOString(),
+        provider: event.provider,
+        modelId: event.model_id,
+        studio: event.studio,
+        action: event.action,
+        decision: event.decision,
+        reason: event.reason,
+        requestsUsed: event.requests_used,
+        dailyLimit: event.daily_limit,
+      })),
+    };
+  } finally {
+    client.release();
+  }
+}
+
+export async function setZeroCostGuardPaused(
+  pool: Pool,
+  paused: boolean
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(1514480207, 71)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS zero_cost_daily_budget (
+        scope TEXT PRIMARY KEY,
+        day_utc DATE NOT NULL,
+        requests_used INTEGER NOT NULL CHECK (requests_used >= 0),
+        daily_limit INTEGER NOT NULL CHECK (daily_limit > 0),
+        locked BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      INSERT INTO zero_cost_daily_budget (scope, day_utc, requests_used, daily_limit, locked)
+      VALUES ('global', $1::date, 0, 1, $2)
+      ON CONFLICT (scope) DO UPDATE SET locked = EXCLUDED.locked, updated_at = NOW()
+    `, [utcDay(), paused]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw new ZeroCostGuardError('Manuelle Kostenwächter-Sperre konnte nicht dauerhaft gespeichert werden.', 'PERSISTENCE_ERROR');
+  } finally {
+    client.release();
+  }
+}
