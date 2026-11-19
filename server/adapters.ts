@@ -275,6 +275,7 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -303,6 +304,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
@@ -331,6 +333,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const wavB64 = createSilentWavBase64(0.5, 16000);
       const res = await withTransientRetry(
         () =>
@@ -358,6 +361,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
+      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.embedContent({
