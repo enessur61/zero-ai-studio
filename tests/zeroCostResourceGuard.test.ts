@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { getGeminiClient } from '../server/geminiClient.ts';
+import { generateCloudflareText } from '../server/cloudflareWorkersAi.ts';
 import {
   getZeroResourceLimits,
   validateZeroResourceOperation,
+  withZeroCostResourceOperation,
   ZeroResourceGuardError,
   type ZeroResourceOperationInput,
 } from '../server/zeroCostResourceGuard.ts';
@@ -51,4 +54,10 @@ assert.throws(() => validateZeroResourceOperation({ ...base, idempotencyKey: 'ti
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_TEXT_DAILY_LIMIT: '0' }), rejectsCode('INVALID_LIMIT'));
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_IMAGE_CONCURRENCY: '21' }), rejectsCode('INVALID_LIMIT'));
 assert.equal(validateZeroResourceOperation({ ...base, idempotencyKey: 'request-0001' }, env).text.dailyUnits, 20);
-console.log('ZERO resource guard policy tests passed (22 policy checks; no provider/network calls).');
+let providerExecutedWithoutDatabase = false;
+await assert.rejects(
+  () => withZeroCostResourceOperation({ ...base, env: { ...env, DATABASE_URL: undefined } }, async () => { providerExecutedWithoutDatabase = true; return 'must-not-run'; }, { ...env, DATABASE_URL: undefined }),
+  (error: unknown) => error instanceof ZeroResourceGuardError && error.code === 'PERSISTENCE_UNAVAILABLE',
+);
+assert.equal(providerExecutedWithoutDatabase, false, 'missing PostgreSQL must block before provider execution');
+console.log('ZERO resource guard policy tests passed (23 policy checks; no provider/network calls).');

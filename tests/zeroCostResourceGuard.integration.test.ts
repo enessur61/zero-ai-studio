@@ -87,7 +87,7 @@ try {
   // 20: expired in-flight leases are conservatively reconciled to UNKNOWN.
   const expiredNow = new Date(Date.now() - 16 * 60 * 1000);
   const expired = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'video', idempotencyKey: 'idem-key-expired' }, env, expiredNow);
-  await reserveZeroCostResourceOperationWithPool(poolB, { ...base, resourceType: 'audio', idempotencyKey: 'idem-key-expirer' }, env);
+  await reserveZeroCostResourceOperationWithPool(poolB, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-expirer' }, env);
   assert.equal((await poolA.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [expired.operation.operationId])).rows[0].status, 'UNKNOWN');
 
   // 21–23: concurrent reservations across pools, helper success, and failure => UNKNOWN.
@@ -95,10 +95,10 @@ try {
   const parallel = await Promise.all(Array.from({ length: 12 }, (_, i) => reserveZeroCostResourceOperationWithPool(i % 2 ? poolA : poolB,
     { ...base, resourceType: 'video', idempotencyKey: `parallel-key-${String(i).padStart(4,'0')}` }, concurrentEnv).then((value) => value).catch((error) => error)));
   assert.equal(parallel.filter((item) => !(item instanceof Error)).length, 12, 'cross-pool concurrent reservations all fit configured quota');
-  const wrapped = await withZeroCostResourceOperation({ ...base, resourceType: 'video', idempotencyKey: 'idem-key-0010', env }, async () => 'mock-result', env, poolA);
+  const wrapped = await withZeroCostResourceOperation({ ...base, resourceType: 'text', idempotencyKey: 'idem-key-0010', env }, async () => 'mock-result', env, poolA);
   assert.equal(wrapped, 'mock-result');
-  await assert.rejects(() => withZeroCostResourceOperation({ ...base, resourceType: 'video', idempotencyKey: 'idem-key-0011', env }, async () => { throw new Error('simulated ambiguous provider timeout'); }, env, poolB), (error: unknown) => error instanceof ZeroResourceGuardError && error.code === 'OPERATION_UNKNOWN');
-  const usage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type='video'");
+  await assert.rejects(() => withZeroCostResourceOperation({ ...base, resourceType: 'text', idempotencyKey: 'idem-key-0011', env }, async () => { throw new Error('simulated ambiguous provider timeout'); }, env, poolB), (error: unknown) => error instanceof ZeroResourceGuardError && error.code === 'OPERATION_UNKNOWN');
+  const usage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type='text'");
   assert.ok(Number(usage.rows[0].reserved_units) >= 1, 'ambiguous provider operation remains charged as reserved');
 
   console.log('ZERO resource PostgreSQL 16.16 integration passed: schema, atomic shared budget, resource quotas, idempotency, leases, four operation states, cross-pool concurrency and rollback.');
