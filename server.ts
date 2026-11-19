@@ -12,6 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
+import { reserveZeroCostProviderRequest } from './server/zeroCostGuard.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -135,6 +136,7 @@ async function reserveZeroBudgetModelAllowed(
     else recordBudgetAudit(db, entry);
   });
   if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
+  await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId, studio: 'ZERO CORE', action });
 
   if (process.env.DATABASE_URL) {
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
