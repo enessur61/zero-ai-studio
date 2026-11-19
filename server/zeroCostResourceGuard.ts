@@ -352,8 +352,8 @@ export async function reserveZeroCostResourceOperationWithPool(
     await client.query(`
       INSERT INTO zero_cost_operations
         (operation_id, principal_hash, idempotency_hash, payload_hash, request_fingerprint, provider, model_id, resource_type, day_utc, status, reserved_units)
-      VALUES ($1::uuid, $2, $3, $4, $4, $5, $6, $7, $8::date, 'RESERVED', $9)
-    `, [operationId, principalHash, idempotencyHash, payloadHash, input.provider, input.modelId, input.resourceType, dayUtc, units]);
+      VALUES ($1::uuid, $2, $3, $4, $5::char(64), $6, $7, $8, $9::date, 'RESERVED', $10)
+    `, [operationId, principalHash, idempotencyHash, payloadHash, payloadHash, input.provider, input.modelId, input.resourceType, dayUtc, units]);
     await client.query(`
       INSERT INTO zero_cost_resource_rate_events (operation_id, principal_hash, resource_type, created_at)
       VALUES ($1::uuid, $2, $3, $4::timestamptz)
