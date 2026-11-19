@@ -10,6 +10,7 @@ export type ZeroResourceProvider = 'cloudflare-workers-ai' | 'google-gemini-free
 
 export interface ZeroResourceLimit {
   dailyUnits: number;
+  principalDailyUnits: number;
   concurrency: number;
   maxInputBytes: number;
   maxInputChars: number;
@@ -46,8 +47,9 @@ export interface ZeroResourceOperationInput {
   studio: string;
   action: string;
   payload: unknown;
-  idempotencyKey?: string;
-  principal?: string;
+  idempotencyKey: string;
+  /** Server-owned authenticated identity; never populate from request JSON. */
+  principal: string;
   units?: number;
   inputBytes?: number;
   inputChars?: number;
@@ -62,6 +64,12 @@ export interface ZeroResourceOperation {
   resourceType: ZeroResourceType;
   reservedUnits: number;
   replayed: boolean;
+  leaseGeneration: number | null;
+}
+
+export interface ZeroResourceOperationReplay {
+  operation: ZeroResourceOperation;
+  replayed: true;
 }
 
 export class ZeroResourceGuardError extends Error {
