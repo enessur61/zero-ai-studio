@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArchiveRestore,
   CheckCircle2,
@@ -62,6 +62,14 @@ export function SettingsView({
   } | null>(null);
   const [loadingManifest, setLoadingManifest] = useState(false);
   const [testingGemini, setTestingGemini] = useState(false);
+  const [costGuardStatus, setCostGuardStatus] = useState<{
+    dayUtc: string; requestsUsed: number; dailyLimit: number; remainingRequests: number;
+    paused: boolean; configured: boolean; persistenceAvailable?: boolean;
+    providers: { cloudflare: string; gemini: string };
+    recentEvents: Array<{ createdAt: string; provider: string; modelId: string; studio: string; action: string; decision: string; reason: string }>;
+  } | null>(null);
+  const [loadingCostGuard, setLoadingCostGuard] = useState(false);
+  const [updatingCostGuard, setUpdatingCostGuard] = useState(false);
   const [geminiDiagnostic, setGeminiDiagnostic] = useState<{
     ok: boolean;
     apiKeyConfigured: boolean;
@@ -75,6 +83,46 @@ export function SettingsView({
   } | null>(null);
 
   const totalZipStorageBytes = backupConfig.zipBackups.reduce((sum, b) => sum + b.sizeBytes, 0);
+  async function loadCostGuardStatus() {
+    setLoadingCostGuard(true);
+    try {
+      const status = await apiRequest<NonNullable<typeof costGuardStatus>>('/api/system/cost-guard');
+      setCostGuardStatus(status);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'ZERO COST GUARD konnte nicht geladen werden.');
+    } finally {
+      setLoadingCostGuard(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadCostGuardStatus();
+  }, []);
+
+  async function handleToggleCostGuardPause() {
+    if (!costGuardStatus || updatingCostGuard) return;
+    const nextPaused = !costGuardStatus.paused;
+    const confirmed = window.confirm(nextPaused
+      ? 'ZERO COST GUARD jetzt zentral pausieren? Alle durch diesen Guard geschützten Provider-Aufrufe werden blockiert.'
+      : 'Die manuelle Pause aufheben? Provider bleiben trotzdem gesperrt, solange die serverseitigen Free-Tier- und Kostenfreigaben nicht ausdrücklich konfiguriert sind.');
+    if (!confirmed) return;
+    setUpdatingCostGuard(true);
+    setErrorMsg(null);
+    try {
+      const result = await apiRequest<NonNullable<typeof costGuardStatus>>('/api/system/cost-guard/pause', {
+        method: 'POST', body: JSON.stringify({ paused: nextPaused }),
+      });
+      setCostGuardStatus(result);
+      setStatusMsg(nextPaused
+        ? 'ZERO COST GUARD wurde zentral pausiert.'
+        : 'Manuelle Pause aufgehoben. Server- und Providerfreigaben bleiben separat erforderlich.');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Kostenwächter-Einstellung konnte nicht gespeichert werden.');
+    } finally {
+      setUpdatingCostGuard(false);
+    }
+  }
+
 
   async function handleConfirmProviderQuotaReset(modelId: string) {
     if (resettingQuota) return;
@@ -325,6 +373,90 @@ export function SettingsView({
           {errorMsg}
         </div>
       )}
+
+      {/* ZERO COST GUARD · iPhone-first live status and manual stop */}
+      <section className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 sm:p-6 space-y-4" aria-labelledby="zero-cost-guard-title">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-mono tracking-[0.18em] text-sky-400">ZERO CORE · COST CONTROL</p>
+            <h2 id="zero-cost-guard-title" className="text-lg font-semibold text-white mt-1">ZERO COST GUARD</h2>
+            <p className="text-xs text-slate-400 mt-1">Gemeinsames Tagesbudget für alle Studios · UTC</p>
+          </div>
+          <button type="button" onClick={() => void loadCostGuardStatus()} disabled={loadingCostGuard}
+            className="min-h-[44px] min-w-[44px] rounded-xl border border-white/10 text-slate-300 inline-flex items-center justify-center disabled:opacity-50"
+            aria-label="Kostenstatus aktualisieren">
+            <Loader2 className={loadingCostGuard ? 'w-4 h-4 animate-spin' : 'w-4 h-4 hidden'} />
+            {!loadingCostGuard && <ShieldCheck className="w-4 h-4" />}
+          </button>
+        </div>
+        {costGuardStatus ? (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-xl bg-[#090B10] border border-white/[0.07] p-3">
+                <span className="text-[11px] text-slate-400 block">Heute verbraucht</span>
+                <strong className="mt-1 block text-2xl tabular-nums text-white">{costGuardStatus.requestsUsed}</strong>
+                <span className="text-[10px] text-slate-500">Anfragen · kein €- oder Tokenwert</span>
+              </div>
+              <div className="rounded-xl bg-[#090B10] border border-white/[0.07] p-3">
+                <span className="text-[11px] text-slate-400 block">Restbudget</span>
+                <strong className="mt-1 block text-2xl tabular-nums text-emerald-300">{costGuardStatus.remainingRequests}</strong>
+                <span className="text-[10px] text-slate-500">von {costGuardStatus.dailyLimit} Anfragen</span>
+              </div>
+            </div>
+            <div className="h-2 rounded-full bg-white/[0.08] overflow-hidden" role="progressbar"
+              aria-valuenow={costGuardStatus.dailyLimit > 0 ? Math.min(100, costGuardStatus.requestsUsed / costGuardStatus.dailyLimit * 100) : 0}
+              aria-valuemin={0} aria-valuemax={100} aria-label="Verbrauchtes Tagesbudget">
+              <div className="h-full rounded-full bg-sky-400 transition-all"
+                style={{ width: costGuardStatus.dailyLimit > 0 ? Math.min(100, costGuardStatus.requestsUsed / costGuardStatus.dailyLimit * 100) + '%' : '0%' }} />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl bg-[#090B10] border border-white/[0.07] p-3 flex items-center justify-between gap-2">
+                <span className="text-slate-300">Cloudflare Workers AI</span>
+                <span className={costGuardStatus.providers.cloudflare === 'FREIGEGEBEN' ? 'text-emerald-300' : 'text-rose-300'}>{costGuardStatus.providers.cloudflare}</span>
+              </div>
+              <div className="rounded-xl bg-[#090B10] border border-white/[0.07] p-3 flex items-center justify-between gap-2">
+                <span className="text-slate-300">Gemini Free Tier</span>
+                <span className={costGuardStatus.providers.gemini === 'FREIGEGEBEN' ? 'text-emerald-300' : 'text-rose-300'}>{costGuardStatus.providers.gemini}</span>
+              </div>
+            </div>
+            <div className="rounded-xl border border-white/[0.08] bg-[#090B10] p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-300">Zentraler Kostenwächter</span>
+                <span className={(costGuardStatus.paused || !costGuardStatus.configured) ? 'text-rose-300 text-xs font-semibold' : 'text-emerald-300 text-xs font-semibold'}>
+                  {costGuardStatus.paused ? 'MANUELL PAUSIERT' : costGuardStatus.configured ? 'KONFIGURIERT' : 'STANDARDMÄSSIG GESPERRT'}
+                </span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-slate-400">
+                {costGuardStatus.persistenceAvailable === false
+                  ? 'PostgreSQL nicht verfügbar. Der Guard bleibt gesperrt.'
+                  : 'Die Anzeige zählt interne Provider-Anfragen. Sie bestätigt weder den tatsächlichen Anbieter-Tarif noch Neurons, Tokens oder reale Abrechnung.'}
+              </p>
+              <button type="button" onClick={() => void handleToggleCostGuardPause()} disabled={updatingCostGuard || !costGuardStatus.persistenceAvailable}
+                className={(costGuardStatus.paused ? 'w-full min-h-[48px] rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50' : 'w-full min-h-[48px] rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50')}>
+                {updatingCostGuard ? <Loader2 className="w-4 h-4 animate-spin" /> : costGuardStatus.paused ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                {updatingCostGuard ? 'Wird gespeichert…' : costGuardStatus.paused ? 'Manuelle Pause aufheben' : 'Alle Provider-Aufrufe pausieren'}
+              </button>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-slate-300">Letzte Kostenereignisse</h3>
+                <span className="text-[10px] text-slate-500">{costGuardStatus.dayUtc}</span>
+              </div>
+              {costGuardStatus.recentEvents.length ? costGuardStatus.recentEvents.slice(0, 6).map((event, index) => (
+                <div key={event.createdAt + event.modelId + index} className="rounded-lg bg-[#090B10] p-2.5 text-[11px]">
+                  <div className="flex justify-between gap-2">
+                    <span className="font-mono text-slate-200 break-all">{event.modelId}</span>
+                    <span className={event.decision === 'RESERVED_FREE' ? 'text-emerald-300' : 'text-rose-300'}>{event.decision}</span>
+                  </div>
+                  <p className="mt-1 text-slate-500">{event.studio} · {event.action} · {new Date(event.createdAt).toLocaleTimeString('de-DE')}</p>
+                </div>
+              )) : <p className="text-[11px] text-slate-500">Noch keine protokollierten Reservierungen.</p>}
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-slate-400">{loadingCostGuard ? 'Kostenstatus wird geladen…' : 'Kostenstatus derzeit nicht verfügbar.'}</p>
+        )}
+      </section>
 
       {/* SETTINGS -> GEMINI CONNECTION DIAGNOSTIC */}
       <section className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
