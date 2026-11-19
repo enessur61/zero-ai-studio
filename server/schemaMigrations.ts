@@ -59,7 +59,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         ADD CONSTRAINT zero_cost_active_leases_generation_check
         CHECK (lease_generation > 0);
 
-      CREATE TABLE zero_cost_resource_rate_events (
+      CREATE TABLE IF NOT EXISTS zero_cost_resource_rate_events (
         operation_id UUID PRIMARY KEY
           REFERENCES zero_cost_operations(operation_id) ON DELETE CASCADE,
         principal_hash CHAR(64) NOT NULL
@@ -69,10 +69,10 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
-      CREATE INDEX zero_cost_resource_rate_principal_idx
+      CREATE INDEX IF NOT EXISTS zero_cost_resource_rate_principal_idx
         ON zero_cost_resource_rate_events (principal_hash, resource_type, created_at);
 
-      CREATE INDEX zero_cost_resource_rate_global_idx
+      CREATE INDEX IF NOT EXISTS zero_cost_resource_rate_global_idx
         ON zero_cost_resource_rate_events (resource_type, created_at);
     `,
   },
