@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { classifyGeminiResourceError, classifyGeminiResourceType } from '../server/geminiClient.ts';
 import {
   getZeroResourceLimits,
+  getZeroResourceRequestFingerprint,
   validateZeroResourceOperation,
   withZeroCostResourceOperation,
   ZeroResourceGuardError,
@@ -35,6 +36,8 @@ assert.equal(getZeroResourceLimits(env).text.perMinute, 5);
 assert.equal(getZeroResourceLimits(env).image.perMinute, 1);
 assert.equal(getZeroResourceLimits(env).audio.perMinute, 2);
 assert.equal(getZeroResourceLimits(env).video.perMinute, 1);
+assert.equal(getZeroResourceLimits(env).text.principalDailyUnits, 20);
+assert.equal(getZeroResourceLimits({ ...env, ZERO_RESOURCE_TEXT_PRINCIPAL_DAILY_LIMIT: '7' }).text.principalDailyUnits, 7);
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"video/mp4"}'), 'video');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"image/png"}'), 'image');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"audio/wav"}'), 'audio');
@@ -63,6 +66,12 @@ assert.throws(() => validateZeroResourceOperation({ ...base, inputBytes: 128_001
 assert.throws(() => validateZeroResourceOperation({ ...base, inputChars: 32_769 }, env), rejectsCode('INPUT_TOO_LARGE'));
 assert.throws(() => validateZeroResourceOperation({ ...base, resourceType: 'audio', durationSeconds: 301 }, env), rejectsCode('DURATION_TOO_LONG'));
 assert.throws(() => validateZeroResourceOperation({ ...base, idempotencyKey: 'tiny' }, env), rejectsCode('INVALID_IDEMPOTENCY_KEY'));
+assert.throws(() => validateZeroResourceOperation({ ...base, principal: '   ' }, env), rejectsCode('PRINCIPAL_REQUIRED'));
+assert.throws(() => validateZeroResourceOperation({ ...base, principal: undefined } as unknown as ZeroResourceOperationInput, env), rejectsCode('PRINCIPAL_REQUIRED'));
+assert.throws(() => validateZeroResourceOperation({ ...base, idempotencyKey: undefined } as unknown as ZeroResourceOperationInput, env), rejectsCode('INVALID_IDEMPOTENCY_KEY'));
+assert.equal(getZeroResourceRequestFingerprint({ ...base, payload: { a: 1, b: { c: 2, d: 3 } } }), getZeroResourceRequestFingerprint({ ...base, payload: { b: { d: 3, c: 2 }, a: 1 } }), 'canonical fingerprint ignores object key insertion order');
+assert.notEqual(getZeroResourceRequestFingerprint(base), getZeroResourceRequestFingerprint({ ...base, action: 'OTHER_ACTION' }), 'fingerprint includes action metadata');
+assert.notEqual(getZeroResourceRequestFingerprint(base), getZeroResourceRequestFingerprint({ ...base, provider: 'google-gemini-free' }), 'fingerprint includes provider');
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_TEXT_DAILY_LIMIT: '0' }), rejectsCode('INVALID_LIMIT'));
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_IMAGE_CONCURRENCY: '21' }), rejectsCode('INVALID_LIMIT'));
 assert.throws(() => getZeroResourceLimits({ ...env, ZERO_RESOURCE_VIDEO_PER_MINUTE_LIMIT: '0' }), rejectsCode('INVALID_LIMIT'));
@@ -74,4 +83,4 @@ await assert.rejects(
   (error: unknown) => error instanceof ZeroResourceGuardError && error.code === 'PERSISTENCE_UNAVAILABLE',
 );
 assert.equal(providerExecutedWithoutDatabase, false, 'missing PostgreSQL must block before provider execution');
-console.log('ZERO resource guard policy tests passed (32 policy checks; no provider/network calls).');
+console.log('ZERO resource guard policy tests passed (principal, canonical fingerprint, policy limits; no provider/network calls).');
