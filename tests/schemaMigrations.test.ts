@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
 import {
   getZeroSchemaMigrationChecksum,
   runZeroSchemaMigrations,
@@ -64,7 +64,7 @@ const client = new FakeMigrationClient();
 await runZeroSchemaMigrations(poolFor(client));
 assert.equal(client.rows.length, 1, 'first run records the migration');
 assert.ok(client.statements.some((sql) => sql.includes('pg_advisory_xact_lock')), 'migration uses the shared advisory lock');
-assert.ok(client.statements.some((sql) => sql.includes('CREATE TABLE zero_cost_resource_rate_events')), 'migration creates the rolling rate-event table');
+assert.ok(client.statements.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS zero_cost_resource_rate_events')), 'migration creates the rolling rate-event table');
 const firstMigrationStatementCount = client.statements.length;
 
 await runZeroSchemaMigrations(poolFor(client));
