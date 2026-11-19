@@ -279,6 +279,7 @@ export async function getZeroCostGuardStatus(
     const dailyLimit = configuredLimit > 0 && currentDay && row
       ? Math.min(configuredLimit, Number(row.daily_limit))
       : configuredLimit;
+    const remainingRequests = Math.max(0, dailyLimit - requestsUsed);
     const events = await client.query<{
       created_at: Date; provider: string; model_id: string; studio: string; action: string;
       decision: string; reason: string; requests_used: number | null; daily_limit: number | null;
@@ -290,7 +291,7 @@ export async function getZeroCostGuardStatus(
       dayUtc: today,
       requestsUsed,
       dailyLimit,
-      remainingRequests: Math.max(0, dailyLimit - requestsUsed),
+      remainingRequests,
       paused: row?.locked ?? false,
       configured,
       providers: {
