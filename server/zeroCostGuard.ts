@@ -128,7 +128,7 @@ export async function reserveZeroCostProviderRequestWithPool(
   if (!env.DATABASE_URL) {
     throw new ZeroCostGuardError('Persistente PostgreSQL-Kostenkontrolle nicht verfügbar. Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   }
-  let client;
+  let client: Awaited<ReturnType<Pool['connect']>>;
   try {
     client = await pool.connect();
   } catch {
