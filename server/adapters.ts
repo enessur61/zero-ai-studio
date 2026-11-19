@@ -275,7 +275,6 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
-      await reserveZeroCostProviderRequest({ provider: 'google-gemini-free', modelId: model.id, studio: 'ZERO MODEL HUB', action: 'MODEL_HEALTH_TEST' });
       const res = await withTransientRetry(
         () =>
           ai.models.generateContent({
