@@ -4,6 +4,7 @@ import {
   getZeroCostGuardStatus,
   isSameOriginRequest,
   reserveZeroCostProviderRequest,
+  reserveZeroCostProviderRequestWithPool,
   ZeroCostGuardError,
 } from '../server/zeroCostGuard.ts';
 
@@ -48,7 +49,39 @@ const invalidDashboardStatus = await getZeroCostGuardStatus(fakeStatusPool, {
 });
 assert.equal(invalidDashboardStatus.configured, false);
 assert.equal(invalidDashboardStatus.providers.cloudflare, 'GESPERRT');
+
 assert.equal(invalidDashboardStatus.providers.gemini, 'GESPERRT');
+const credentialsMissingStatus = await getZeroCostGuardStatus(fakeStatusPool, base);
+assert.equal(credentialsMissingStatus.providers.cloudflare, 'GESPERRT');
+assert.equal(credentialsMissingStatus.providers.gemini, 'GESPERRT');
+const credentialsPresentStatus = await getZeroCostGuardStatus(fakeStatusPool, {
+  ...base, CLOUDFLARE_ACCOUNT_ID: 'test-account', CLOUDFLARE_API_TOKEN: 'test-token', GEMINI_API_KEY: 'test-key',
+});
+assert.equal(credentialsPresentStatus.providers.cloudflare, 'FREIGEGEBEN');
+assert.equal(credentialsPresentStatus.providers.gemini, 'FREIGEGEBEN');
+
+await assert.rejects(
+  () => reserveZeroCostProviderRequestWithPool({
+    connect: async () => { throw new Error('injected connect failure'); },
+  } as never, request, base),
+  (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'PERSISTENCE_ERROR',
+);
+let releasedAfterSqlFailure = false;
+const sqlFailurePool = {
+  connect: async () => ({
+    query: async (sql: string) => {
+      if (sql === 'ROLLBACK') return { rows: [] };
+      throw new Error('injected SQL failure');
+    },
+    release: () => { releasedAfterSqlFailure = true; },
+  }),
+} as never;
+await assert.rejects(
+  () => reserveZeroCostProviderRequestWithPool(sqlFailurePool, request, base),
+  (error: unknown) => error instanceof ZeroCostGuardError && error.code === 'PERSISTENCE_ERROR',
+);
+assert.equal(releasedAfterSqlFailure, true);
+
 
 // State-changing browser requests require a literal, exact same-origin Origin.
 assert.equal(isSameOriginRequest('https://zero.example', 'zero.example', 'https'), true);
