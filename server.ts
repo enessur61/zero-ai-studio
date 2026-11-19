@@ -12,7 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
-import { getZeroCostGuardStatus, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
+import { getZeroCostGuardStatus, isSameOriginRequest, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -2694,6 +2694,11 @@ app.get('/api/system/cost-guard', asyncRoute(async (_req, res) => {
 }));
 
 app.post('/api/system/cost-guard/pause', asyncRoute(async (req, res) => {
+  // The global production /api middleware authenticates the session first.
+  // Require an exact browser Origin match before any state-changing action.
+  if (!isSameOriginRequest(req.get('origin'), req.get('host'), req.protocol)) {
+    return res.status(403).json({ error: 'Ungültiger oder fehlender Origin-Header.' });
+  }
   if (!process.env.DATABASE_URL) {
     return res.status(503).json({ error: 'PostgreSQL nicht verfügbar. Kostenwächter bleibt fail-closed.' });
   }
