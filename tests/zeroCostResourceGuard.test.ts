@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { classifyGeminiResourceError, classifyGeminiResourceType } from '../server/geminiClient.ts';
+import { createZeroIdempotencyKey, requireZeroPrincipal, runWithZeroPrincipal } from '../server/zeroPrincipalContext.ts';
 import {
   getZeroResourceLimits,
   getZeroResourceRequestFingerprint,
@@ -23,6 +24,17 @@ const base: ZeroResourceOperationInput = {
   resourceType: 'text', studio: 'UNIT', action: 'TEST', payload: { prompt: 'hello' }, inputChars: 5,
 };
 const rejectsCode = (code: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === code;
+
+const contextKeys = await runWithZeroPrincipal('server-owned-test-principal', 'client-request-key-0001', async () => ({
+  principal: requireZeroPrincipal(),
+  first: createZeroIdempotencyKey('a'.repeat(64)),
+  same: createZeroIdempotencyKey('a'.repeat(64)),
+  different: createZeroIdempotencyKey('b'.repeat(64)),
+}));
+assert.equal(contextKeys.principal, 'server-owned-test-principal');
+assert.equal(contextKeys.first, contextKeys.same, 'same request header and fingerprint derive a stable operation key');
+assert.notEqual(contextKeys.first, contextKeys.different, 'different canonical requests derive different operation keys');
+assert.throws(() => requireZeroPrincipal(), /Authenticated ZERO principal context is required/);
 
 assert.equal(getZeroResourceLimits(env).text.dailyUnits, 20);
 assert.equal(getZeroResourceLimits(env).image.dailyUnits, 5);
