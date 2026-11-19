@@ -25,6 +25,7 @@ try {
     systemPrompt: 'Du bist ZERO.',
     maxTokens: 128,
     enableThinking: false,
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       requestUrl = String(input);
       requestInit = init;
@@ -53,6 +54,7 @@ try {
   const image = await generateCloudflareImage({
     prompt: 'Berliner Straße bei Nacht, film still',
     steps: 4,
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       imageUrl = String(input);
       imageBody = String(init?.body);
@@ -76,6 +78,7 @@ try {
   const vision = await analyzeCloudflareImage({
     imageDataUrl: 'data:image/png;base64,AAAA',
     question: 'Was ist auf diesem Bild?',
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       visionUrl = String(input);
       visionBody = String(init?.body);
@@ -103,7 +106,8 @@ try {
     () => analyzeCloudflareImage({
       imageDataUrl: 'data:image/png;base64,AAAA',
       question: 'Test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         visionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'rate limit' }] }), { status: 429 });
       },
@@ -118,6 +122,7 @@ try {
     audioBase64: 'UklGRg==',
     language: 'de',
     task: 'transcribe',
+    costGuard: async () => undefined,
     fetchImpl: async (input, init) => {
       transcriptionUrl = String(input);
       transcriptionBody = String(init?.body);
@@ -146,6 +151,7 @@ try {
   let transcriptionTransientAttempts = 0;
   const recoveredTranscription = await transcribeCloudflareAudio({
     audioBase64: 'UklGRg==',
+    costGuard: async () => undefined,
     fetchImpl: async () => {
       transcriptionTransientAttempts += 1;
       if (transcriptionTransientAttempts === 1) {
@@ -161,7 +167,8 @@ try {
   await assert.rejects(
     () => transcribeCloudflareAudio({
       audioBase64: 'UklGRg==',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         transcriptionRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -173,6 +180,7 @@ try {
   let imageTransientAttempts = 0;
   const recoveredImage = await generateCloudflareImage({
     prompt: 'retry test',
+    costGuard: async () => undefined,
     fetchImpl: async () => {
       imageTransientAttempts += 1;
       if (imageTransientAttempts === 1) {
@@ -188,7 +196,8 @@ try {
   await assert.rejects(
     () => generateCloudflareImage({
       prompt: 'rate limit test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         imageRateLimitAttempts += 1;
         return new Response(JSON.stringify({ success: false, errors: [{ message: 'limit exceeded' }] }), { status: 429 });
       },
@@ -200,6 +209,7 @@ try {
   let transientAttempts = 0;
   const recovered = await generateCloudflareText({
     prompt: 'zweite Nachricht',
+    costGuard: async () => undefined,
     fetchImpl: async () => {
       transientAttempts += 1;
       if (transientAttempts < 3) {
@@ -222,7 +232,8 @@ try {
   await assert.rejects(
     () => generateCloudflareText({
       prompt: 'test',
-      fetchImpl: async () => {
+      costGuard: async () => undefined,
+    fetchImpl: async () => {
         rateLimitAttempts += 1;
         return new Response(JSON.stringify({
           success: false,
