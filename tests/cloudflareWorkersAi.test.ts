@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+process.env.NODE_ENV = 'test';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from '../server/cloudflareWorkersAi.ts';
 
 const originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
