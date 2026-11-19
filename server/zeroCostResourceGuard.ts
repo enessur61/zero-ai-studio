@@ -221,6 +221,7 @@ export async function ensureZeroCostResourceSchema(pool: Pool): Promise<void> {
   if (ready) return ready;
   const initialization = (async () => {
     const client = await pool.connect();
+    let destroyClient = false;
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
@@ -228,10 +229,14 @@ export async function ensureZeroCostResourceSchema(pool: Pool): Promise<void> {
       await applyZeroSchemaMigrationsWithClient(client);
       await client.query('COMMIT');
     } catch {
-      await client.query('ROLLBACK').catch(() => undefined);
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
       throw new ZeroResourceGuardError('ZERO-Ressourcenschema konnte nicht sicher initialisiert werden.', 'SCHEMA_ERROR');
     } finally {
-      client.release();
+      client.release(destroyClient);
     }
   })();
   schemaReadyByPool.set(pool, initialization);
@@ -264,6 +269,7 @@ export async function reserveZeroCostResourceOperationWithPool(
   await ensureZeroCostResourceSchema(pool);
   const client = await pool.connect();
   let committed = false;
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
@@ -365,11 +371,17 @@ export async function reserveZeroCostResourceOperationWithPool(
     committed = true;
     return { operation: { operationId, status: 'RESERVED', dayUtc, resourceType: input.resourceType, reservedUnits: units, replayed: false }, leaseToken };
   } catch (error) {
-    if (!committed) await client.query('ROLLBACK').catch(() => undefined);
+    if (!committed) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
     if (error instanceof ZeroResourceGuardError) throw error;
     throw new ZeroResourceGuardError('Atomare ZERO-Ressourcenreservierung fehlgeschlagen; Provider-Aufruf blockiert.', 'PERSISTENCE_ERROR');
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -381,6 +393,7 @@ export async function finishZeroCostResourceOperationWithPool(
   now = new Date()
 ): Promise<void> {
   const client = await pool.connect();
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
@@ -418,11 +431,15 @@ export async function finishZeroCostResourceOperationWithPool(
     await client.query('UPDATE zero_cost_operations SET status = $2, updated_at = NOW() WHERE operation_id = $1::uuid', [operationId, outcome]);
     await client.query('COMMIT');
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      destroyClient = true;
+    }
     if (error instanceof ZeroResourceGuardError) throw error;
     throw new ZeroResourceGuardError('ZERO-Ergebnisstatus konnte nicht sicher gespeichert werden.', 'PERSISTENCE_ERROR');
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
