@@ -136,6 +136,7 @@ export async function reserveZeroCostProviderRequestWithPool(
         reason TEXT NOT NULL
       )
     `);
+    await client.query("DELETE FROM zero_cost_audit_events WHERE created_at < NOW() - INTERVAL '90 days'");
     const result = await client.query<{ requests_used: number; daily_limit: number }>(`
       INSERT INTO zero_cost_daily_budget (scope, day_utc, requests_used, daily_limit)
       VALUES ('global', $1::date, 1, $2)
