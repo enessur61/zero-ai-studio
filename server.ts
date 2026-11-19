@@ -13,6 +13,7 @@ import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
+import { ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
 import { runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
@@ -2946,6 +2947,14 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
       code: 'PERSISTENCE_REVISION_CONFLICT',
       expectedRevision: error.expectedRevision,
       actualRevision: error.actualRevision,
+    });
+  }
+  if (error instanceof ZeroResourceOperationReplayError) {
+    return res.status(409).json({
+      error: 'Dieser ZERO-Auftrag existiert bereits; er wurde nicht erneut gestartet.',
+      code: 'OPERATION_REPLAY',
+      replayed: true,
+      operation: error.operation,
     });
   }
   res.status(500).json({ error: 'Interner Serverfehler.' });
