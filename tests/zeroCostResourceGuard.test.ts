@@ -27,13 +27,13 @@ const rejectsCode = (code: string) => (error: unknown) => error instanceof ZeroR
 
 const contextKeys = await runWithZeroPrincipal('server-owned-test-principal', 'client-request-key-0001', async () => ({
   principal: requireZeroPrincipal(),
-  first: createZeroIdempotencyKey('a'.repeat(64)),
-  same: createZeroIdempotencyKey('a'.repeat(64)),
-  different: createZeroIdempotencyKey('b'.repeat(64)),
+  first: createZeroIdempotencyKey(),
+  same: createZeroIdempotencyKey(),
 }));
+const differentContextKey = await runWithZeroPrincipal('server-owned-test-principal', 'client-request-key-0002', () => createZeroIdempotencyKey());
 assert.equal(contextKeys.principal, 'server-owned-test-principal');
-assert.equal(contextKeys.first, contextKeys.same, 'same request header and fingerprint derive a stable operation key');
-assert.notEqual(contextKeys.first, contextKeys.different, 'different canonical requests derive different operation keys');
+assert.equal(contextKeys.first, contextKeys.same, 'same request header derives a stable operation key');
+assert.notEqual(contextKeys.first, differentContextKey, 'different request headers derive different operation keys');
 assert.throws(() => requireZeroPrincipal(), /Authenticated ZERO principal context is required/);
 
 assert.equal(getZeroResourceLimits(env).text.dailyUnits, 20);
