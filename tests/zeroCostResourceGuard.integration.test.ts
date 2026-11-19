@@ -36,6 +36,8 @@ const base: ZeroResourceOperationInput = {
 const code = (expected: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === expected;
 
 try {
+  const serverVersion = await admin.query('SHOW server_version_num');
+  assert.equal(Number(serverVersion.rows[0].server_version_num), 160016, 'integration suite requires PostgreSQL 16.16 exactly');
   await admin.query(`CREATE SCHEMA "${schema}"`);
   await ensureZeroCostResourceSchema(poolA);
   await ensureZeroCostResourceSchema(poolB);
@@ -59,6 +61,26 @@ try {
   assert.equal(sharedBudgetAfterResource, sharedBudgetBeforeResource + 1, 'one resource operation increments the same PR #98 global budget exactly once');
   assert.equal(Number((await poolA.query('SELECT COUNT(*)::int AS count FROM zero_cost_audit_events')).rows[0].count), 2, 'both guard paths write to the same audit table');
   await finishZeroCostResourceOperationWithPool(poolB, sharedResource.operation.operationId, sharedResource.leaseToken, 'SUCCEEDED');
+
+  // Both guard APIs compete for one shared global request; only one may win.
+  await poolA.query("UPDATE zero_cost_daily_budget SET requests_used = 0, daily_limit = 1, locked = FALSE WHERE scope = 'global'");
+  const oneGlobalRequest = { ...env, ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '1' };
+  const crossGuard = await Promise.all([
+    reserveZeroCostProviderRequestWithPool(poolA, {
+      provider: 'cloudflare-workers-ai', modelId: '@cf/zai-org/glm-4.7-flash', studio: 'COMPATIBILITY', action: 'PR98_CONCURRENT_BUDGET',
+    }, oneGlobalRequest).then((value) => ({ kind: 'legacy' as const, value })).catch((error) => ({ kind: 'blocked' as const, error })),
+    reserveZeroCostResourceOperationWithPool(poolB, {
+      ...base, resourceType: 'video', idempotencyKey: 'compat-cross-guard-race-0001',
+    }, oneGlobalRequest).then((value) => ({ kind: 'resource' as const, value })).catch((error) => ({ kind: 'blocked' as const, error })),
+  ]);
+  assert.equal(crossGuard.filter((item) => item.kind !== 'blocked').length, 1, 'only one guard path may consume the final global request');
+  assert.equal(crossGuard.filter((item) => item.kind === 'blocked').length, 1);
+  assert.equal(Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope = 'global'")).rows[0].requests_used), 1);
+  const resourceWinner = crossGuard.find((item) => item.kind === 'resource');
+  if (resourceWinner?.kind === 'resource') {
+    await finishZeroCostResourceOperationWithPool(poolA, resourceWinner.value.operation.operationId, resourceWinner.value.leaseToken, 'SUCCEEDED');
+  }
+  await poolA.query("UPDATE zero_cost_daily_budget SET requests_used = 0, daily_limit = 100, locked = FALSE WHERE scope = 'global'");
 
   // 8–11: idempotency, payload conflict, and cross-pool duplicate protection.
   const first = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, idempotencyKey: 'idem-key-0001' }, env);
@@ -127,6 +149,16 @@ try {
   assert.equal(knownFailureStatus.rows[0].status, 'FAILED', 'definitive provider rejection is recorded as FAILED rather than UNKNOWN');
   const afterKnownFailureBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(afterKnownFailureBudget, beforeKnownFailureBudget + 1, 'definitive failed provider request remains counted in the global request budget');
+
+  const unknownResultKey = 'unknown-result-classification-0001';
+  let unknownResultAttempts = 0;
+  await assert.rejects(() => withZeroCostResourceOperation({
+    ...base, resourceType: 'video', idempotencyKey: unknownResultKey,
+  }, async () => { unknownResultAttempts += 1; return 'ambiguous-http-response'; }, env, poolA, () => 'UNKNOWN'), code('OPERATION_UNKNOWN'));
+  assert.equal(unknownResultAttempts, 1, 'an UNKNOWN result classification never re-executes the provider');
+  const unknownResultHash = createHash('sha256').update(unknownResultKey).digest('hex');
+  const unknownResultStatus = await poolA.query('SELECT status FROM zero_cost_operations WHERE idempotency_hash = $1', [unknownResultHash]);
+  assert.equal(unknownResultStatus.rows[0].status, 'UNKNOWN', 'UNKNOWN result is persisted once without a second finish attempt');
   const usage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type='text'");
   assert.ok(Number(usage.rows[0].reserved_units) >= 1, 'ambiguous provider operation remains charged as reserved');
 
@@ -144,7 +176,7 @@ try {
   }, env);
   await finishZeroCostResourceOperationWithPool(poolA, resumed.operation.operationId, resumed.leaseToken, 'SUCCEEDED');
 
-  console.log('ZERO resource PostgreSQL 16.16 integration passed: PR #98/#100 shared budget schema, audit, advisory lock and pause; resource quotas, idempotency, leases, four operation states, cross-pool concurrency and rollback.');
+  console.log('ZERO resource PostgreSQL 16.16 integration passed: exact PostgreSQL 16.16 version, PR #98/#100 shared budget/audit/lock/pause, cross-guard atomicity, resource quotas, idempotency, leases, UNKNOWN handling, cross-pool concurrency and rollback.');
 } finally {
   await poolA.end(); await poolB.end();
   await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
