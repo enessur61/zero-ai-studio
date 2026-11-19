@@ -138,7 +138,7 @@ try {
     'manual pause must block reservations before provider execution'
   );
   await setZeroCostGuardPaused(poolB, false, 5);
-  const resumedStatus = await getZeroCostGuardStatus(restartPool, costGuardEnv);
+  const resumedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
   assert.equal(resumedStatus.paused, false, 'manual resume must persist across fresh connections');
   assert.equal(resumedStatus.remainingRequests, 0, 'manual resume must not refill the exhausted daily budget');
 
