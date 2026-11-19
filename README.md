@@ -7,6 +7,24 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 
 ---
 
+## ZERO COST GUARD (gemeinsames Tagesbudget)
+
+Alle serverseitigen Cloudflare-Workers-AI- und Gemini-Free-Tier-Aufrufe müssen vor dem Providerzugriff eine atomare Reservierung im gemeinsamen PostgreSQL-Tagesbudget erhalten. Die Reservierung wird über alle Studios und ZERO-Instanzen geteilt und zusammen mit einem Audit-Ereignis dauerhaft gespeichert. Bei fehlender Datenbank, ungültiger Konfiguration, SQL-Fehlern oder ausgeschöpftem Budget wird fail-closed gestoppt; es gibt keinen lokalen Produktions-Fallback und keinen kostenpflichtigen Provider-Fallback.
+
+Die Kostenfreigabe ist standardmäßig deaktiviert. Nur nach manueller Prüfung des tatsächlichen Anbieter-Tarifs und der Abrechnungsoptionen darf ein Administrator alle erforderlichen Variablen ausdrücklich setzen:
+
+```env
+ZERO_COST_GUARD_ENABLED=false
+ZERO_COST_GUARD_FREE_ONLY_CONFIRMED=false
+ZERO_COST_GUARD_DAILY_REQUEST_LIMIT=0
+ZERO_CLOUDFLARE_AI_ENABLED=false
+ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=false
+```
+
+Für Cloudflare müssen die beiden Cloudflare-Freigaben zusätzlich ausdrücklich bestätigt werden. Für Gemini bleibt `ZERO_GEMINI_FREE_TIER_ONLY` erforderlich. Das interne Budget zählt Provider-Anfragen, nicht Cloudflare-Neurons oder Provider-seitige Token-/Audio-/Bildmengen; es ersetzt deshalb weder die Kontrolle des tatsächlichen Provider-Tarifs noch das jeweilige Provider-Kontingent. Das interne Tagesbudget setzt sich UTC-basiert zurück, Provider-Quota-Sperren werden dadurch nicht automatisch aufgehoben.
+
+Produktionsaufrufe benötigen `DATABASE_URL`. Ohne persistente PostgreSQL-Kontrolle bleibt der Guard gesperrt. Keine dieser Variablen wird automatisch aktiviert oder in einem Deployment gesetzt.
+
 ## 1. Projektstruktur
 
 Die produktive Web-App liegt bewusst im Repository-Root; die iPhone-App und die optionalen Worker sind getrennte Pakete.
