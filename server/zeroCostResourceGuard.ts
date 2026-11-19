@@ -418,16 +418,12 @@ export async function withZeroCostResourceOperation<T>(
   if (!env.DATABASE_URL) throw new ZeroResourceGuardError('PostgreSQL fehlt; Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   const databasePool = pool ?? getPostgresPool();
   const { operation, leaseToken } = await reserveZeroCostResourceOperationWithPool(databasePool, input, env);
+  let result: T;
   try {
-    const result = await execute();
-    const outcome = classifyResult(result);
-    await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, outcome);
-    if (outcome === 'UNKNOWN') throw new ZeroResourceGuardError('Provider-Ergebnis ist nicht eindeutig; Vorgang bleibt UNKNOWN und wird nicht wiederholt.', 'OPERATION_UNKNOWN');
-    return result;
+    result = await execute();
   } catch (error) {
-    // Only definitive provider rejections may release the resource reservation and
-    // preserve the original error (e.g. a provider 429). Transport/5xx ambiguity stays
-    // UNKNOWN and is converted to a non-retryable guard error.
+    // Definitive provider rejections release the resource reservation; ambiguous
+    // transport failures stay UNKNOWN and are never automatically retried.
     let outcome: 'FAILED' | 'UNKNOWN' = 'UNKNOWN';
     try { outcome = classifyError(error); } catch { outcome = 'UNKNOWN'; }
     try {
@@ -438,6 +434,20 @@ export async function withZeroCostResourceOperation<T>(
     if (outcome === 'FAILED') throw error;
     throw new ZeroResourceGuardError('Provider-Ausgang ist unklar; Status UNKNOWN, keine automatische Wiederholung.', 'OPERATION_UNKNOWN');
   }
+
+  // Persist a response-classified UNKNOWN exactly once. The deliberate signal
+  // below must not enter the provider-error handler and finish the lease twice.
+  let outcome: ZeroOperationStatus;
+  try { outcome = classifyResult(result); } catch { outcome = 'UNKNOWN'; }
+  try {
+    await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, outcome);
+  } catch {
+    throw new ZeroResourceGuardError('ZERO-Ergebnis konnte nicht dauerhaft gespeichert werden; Reservierung bleibt sicher bestehen.', 'PERSISTENCE_ERROR');
+  }
+  if (outcome === 'UNKNOWN') {
+    throw new ZeroResourceGuardError('Provider-Ergebnis ist nicht eindeutig; Vorgang bleibt UNKNOWN und wird nicht wiederholt.', 'OPERATION_UNKNOWN');
+  }
+  return result;
 }
 
 export async function heartbeatZeroCostResourceLeaseWithPool(pool: Pool, operationId: string, leaseToken: string): Promise<void> {
