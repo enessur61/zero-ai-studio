@@ -244,6 +244,31 @@ export async function getZeroCostGuardStatus(
     Number(env.ZERO_COST_GUARD_DAILY_REQUEST_LIMIT) > 0;
   const client = await pool.connect();
   try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS zero_cost_daily_budget (
+        scope TEXT PRIMARY KEY,
+        day_utc DATE NOT NULL,
+        requests_used INTEGER NOT NULL CHECK (requests_used >= 0),
+        daily_limit INTEGER NOT NULL CHECK (daily_limit > 0),
+        locked BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS zero_cost_audit_events (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        day_utc DATE NOT NULL,
+        provider TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        studio TEXT NOT NULL,
+        action TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        requests_used INTEGER,
+        daily_limit INTEGER,
+        reason TEXT NOT NULL
+      )
+    `);
     const budget = await client.query<{
       day_utc: string; requests_used: number; daily_limit: number; locked: boolean;
     }>("SELECT day_utc::text, requests_used, daily_limit, locked FROM zero_cost_daily_budget WHERE scope = 'global'");
