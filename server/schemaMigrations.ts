@@ -35,7 +35,10 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
       ALTER TABLE zero_cost_operations
         ALTER COLUMN request_fingerprint SET NOT NULL;
 
-      DO $$
+      ALTER TABLE zero_cost_active_leases
+        ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS lease_generation INTEGER NOT NULL DEFAULT 1;
+      DO $
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'zero_cost_operations_fingerprint_sha256_check' AND conrelid = 'zero_cost_operations'::regclass) THEN
           ALTER TABLE zero_cost_operations ADD CONSTRAINT zero_cost_operations_fingerprint_sha256_check CHECK (request_fingerprint ~ '^[a-f0-9]{64}$');
