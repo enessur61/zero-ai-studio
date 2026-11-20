@@ -5,7 +5,7 @@ import { assertZeroCostProviderAllowed, ZeroCostGuardError, ZERO_COST_ADVISORY_L
 import { applyZeroSchemaMigrationsWithClient } from './schemaMigrations.ts';
 
 export type ZeroResourceType = 'text' | 'image' | 'audio' | 'video';
-export type ZeroOperationStatus = 'RESERVED' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN';
+export type ZeroOperationStatus = 'RESERVED' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'REJECTED';
 export type ZeroResourceProvider = 'cloudflare-workers-ai' | 'google-gemini-free';
 
 export interface ZeroResourceLimit {
@@ -533,7 +533,8 @@ export async function finishZeroCostResourceOperationWithPool(
         WHERE day_utc = $2::date AND principal_hash = $3 AND resource_type = $4
       `, [op.reserved_units, op.day_utc, op.principal_hash, op.resource_type]);
       await client.query("UPDATE zero_cost_active_leases SET status = 'RELEASED', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, now]);
-    } else if (outcome === 'FAILED') {
+    } else if (outcome === 'REJECTED') {
+      // Provider definitively rejected the request before accepting execution: release both reservations.
       await client.query(`
         UPDATE zero_cost_resource_usage
         SET reserved_units = GREATEST(0, reserved_units - $1), updated_at = NOW()
@@ -542,6 +543,21 @@ export async function finishZeroCostResourceOperationWithPool(
       await client.query(`
         UPDATE zero_cost_principal_resource_usage
         SET reserved_units = GREATEST(0, reserved_units - $1), updated_at = NOW()
+        WHERE day_utc = $2::date AND principal_hash = $3 AND resource_type = $4
+      `, [op.reserved_units, op.day_utc, op.principal_hash, op.resource_type]);
+      await client.query("UPDATE zero_cost_active_leases SET status = 'RELEASED', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, now]);
+    } else if (outcome === 'FAILED') {
+      // Execution was accepted and then failed: convert the reservation to consumed units; never refund it.
+      await client.query(`
+        UPDATE zero_cost_resource_usage
+        SET reserved_units = GREATEST(0, reserved_units - $1),
+            consumed_units = consumed_units + $1, updated_at = NOW()
+        WHERE day_utc = $2::date AND scope_hash = $3 AND resource_type = $4
+      `, [op.reserved_units, op.day_utc, digest('global'), op.resource_type]);
+      await client.query(`
+        UPDATE zero_cost_principal_resource_usage
+        SET reserved_units = GREATEST(0, reserved_units - $1),
+            consumed_units = consumed_units + $1, updated_at = NOW()
         WHERE day_utc = $2::date AND principal_hash = $3 AND resource_type = $4
       `, [op.reserved_units, op.day_utc, op.principal_hash, op.resource_type]);
       await client.query("UPDATE zero_cost_active_leases SET status = 'RELEASED', expires_at = $2 WHERE operation_id = $1::uuid", [operationId, now]);
@@ -569,8 +585,8 @@ export async function withZeroCostResourceOperation<T>(
   execute: () => Promise<T>,
   env: ZeroResourceEnvironment = input.env ?? process.env,
   pool: Pool | undefined = undefined,
-  classifyResult: (result: T) => 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' = () => 'SUCCEEDED',
-  classifyError: (error: unknown) => 'FAILED' | 'UNKNOWN' = () => 'UNKNOWN'
+  classifyResult: (result: T) => 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'REJECTED' = () => 'SUCCEEDED',
+  classifyError: (error: unknown) => 'REJECTED' | 'FAILED' | 'UNKNOWN' = () => 'UNKNOWN'
 ): Promise<T | ZeroResourceOperationReplay> {
   if (!env.DATABASE_URL) throw new ZeroResourceGuardError('PostgreSQL fehlt; Provider-Aufruf sicher blockiert.', 'PERSISTENCE_UNAVAILABLE');
   const databasePool = pool ?? getPostgresPool();
@@ -582,16 +598,16 @@ export async function withZeroCostResourceOperation<T>(
   try {
     result = await execute();
   } catch (error) {
-    // Definitive provider rejections release the resource reservation; ambiguous
-    // transport failures stay UNKNOWN and are never automatically retried.
-    let outcome: 'FAILED' | 'UNKNOWN' = 'UNKNOWN';
+    // REJECTED means no provider acceptance; FAILED means accepted execution failed.
+    // Ambiguous transport failures remain UNKNOWN and are never automatically retried.
+    let outcome: 'REJECTED' | 'FAILED' | 'UNKNOWN' = 'UNKNOWN';
     try { outcome = classifyError(error); } catch { outcome = 'UNKNOWN'; }
     try {
       await finishZeroCostResourceOperationWithPool(databasePool, operation.operationId, leaseToken, leaseGeneration, outcome);
     } catch {
       throw new ZeroResourceGuardError('ZERO-Ergebnis konnte nicht dauerhaft gespeichert werden; Reservierung bleibt sicher bestehen.', 'PERSISTENCE_ERROR');
     }
-    if (outcome === 'FAILED') throw error;
+    if (outcome === 'REJECTED' || outcome === 'FAILED') throw error;
     throw new ZeroResourceGuardError('Provider-Ausgang ist unklar; Status UNKNOWN, keine automatische Wiederholung.', 'OPERATION_UNKNOWN');
   }
 
