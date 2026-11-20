@@ -1989,11 +1989,11 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
-  return await withZeroProjectLifecycleLock(projectId, async () => {
+  const result = await withZeroProjectLifecycleLock(projectId, async () => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === projectId);
-  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
-  if (!project.scenes.some((item) => item.id === sceneId)) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+  if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
+  if (!project.scenes.some((item) => item.id === sceneId)) return { status: 404, body: { error: 'Szene nicht gefunden.' } };
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
@@ -2018,25 +2018,26 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       job?: Record<string, unknown>; replayed?: boolean; detail?: unknown;
     };
     if (!response.ok) {
-      if (response.status === 409) return res.status(409).json({ error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' });
-      return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
+      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' } };
+      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status } };
     }
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
         !['queued', 'running', 'succeeded', 'failed'].includes(String(job.status))) {
-      return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
+      return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
     }
-    return res.status(payload.replayed === true ? 200 : 202).json({
+    return { status: payload.replayed === true ? 200 : 202, body: {
       job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
       maxFinalDurationSec: 60,
       costFallback: false,
-    });
+    } };
   } catch {
-    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+    return { status: 503, body: { error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' } };
   } finally {
     clearTimeout(timeout);
   }
   });
+  return res.status(result.status).json(result.body);
 }));
 
 app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
@@ -2736,12 +2737,12 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
-  return await withZeroProjectLifecycleLock(req.params.id, async () => {
+  const result = await withZeroProjectLifecycleLock(req.params.id, async () => {
   const db = await loadDb();
   const projectExists = db.projects.some((project) => project.id === req.params.id);
   if (projectExists) {
     if (db.projects.length <= 1) {
-      return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
+      return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
     }
     db.projects = db.projects.filter((project) => project.id !== req.params.id);
     await saveDb(db);
@@ -2763,11 +2764,11 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
         redirect: 'error',
       });
       if (!response.ok) {
-        return res.status(503).json({ error: 'Wan-Aufträge und Worker-Dateien konnten noch nicht vollständig bereinigt werden. Projektlöschung erneut versuchen.' });
+        return { status: 503, body: { error: 'Wan-Aufträge und Worker-Dateien konnten noch nicht vollständig bereinigt werden. Projektlöschung erneut versuchen.' } };
       }
       workerCleanup = await response.json().catch(() => ({})) as { deleted?: number; pending?: number };
     } catch {
-      return res.status(503).json({ error: 'Wan-Worker für die Projektbereinigung nicht erreichbar. Projektlöschung erneut versuchen.' });
+      return { status: 503, body: { error: 'Wan-Worker für die Projektbereinigung nicht erreichbar. Projektlöschung erneut versuchen.' } };
     } finally {
       clearTimeout(timeout);
     }
@@ -2778,8 +2779,9 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
     assets: sanitizeProjectAssets(project.assets),
     snapshots: sanitizeProjectSnapshots(project.snapshots),
   }));
-  return res.json({ ok: true, projects, workerCleanup });
+  return { status: 200, body: { ok: true, projects, workerCleanup } };
   });
+  return res.status(result.status).json(result.body);
 }));
 
 // === ZERO CHARACTER ENGINE ===
