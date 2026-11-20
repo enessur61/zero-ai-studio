@@ -741,7 +741,7 @@ jobs:
           cat > searxng/searxng.env <<EOF
           SEARXNG_SECRET=$SEARCH_SECRET
           EOF
-          docker compose --file docker-compose.workers.yml up --detach --build zero-app
+          docker compose --file docker-compose.workers.yml up --detach --build zero-app zero-worker searxng
           cleanup() {
             docker compose --file docker-compose.workers.yml down --volumes --remove-orphans
           }
