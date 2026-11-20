@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { watchProjectVideoRecovery, type ProjectVideoRecoveryState } from '../lib/projectVideoRecovery.ts';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -49,11 +50,40 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanBusy, setWanBusy] = useState(false);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
+  const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoRecoveryStatus, setVideoRecoveryStatus] = useState<ProjectVideoRecoveryState>('ready');
   const [wanClipScene, setWanClipScene] = useState('');
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
   const [wanJobHistory, setWanJobHistory] = useState<WanJobHistoryItem[]>([]);
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
+
+  // Safari may suspend media requests while the tab/app is backgrounded. Re-check
+  // the authenticated byte-range endpoint on return/network recovery; never cache
+  // the clip in a Blob or buffer it in JavaScript memory.
+  useEffect(() => {
+    if (!wanClipUrl?.startsWith('/api/projects/')) {
+      setVideoRecoveryStatus('ready');
+      return;
+    }
+    return watchProjectVideoRecovery({
+      url: wanClipUrl,
+      onState: setVideoRecoveryStatus,
+      onResume: () => {
+        const video = archivedVideoRef.current;
+        if (!video) return;
+        const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        const shouldResumePlayback = !video.paused && !video.ended;
+        const restorePosition = () => {
+          video.currentTime = position;
+          if (shouldResumePlayback) void video.play().catch(() => undefined);
+        };
+        video.addEventListener('loadedmetadata', restorePosition, { once: true });
+        video.load();
+      },
+    });
+  }, [wanClipUrl]);
+
 
   async function refreshVideoHistory(projectId: string) {
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/videos`, {
@@ -556,7 +586,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             {wanClipUrl && (
               <div className="space-y-2">
                 <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
-                <video src={wanClipUrl} controls playsInline className="w-full rounded-xl bg-black" />
+                <video ref={archivedVideoRef} src={wanClipUrl} controls playsInline preload="metadata" className="w-full rounded-xl bg-black" />
+                {videoRecoveryStatus === 'offline' && <p role="status" className="text-xs text-amber-300">Verbindung unterbrochen. ZERO setzt die Prüfung fort, sobald Safari wieder online ist.</p>}
+                {videoRecoveryStatus === 'session-expired' && <p role="status" className="text-xs text-amber-300">Sitzung abgelaufen. Bitte erneut anmelden; danach wird die Wiedergabe beim Zurückkehren erneut geprüft. Downloads bitte anschließend erneut antippen.</p>}
+                {videoRecoveryStatus === 'missing' && <p role="status" className="text-xs text-rose-300">Dieser Clip ist nicht mehr verfügbar oder wurde gelöscht.</p>}
+                {videoRecoveryStatus === 'error' && <p role="status" className="text-xs text-amber-300">Clip-Verbindung konnte nicht geprüft werden. Tippe auf Wiedergabe, um es erneut zu versuchen.</p>}
                 <a href={wanClipUrl} download="zero-wan-shot.mp4" className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white"><Download className="w-4 h-4" />Wan-MP4 herunterladen</a>
               </div>
             )}
