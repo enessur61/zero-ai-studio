@@ -54,17 +54,17 @@ export async function apiRequest<T>(url: string, options?: RequestInit): Promise
   }
 
   try {
-  const headers = new Headers(options?.headers);
-  const method = (options?.method ?? 'GET').toUpperCase();
-  let persistentIdempotency: Awaited<ReturnType<typeof getOrCreatePersistentIdempotencyKey>> | undefined;
-  if (method === 'POST' && url.startsWith('/api/') && typeof options?.body === 'string' && !headers.has('Idempotency-Key')) {
-    persistentIdempotency = await getOrCreatePersistentIdempotencyKey(url, options.body);
-    headers.set('Idempotency-Key', persistentIdempotency.key);
+    const headers = new Headers(options?.headers);
+    const method = (options?.method ?? 'GET').toUpperCase();
+    let persistentIdempotency: Awaited<ReturnType<typeof getOrCreatePersistentIdempotencyKey>> | undefined;
+    if (method === 'POST' && url.startsWith('/api/') && typeof options?.body === 'string' && !headers.has('Idempotency-Key')) {
+      persistentIdempotency = await getOrCreatePersistentIdempotencyKey(url, options.body);
+      headers.set('Idempotency-Key', persistentIdempotency.key);
   }
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
 
-  const { signal: _ignoredSignal, ...requestOptions } = options ?? {};
+    const { signal: _ignoredSignal, ...requestOptions } = options ?? {};
 
     const response = await fetch(url, {
       ...requestOptions,
