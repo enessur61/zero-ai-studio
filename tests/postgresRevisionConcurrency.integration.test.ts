@@ -147,6 +147,21 @@ try {
   assert.equal(limitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
   assert.equal((await limitedB.list('project-video-limits', videoPrincipal)).length, 2);
 
+  const byteLimitedA = createProjectVideoAssetStore(poolA, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedB = createProjectVideoAssetStore(poolB, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedWrites = await Promise.allSettled([
+    byteLimitedA.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-a', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+    byteLimitedB.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-b', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+  ]);
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'fulfilled').length, 1,
+    'concurrent uploads cannot exceed the byte budget even when the clip-count limit is not reached');
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
+  assert.equal((await byteLimitedA.list('project-video-byte-limit', videoPrincipal)).length, 1);
+
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
   const authB = createPostgresAuthStore(poolB);
