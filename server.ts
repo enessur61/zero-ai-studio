@@ -24,6 +24,7 @@ import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayErro
 import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
+import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -1600,6 +1601,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
 }));
 
 function getPiperTtsWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
+  if (!isPiperWorkerAllowed()) return null;
   const configuredUrl = process.env.ZERO_TTS_WORKER_URL?.trim();
   const token = process.env.ZERO_TTS_WORKER_TOKEN?.trim();
   if (!configuredUrl || !token) return null;
