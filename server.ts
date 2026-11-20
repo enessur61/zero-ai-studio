@@ -3066,15 +3066,15 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   const ownedProjects = db.projects.filter((project) => project.ownerId === principal.id);
   const projectExists = ownedProjects.some((project) => project.id === req.params.id);
   if (projectExists) {
+    if (ownedProjects.length <= 1) {
+      return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
+    }
     if (process.env.DATABASE_URL) {
       await recordProjectDeletionIdempotency(
         req.params.id,
         principal.id,
         String(res.locals.zeroRequestIdempotencyKey ?? ''),
       );
-    }
-    if (ownedProjects.length <= 1) {
-      return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
     }
     db.projects = db.projects.filter((project) => !(project.id === req.params.id && project.ownerId === principal.id));
     await saveDb(db);
