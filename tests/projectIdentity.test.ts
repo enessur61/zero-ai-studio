@@ -48,7 +48,7 @@ const app = express();
 app.use(express.json());
 app.use((req, res, next) => {
   if (req.headers.cookie === 'zero_session=valid-test-session') {
-    res.locals.zeroPrincipal = ZERO_ADMIN_PRINCIPAL;
+    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
   }
   next();
 });
