@@ -18,6 +18,7 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
+import { createProjectVideoAssetStore } from '../server/projectVideoStore.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
@@ -51,6 +52,44 @@ try {
   // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
   await storeA.ensureSchema();
   await storeB.ensureSchema();
+
+  // Principal-bound durable video assets use PostgreSQL binary storage and
+  // remain independent from the worker's bounded SQLite job-history retention.
+  const projectVideoStore = createProjectVideoAssetStore(poolA);
+  const videoPrincipal = 'd'.repeat(64);
+  const videoJobId = randomUUID();
+  const mp4Payload = Buffer.alloc(2048);
+  mp4Payload.write('ftyp', 4, 'ascii');
+  const archivedVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-integration',
+    principalHash: videoPrincipal,
+    jobId: videoJobId,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  assert.equal(archivedVideo.sizeBytes, mp4Payload.length);
+  assert.equal((await projectVideoStore.list('project-video-integration', videoPrincipal)).length, 1);
+  assert.equal((await projectVideoStore.list('project-video-integration', 'e'.repeat(64))).length, 0);
+  const archivedVideoBytes = await projectVideoStore.get(
+    archivedVideo.id, 'project-video-integration', videoPrincipal
+  );
+  assert.deepEqual(archivedVideoBytes?.payload, mp4Payload);
+  assert.equal(
+    (await projectVideoStore.getLatestForScene('project-video-integration', 'scene-video-integration', videoPrincipal))?.id,
+    archivedVideo.id,
+  );
+  const idempotentArchive = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-integration',
+    principalHash: videoPrincipal,
+    jobId: videoJobId,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  assert.equal(idempotentArchive.id, archivedVideo.id, 'retrying the same Wan job must not duplicate the project clip');
+  assert.equal(await projectVideoStore.remove(archivedVideo.id, 'project-video-integration', videoPrincipal), true);
+  assert.equal(await projectVideoStore.removeProject('project-video-integration', videoPrincipal), 0);
 
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
