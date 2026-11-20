@@ -8,8 +8,8 @@ type PgQueryable = {
     values?: unknown[]
   ): Promise<PgQueryResult<T>>;
 };
-type PgClient = PgQueryable & { release(error?: boolean | Error): void };
-type PostgresDatabase = PgQueryable & { connect(): Promise<PgClient> };
+export type PostgresClient = PgQueryable & { release(error?: boolean | Error): void };
+export type PostgresDatabase = PgQueryable & { connect(): Promise<PostgresClient> };
 type BunRows<T> = T[] & { count?: number };
 type BunReservedConnection = {
   unsafe<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -33,7 +33,7 @@ type BunSqlConstructor = new (options: {
   prepare: false;
 }) => BunSqlPool;
 
-class BunPostgresClient implements PgClient {
+class BunPostgresClient implements PostgresClient {
   constructor(private readonly connection: BunReservedConnection) {}
 
   async query<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -61,7 +61,7 @@ class BunPostgresPool implements PostgresDatabase {
     return { rows, rowCount: rows.count ?? rows.length };
   }
 
-  async connect(): Promise<PgClient> {
+  async connect(): Promise<PostgresClient> {
     return new BunPostgresClient(await this.connection.reserve());
   }
 }
