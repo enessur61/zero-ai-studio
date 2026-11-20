@@ -16,9 +16,10 @@ services:
       - "127.0.0.1:3000:3000"
     security_opt:
       - no-new-privileges:true
+    # Piper is optional; ZERO must remain available when the local worker is offline.
     depends_on:
       zero-worker:
-        condition: service_healthy
+        condition: service_started
 
   zero-worker:
     build:
