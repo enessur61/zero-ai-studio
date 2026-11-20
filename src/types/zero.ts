@@ -282,6 +282,7 @@ export type NavigationTab =
   | 'image'
   | 'video'
   | 'audio'
+  | 'voice'
   | 'music'
   | 'director'
   | 'projects'
