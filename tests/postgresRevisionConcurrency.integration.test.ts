@@ -88,8 +88,33 @@ try {
     payload: mp4Payload,
   });
   assert.equal(idempotentArchive.id, archivedVideo.id, 'retrying the same Wan job must not duplicate the project clip');
+
+  const expiringVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-expiring',
+    principalHash: videoPrincipal,
+    jobId: randomUUID(),
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  await poolA.query(
+    'UPDATE zero_project_video_assets SET expires_at = NOW() - INTERVAL \'1 second\' WHERE asset_id = $1',
+    [expiringVideo.id],
+  );
+  assert.equal((await projectVideoStore.list('project-video-integration', videoPrincipal)).length, 1,
+    'expired assets are purged while unexpired history remains visible');
+
+  const projectCleanupVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-project-cleanup',
+    principalHash: videoPrincipal,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  assert.ok(projectCleanupVideo.id);
   assert.equal(await projectVideoStore.remove(archivedVideo.id, 'project-video-integration', videoPrincipal), true);
-  assert.equal(await projectVideoStore.removeProject('project-video-integration', videoPrincipal), 0);
+  assert.equal(await projectVideoStore.removeProject('project-video-integration', videoPrincipal), 1,
+    'project deletion removes remaining archived clip bytes');
 
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
