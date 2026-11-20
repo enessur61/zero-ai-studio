@@ -44,5 +44,13 @@ assert.ok(server.includes('isAuthConfigurationValid(ZERO_ADMIN_PASSWORD, ZERO_SE
 assert.ok(server.includes('requireSessionSecret(ZERO_SESSION_SECRET)'), 'Session HMAC operations must fail closed without a valid secret.');
 assert.ok(gemini.includes("ZERO_GEMINI_FREE_TIER_ONLY !== 'true'"), 'Gemini must reject calls without the explicit free-tier gate.');
 assert.ok(cloudflare.includes('ZERO startet keinen kostenpflichtigen Fallback'), 'Cloudflare quota errors must not trigger paid fallback.');
+assert.ok(server.includes('runtimeConfig.ZERO_TTS_WORKER_URL?.trim()') && server.includes('runtimeConfig.ZERO_TTS_WORKER_TOKEN?.trim()'), 'Piper worker must require an explicitly configured URL and token.');
+assert.ok(server.includes('runtimeConfig.ZERO_WEB_SEARCH_URL?.trim()') && server.includes('runtimeConfig.ZERO_WEB_SEARCH_TOKEN?.trim()'), 'Web-search worker must require an explicitly configured URL and token.');
+assert.ok(server.includes('runtimeConfig.ZERO_VIDEO_ENGINE_URL?.trim()') && server.includes('runtimeConfig.ZERO_VIDEO_ENGINE_TOKEN?.trim()'), 'Video worker must require an explicitly configured URL and token.');
+assert.ok(server.includes("!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)"), 'Configured TTS, search and video worker URLs must use HTTPS in production.');
+assert.ok(server.includes("endpoint.protocol !== 'https:'"), 'Video health checks must reject non-HTTPS production destinations.');
+assert.ok(server.includes("redirect: 'error'"), 'Worker requests must not follow redirects to an unreviewed destination.');
+assert.ok(server.includes('paidFallback: false') && server.includes('costFallback: false'), 'Worker outages must not trigger paid provider fallbacks.');
+
 
 console.log('ZERO fail-closed security guard tests passed.');
