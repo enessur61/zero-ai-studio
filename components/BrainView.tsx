@@ -11,7 +11,7 @@ import {
   Trash2,
   Workflow,
 } from 'lucide-react';
-import { apiRequest } from '../lib/api.ts';
+import { apiRequest, getOrCreatePersistentIdempotencyKey } from '../lib/api.ts';
 import {
   type NativeIOSTextModelId,
   runNativeCoreMLPrompt,
@@ -212,21 +212,25 @@ export function BrainView({
       } else {
         setInput('');
         setWebgpuAssistantDraft('');
+        const chatBody = JSON.stringify({
+          message: promptText,
+          ...(selectedModel === 'auto' ? {} : { modelId: selectedModel }),
+          useWebSearch,
+          projectId: selectedProjectId,
+        });
+        const chatIdempotency = await getOrCreatePersistentIdempotencyKey('/api/brain/chat', chatBody);
         const response = await fetch('/api/brain/chat', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
+            'Idempotency-Key': chatIdempotency.key,
           },
-          body: JSON.stringify({
-            message: promptText,
-            ...(selectedModel === 'auto' ? {} : { modelId: selectedModel }),
-            useWebSearch,
-            projectId: selectedProjectId,
-          }),
+          body: chatBody,
         });
         if (!response.ok) {
+          if (response.status >= 400 && response.status < 500) await chatIdempotency.clear();
           const payload = await response.json().catch(() => null);
           throw new Error(payload?.error || 'ZERO-Fehler (HTTP ' + response.status + ')');
         }
