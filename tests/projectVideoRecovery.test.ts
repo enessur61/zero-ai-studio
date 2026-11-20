@@ -90,6 +90,13 @@ try {
   assert.equal(classifyProjectVideoMediaError(3), 'decode');
   assert.equal(classifyProjectVideoMediaError(4), 'unsupported');
   assert.equal(classifyProjectVideoMediaError(1), 'aborted');
+  mediaErrorCode = 1;
+  const requestsBeforeAbortedMedia = clipRequests;
+  mediaEvents.dispatchEvent(new Event('error'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(states.at(-1), 'ready', 'Safari cancellation while replacing a source is not a decoder fault');
+  assert.equal(clipRequests, requestsBeforeAbortedMedia, 'aborted media requests do not start recovery probes');
+
   mediaErrorCode = 3;
   const requestsBeforeDecoderFailure = clipRequests;
   mediaEvents.dispatchEvent(new Event('error'));
