@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
+import { readProjectVideoPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
   BackupConfigState,
@@ -94,7 +95,13 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavigationTab>('home');
+  const [activeTab, setActiveTab] = useState<NavigationTab>(() => {
+    try {
+      return readProjectVideoPlaybackSnapshot(window.sessionStorage) ? 'video' : 'home';
+    } catch {
+      return 'home';
+    }
+  });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
