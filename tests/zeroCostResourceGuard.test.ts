@@ -22,6 +22,7 @@ const env = {
 const base: ZeroResourceOperationInput = {
   provider: 'cloudflare-workers-ai', modelId: '@cf/zai-org/glm-4.7-flash',
   resourceType: 'text', studio: 'UNIT', action: 'TEST', payload: { prompt: 'hello' }, inputChars: 5,
+  principal: 'unit-principal', idempotencyKey: 'unit-00000001',
 };
 const rejectsCode = (code: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === code;
 
