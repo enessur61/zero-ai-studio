@@ -1,7 +1,73 @@
 import { runtimeConfig } from './runtimeConfig.ts';
 import { Pool } from 'pg';
 
-let pool: Pool | null = null;
+type PgQueryResult<T> = { rows: T[]; rowCount: number | null };
+type PgQueryable = {
+  query<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<PgQueryResult<T>>;
+};
+type PgClient = PgQueryable & { release(error?: boolean | Error): void };
+type PostgresDatabase = PgQueryable & { connect(): Promise<PgClient> };
+type BunRows<T> = T[] & { count?: number };
+type BunReservedConnection = {
+  unsafe<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<BunRows<T>>;
+  release(): void;
+  close(): void;
+};
+type BunSqlPool = {
+  unsafe<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<BunRows<T>>;
+  reserve(): Promise<BunReservedConnection>;
+};
+type BunSqlConstructor = new (options: {
+  url: string;
+  max: number;
+  idleTimeout: number;
+  prepare: false;
+}) => BunSqlPool;
+
+class BunPostgresClient implements PgClient {
+  constructor(private readonly connection: BunReservedConnection) {}
+
+  async query<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<PgQueryResult<T>> {
+    const rows = await this.connection.unsafe<T>(text, values);
+    return { rows, rowCount: rows.count ?? rows.length };
+  }
+
+  release(error?: boolean | Error): void {
+    if (error) this.connection.close();
+    else this.connection.release();
+  }
+}
+
+class BunPostgresPool implements PostgresDatabase {
+  constructor(private readonly connection: BunSqlPool) {}
+
+  async query<T extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ): Promise<PgQueryResult<T>> {
+    const rows = await this.connection.unsafe<T>(text, values);
+    return { rows, rowCount: rows.count ?? rows.length };
+  }
+
+  async connect(): Promise<PgClient> {
+    return new BunPostgresClient(await this.connection.reserve());
+  }
+}
+
+let BunSQL: BunSqlConstructor | null = null;
+let pool: PostgresDatabase | null = null;
 let stateStore: ReturnType<typeof createPostgresStateStore> | null = null;
 
 export interface VersionedPersistentState<T> {
@@ -29,7 +95,7 @@ export class PersistentStateConflictError extends Error {
  * A state store bound to one PostgreSQL pool. Exported so integration tests can
  * exercise the exact production SQL through two independent pools/connections.
  */
-export function createPostgresStateStore(database: Pool) {
+export function createPostgresStateStore(database: PostgresDatabase) {
   let schemaReady: Promise<void> | null = null;
 
   async function ensureSchema(): Promise<void> {
@@ -320,22 +386,43 @@ export function createPostgresStateStore(database: Pool) {
   };
 }
 
-export function getPostgresPool(): Pool {
+export async function initializePostgresDriver(): Promise<void> {
+  if (runtimeConfig.ZERO_USE_BUN_SQL !== 'true') return;
+  const bun = await import('bun');
+  BunSQL = bun.SQL as unknown as BunSqlConstructor;
+}
+
+export function getPostgresPool(): PostgresDatabase {
   if (!runtimeConfig.DATABASE_URL) {
     throw new Error('DATABASE_URL fehlt. In Produktion ist eine dauerhafte PostgreSQL-Datenbank erforderlich.');
   }
   if (!pool) {
-    pool = new Pool({
-      connectionString: runtimeConfig.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 8_000,
-      statement_timeout: 15_000,
-      application_name: 'zero-ai-studio',
-    });
-    pool.on('error', (error) => {
-      console.error('[ZERO PostgreSQL] Unerwarteter Pool-Fehler:', error.message);
-    });
+    if (runtimeConfig.ZERO_USE_BUN_SQL === 'true') {
+      if (!BunSQL) {
+        throw new Error('Bun SQL wurde für Prisma Compute nicht initialisiert.');
+      }
+      // Prisma Composer recommends Bun SQL for rawPostgres on Compute.
+      // A tiny reconnect-friendly pool avoids idle TCP sockets across scale-to-zero.
+      pool = new BunPostgresPool(new BunSQL({
+        url: runtimeConfig.DATABASE_URL,
+        max: 1,
+        idleTimeout: 10,
+        prepare: false,
+      }));
+    } else {
+      const nodePool = new Pool({
+        connectionString: runtimeConfig.DATABASE_URL,
+        max: 5,
+        idleTimeoutMillis: 10_000,
+        connectionTimeoutMillis: 8_000,
+        statement_timeout: 15_000,
+        application_name: 'zero-ai-studio',
+      });
+      nodePool.on('error', (error) => {
+        console.error('[ZERO PostgreSQL] Unerwarteter Pool-Fehler:', error.message);
+      });
+      pool = nodePool as unknown as PostgresDatabase;
+    }
   }
   return pool;
 }
@@ -410,7 +497,7 @@ export async function acquirePersistentAutoBackupLease(minimumIntervalMs?: numbe
  * Acquire one of the same cross-process ZIP slots used by HTTP ZIP routes.
  * Background automatic backups must share the global memory/CPU budget too.
  */
-export async function acquirePersistentZipOperationLease(database: Pool = getPostgresPool()): Promise<{
+export async function acquirePersistentZipOperationLease(database: PostgresDatabase = getPostgresPool()): Promise<{
   release: () => Promise<void>;
 } | null> {
   const client = await database.connect();
@@ -487,7 +574,7 @@ export async function writeBackupFile(
   );
 }
 
-export async function readBackupFile(id: string, maxBytes?: number, database?: Pool): Promise<Buffer> {
+export async function readBackupFile(id: string, maxBytes?: number, database?: PostgresDatabase): Promise<Buffer> {
   if (database) await createPostgresStateStore(database).ensureSchema();
   else await ensurePostgresSchema();
   const result = await (database ?? getPostgresPool()).query<{ payload: Buffer | null; size_bytes: string }>(
