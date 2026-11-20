@@ -20,6 +20,7 @@ assert.equal(requireSessionSecret('s'.repeat(32)), 's'.repeat(32));
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const compute = read('../compute-server.ts');
 const prismaModule = read('../module.mjs');
+const serviceDefinition = read('../service.mjs');
 const persistence = read('../server/persistence.ts');
 const gemini = read('../server/geminiClient.ts');
 const cloudflare = read('../server/cloudflareWorkersAi.ts');
@@ -33,7 +34,8 @@ for (const key of postgresEnvironmentKeys) assert.ok(compute.includes('"' + key 
 for (const key of providerKeys) assert.ok(compute.includes('"' + key + '"'), 'Preview must clear inherited ' + key);
 assert.ok(prismaModule.includes('ZERO_ADMIN_PASSWORD: envSecret("ZERO_ADMIN_PASSWORD")'));
 assert.ok(prismaModule.includes('ZERO_SESSION_SECRET: envSecret("ZERO_SESSION_SECRET")'));
-assert.doesNotMatch(prismaModule, /GEMINI_API_KEY|CLOUDFLARE_API_TOKEN|ZERO_WEB_SEARCH_TOKEN|ZERO_TTS_WORKER_TOKEN|ZERO_VIDEO_ENGINE_TOKEN/);
+for (const key of providerKeys) assert.ok(!prismaModule.includes(key), 'Preview module must not bind optional provider or worker input ' + key);
+assert.ok(serviceDefinition.includes('input: serviceInput'), 'Provider and worker settings may only enter through typed service inputs.');
 assert.ok(persistence.includes('validatePostgresConnectionString(runtimeConfig.DATABASE_URL)'), 'Pool creation must validate the explicit DATABASE_URL.');
 assert.ok(persistence.includes('connectionString: databaseUrl') && persistence.includes('url: databaseUrl'), 'Both PostgreSQL drivers must receive the same validated explicit URL.');
 assert.ok(!persistence.includes('new Pool()'), 'PostgreSQL must never create a pool from implicit PG* environment defaults.');
