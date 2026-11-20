@@ -1,4 +1,5 @@
 import { runtimeConfig } from './runtimeConfig.ts';
+import { validatePostgresConnectionString } from './securityGuards.ts';
 import { Pool } from 'pg';
 
 type PgQueryResult<T> = { rows: T[]; rowCount: number | null };
@@ -393,9 +394,7 @@ export async function initializePostgresDriver(): Promise<void> {
 }
 
 export function getPostgresPool(): PostgresDatabase {
-  if (!runtimeConfig.DATABASE_URL) {
-    throw new Error('DATABASE_URL fehlt. In Produktion ist eine dauerhafte PostgreSQL-Datenbank erforderlich.');
-  }
+  const databaseUrl = validatePostgresConnectionString(runtimeConfig.DATABASE_URL);
   if (!pool) {
     if (runtimeConfig.ZERO_USE_BUN_SQL === 'true') {
       if (!BunSQL) {
@@ -404,14 +403,14 @@ export function getPostgresPool(): PostgresDatabase {
       // Prisma Composer recommends Bun SQL for rawPostgres on Compute.
       // A tiny reconnect-friendly pool avoids idle TCP sockets across scale-to-zero.
       pool = new BunPostgresPool(new BunSQL({
-        url: runtimeConfig.DATABASE_URL,
+        url: databaseUrl,
         max: 1,
         idleTimeout: 10,
         prepare: false,
       }));
     } else {
       const nodePool = new Pool({
-        connectionString: runtimeConfig.DATABASE_URL,
+        connectionString: databaseUrl,
         max: 5,
         idleTimeoutMillis: 10_000,
         connectionTimeoutMillis: 8_000,
