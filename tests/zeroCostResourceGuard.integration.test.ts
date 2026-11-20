@@ -35,7 +35,7 @@ const env = {
 const base: ZeroResourceOperationInput = {
   provider: 'cloudflare-workers-ai', modelId: '@cf/zai-org/glm-4.7-flash', resourceType: 'text',
   studio: 'INTEGRATION', action: 'TEST', payload: { prompt: 'hello' },
-  principal: 'integration-principal', idempotencyKey: 'integration-base-key-0001',
+  principal: 'integration-principal', idempotencyKey: 'base-00000001',
 };
 const code = (expected: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === expected;
 
@@ -211,13 +211,13 @@ try {
   // Principal-specific daily usage is isolated while the global resource ceiling still applies.
   const principalEnv = { ...env, ZERO_RESOURCE_TEXT_DAILY_LIMIT: '10', ZERO_RESOURCE_TEXT_PRINCIPAL_DAILY_LIMIT: '2' };
   const principalA = await reserveZeroCostResourceOperationWithPool(poolA, {
-    ...base, principal: 'principal-a', units: 2, idempotencyKey: 'principal-a-daily-0001',
+    ...base, principal: 'principal-a', units: 2, idempotencyKey: 'principal-a-0001',
   }, principalEnv);
   await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, {
-    ...base, principal: 'principal-a', units: 1, idempotencyKey: 'principal-a-daily-0002',
+    ...base, principal: 'principal-a', units: 1, idempotencyKey: 'principal-a-0002',
   }, principalEnv), code('PRINCIPAL_DAILY_LIMIT'));
   const principalB = await reserveZeroCostResourceOperationWithPool(poolB, {
-    ...base, principal: 'principal-b', units: 2, idempotencyKey: 'principal-b-daily-0001',
+    ...base, principal: 'principal-b', units: 2, idempotencyKey: 'principal-b-0001',
   }, principalEnv);
   const principalRows = await poolA.query(
     'SELECT COUNT(*)::int AS count FROM zero_cost_principal_resource_usage WHERE principal_hash = ANY($1::char(64)[])',
@@ -230,11 +230,11 @@ try {
   // Canonical JSON key order produces the same request fingerprint and replay.
   const canonicalFirst = await reserveZeroCostResourceOperationWithPool(poolA, {
     ...base, payload: { prompt: 'canonical', options: { temperature: 0.2, topP: 0.9 } },
-    idempotencyKey: 'canonical-fingerprint-0001',
+    idempotencyKey: 'canon-00000001',
   }, env);
   const canonicalReplay = await reserveZeroCostResourceOperationWithPool(poolB, {
     ...base, payload: { options: { topP: 0.9, temperature: 0.2 }, prompt: 'canonical' },
-    idempotencyKey: 'canonical-fingerprint-0001',
+    idempotencyKey: 'canon-00000001',
   }, env);
   assert.equal(canonicalReplay.operation.operationId, canonicalFirst.operation.operationId);
   await finishZeroCostResourceOperationWithPool(poolA, canonicalFirst.operation.operationId, canonicalFirst.leaseToken!, canonicalFirst.operation.leaseGeneration!, 'FAILED');
