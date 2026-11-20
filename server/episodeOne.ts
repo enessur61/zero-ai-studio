@@ -38,7 +38,7 @@ export const EPISODE_ONE = {
       subtitleText: '',
       soundCue: 'Tiefe, kaum hörbare Bassspannung',
       imagePrompt: 'Photorealistic close portrait of the same Elias: 23, short dark-brown hair, slight beard, tired brown eyes, black hoodie, frozen in shock while staring at his phone. Restrained acting, natural skin detail, cold blue-grey low-key lighting, 85mm portrait lens, shallow depth of field, subtle film grain, vertical 9:16. No additional characters.',
-      videoPrompt: 'Very slow stable push-in on Elias' restrained expression; subtle breathing and eye movement only. Preserve exact facial identity and wardrobe, no facial distortion, no new events or characters.',
+      videoPrompt: "Very slow stable push-in on Elias' restrained expression; subtle breathing and eye movement only. Preserve exact facial identity and wardrobe, no facial distortion, no new events or characters.",
     },
     {
       title: 'Der Anruf',
@@ -48,7 +48,7 @@ export const EPISODE_ONE = {
       narrationText: '',
       subtitleText: '',
       soundCue: 'Das Smartphone beginnt zu klingeln; düsterer Spannungston',
-      imagePrompt: 'Photorealistic macro shot of the same smartphone lighting up with an incoming call in Elias' dark bedroom, cold screen glow, realistic reflections, precise glass and metal detail, controlled cinematic contrast, vertical 9:16. Keep caller text unreadable for exact overlay in post.',
+      imagePrompt: "Photorealistic macro shot of the same smartphone lighting up with an incoming call in Elias' dark bedroom, cold screen glow, realistic reflections, precise glass and metal detail, controlled cinematic contrast, vertical 9:16. Keep caller text unreadable for exact overlay in post.",
       videoPrompt: 'The phone vibrates subtly and lights up with an incoming call; controlled close-up, realistic vibration, no added UI elements or generated text.',
     },
     {
@@ -59,7 +59,7 @@ export const EPISODE_ONE = {
       narrationText: 'Ich weiß, dass du mich hören kannst.',
       subtitleText: 'Ich weiß, dass du mich hören kannst.',
       soundCue: 'Verzerrtes Klingeln, Elias’ eigene Stimme aus dem Anruf, Musik bleibt minimal',
-      imagePrompt: 'Extreme photorealistic close-up of the same smartphone's incoming-call interface, Elias' own number calling, moody dark-room reflections, premium macro cinematography, vertical 9:16. Keep caller-name area clean/unreadable for accurate overlay typography; no gibberish text.',
+      imagePrompt: "Extreme photorealistic close-up of the same smartphone's incoming-call interface, Elias' own number calling, moody dark-room reflections, premium macro cinematography, vertical 9:16. Keep caller-name area clean/unreadable for accurate overlay typography; no gibberish text.",
       videoPrompt: 'Hold on the incoming-call screen with subtle vibration and minimal controlled camera drift; stable interface geometry, no invented text or additional notifications.',
     },
     {
@@ -70,8 +70,8 @@ export const EPISODE_ONE = {
       narrationText: '',
       subtitleText: '',
       soundCue: 'Mysteriöse Videobotschaft ohne zusätzliche erfundene Dialogzeile, tiefer Atmosphärenklang',
-      imagePrompt: 'Photorealistic frame of the same smartphone playing a mysterious, indistinct video in the dark bedroom; screen glow reflected naturally across Elias' consistent face, no identifiable new character, no text, cold blue-grey palette, premium thriller lighting, vertical 9:16.',
-      videoPrompt: 'One slow controlled move from the glowing phone toward Elias' face while the mysterious video plays; natural screen flicker, subtle facial reaction, preserve character identity, no new character, no morphing.',
+      imagePrompt: "Photorealistic frame of the same smartphone playing a mysterious, indistinct video in the dark bedroom; screen glow reflected naturally across Elias' consistent face, no identifiable new character, no text, cold blue-grey palette, premium thriller lighting, vertical 9:16.",
+      videoPrompt: "One slow controlled move from the glowing phone toward Elias' face while the mysterious video plays; natural screen flicker, subtle facial reaction, preserve character identity, no new character, no morphing.",
     },
     {
       title: 'Der Spiegel',
@@ -82,7 +82,7 @@ export const EPISODE_ONE = {
       subtitleText: 'Dreh dich nicht um.',
       soundCue: 'Leises Flüstern, Musik baut sich zum Cliffhanger auf',
       imagePrompt: 'Photorealistic cinematic mirror composition: the same Elias in his black hoodie stands perfectly motionless; only his reflection contains a subtle dark silhouette moving independently. Physically coherent mirror geometry, cold blue-grey practical lighting, deep controlled shadows, realistic skin and glass, premium psychological thriller frame, vertical 9:16. No extra figures outside the reflection.',
-      videoPrompt: 'Single continuous slow controlled push-in. Elias' body remains completely still; only the silhouette inside the mirror moves subtly and independently. Preserve exact reflection geometry, no camera jump, no extra figures, no face morphing.',
+      videoPrompt: "Single continuous slow controlled push-in. Elias' body remains completely still; only the silhouette inside the mirror moves subtly and independently. Preserve exact reflection geometry, no camera jump, no extra figures, no face morphing.",
     },
     {
       title: 'PROJECT ZERO',
