@@ -43,12 +43,14 @@ export interface ProjectVideoRecoveryOptions {
   fetcher?: RecoveryFetch;
   windowTarget?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
   documentTarget?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
+  mediaTarget?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
   isVisible?: () => boolean;
 }
 
 export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions): () => void {
   const windowTarget = options.windowTarget ?? window;
   const documentTarget = options.documentTarget ?? document;
+  const mediaTarget = options.mediaTarget;
   const isVisible = options.isVisible ?? (() => document.visibilityState !== 'hidden');
   let disposed = false;
   let interrupted = false;
@@ -72,6 +74,8 @@ export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions):
   };
 
   const markBackgrounded = () => { interrupted = true; };
+  const markOffline = () => { interrupted = true; options.onState('offline'); };
+  const onMediaError = () => { void check(); };
   const resumeIfVisible = () => { if (isVisible()) void check(); };
   const onVisibilityChange = () => {
     if (isVisible()) void check();
@@ -79,18 +83,22 @@ export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions):
   };
 
   windowTarget.addEventListener('online', resumeIfVisible);
+  windowTarget.addEventListener('offline', markOffline);
   windowTarget.addEventListener('focus', resumeIfVisible);
   windowTarget.addEventListener('pageshow', resumeIfVisible);
   windowTarget.addEventListener('pagehide', markBackgrounded);
   documentTarget.addEventListener('visibilitychange', onVisibilityChange);
+  mediaTarget?.addEventListener('error', onMediaError);
   void check();
 
   return () => {
     disposed = true;
     windowTarget.removeEventListener('online', resumeIfVisible);
+    windowTarget.removeEventListener('offline', markOffline);
     windowTarget.removeEventListener('focus', resumeIfVisible);
     windowTarget.removeEventListener('pageshow', resumeIfVisible);
     windowTarget.removeEventListener('pagehide', markBackgrounded);
     documentTarget.removeEventListener('visibilitychange', onVisibilityChange);
+    mediaTarget?.removeEventListener('error', onMediaError);
   };
 }
