@@ -21,6 +21,8 @@ const injectedNames = [...inputBlock[1].matchAll(/^\s*([A-Z][A-Z0-9_]*)\s*:/gm)]
   .map((match) => match[1])
   .sort();
 assert.deepEqual(injectedNames, ['ZERO_ADMIN_PASSWORD', 'ZERO_SESSION_SECRET']);
+assert.match(inputBlock[1], /ZERO_ADMIN_PASSWORD:\\s*envSecret\\([\"']ZERO_ADMIN_PASSWORD[\"']\\)/);
+assert.match(inputBlock[1], /ZERO_SESSION_SECRET:\\s*envSecret\\([\"']ZERO_SESSION_SECRET[\"']\\)/);
 
 assert.match(serviceSource, /deps:\s*\{\s*db:\s*rawPostgres\(\)\s*\}/);
 assert.match(computeSource, /const\s+databaseUrl\s*=\s*db\.url/);
