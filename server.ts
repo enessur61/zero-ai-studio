@@ -85,7 +85,7 @@ const PROJECT_VIDEO_STREAM_CHUNK_BYTES = 256 * 1024;
 
 function parseProjectVideoRange(header: string | undefined, size: number): { start: number; end: number } | null | false {
   if (!header) return null;
-  const match = /^bytes=(\\d*)-(\\d*)$/.exec(header.trim());
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
   if (!match || (!match[1] && !match[2]) || header.includes(',')) return false;
   let start: number;
   let end: number;
