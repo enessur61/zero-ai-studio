@@ -451,18 +451,22 @@ class PersistentJobStore:
             rows = connection.execute(
                 "SELECT id, payload FROM zero_video_jobs ORDER BY updated_at DESC"
             ).fetchall()
-        if len(rows) < max_jobs:
-            return []
-        completed: list[dict[str, Any]] = []
-        for job_id, payload in rows:
+        persisted_jobs: list[dict[str, Any]] = []
+        for _job_id, payload in rows:
             try:
                 job = json.loads(payload)
             except (TypeError, json.JSONDecodeError):
                 continue
-            if isinstance(job, dict) and job.get("status") in {"succeeded", "failed", "cancelled"}:
-                completed.append(job)
+            if isinstance(job, dict) and job.get("kind") != "daily_usage":
+                persisted_jobs.append(job)
+        if len(persisted_jobs) < max_jobs:
+            return []
+        completed = [
+            job for job in persisted_jobs
+            if job.get("status") in {"succeeded", "failed", "cancelled"}
+        ]
         completed.sort(key=lambda job: str(job.get("created_at", "")))
-        remove_count = max(0, len(rows) - retain_jobs)
+        remove_count = max(0, len(persisted_jobs) - retain_jobs)
         removed = completed[:remove_count]
         for job in removed:
             self.delete(str(job["id"]))
