@@ -211,7 +211,7 @@ app.use('/api', (req, res, next) => {
   ]);
   const isCostConsumingPost = req.method === 'POST' && (
     costConsumingPostPaths.has(req.path) ||
-    (/^\\/models\\/[^/]+\\/test$/.test(req.path)) ||
+    (req.path.startsWith('/models/') && req.path.endsWith('/test')) ||
     req.path === '/video/engine/jobs'
   );
   if (isCostConsumingPost && !suppliedIdempotencyKey) {
