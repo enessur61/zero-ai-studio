@@ -139,24 +139,27 @@ async function loadLocally(projectId: string, sceneId: string): Promise<Blob | n
   }
 }
 
-/** Local IndexedDB is the fast cache; PostgreSQL-backed project assets are the cross-device source of truth. */
+/** PostgreSQL is the cross-device source of truth; IndexedDB is only an offline fallback. */
 export async function loadSceneVideoClip(projectId: string, sceneId: string): Promise<Blob | null> {
   if (!projectId || !sceneId) return null;
-  try {
-    const local = await loadLocally(projectId, sceneId);
-    if (local) return local;
-  } catch {
-    // Continue with the durable server copy if browser storage is unavailable.
-  }
-
   try {
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
       { credentials: 'same-origin', cache: 'no-store' }
     );
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    return blob.type.startsWith('video/') && blob.size >= 1024 ? blob : null;
+    if (response.ok) {
+      const remote = await response.blob();
+      if (remote.type.startsWith('video/') && remote.size >= 1024) {
+        try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
+        return remote;
+      }
+    }
+  } catch {
+    // Fall back to the local cache when the server is temporarily unavailable.
+  }
+
+  try {
+    return await loadLocally(projectId, sceneId);
   } catch {
     return null;
   }
