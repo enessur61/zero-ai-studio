@@ -28,6 +28,7 @@ const address = server.address();
 if (!address || typeof address === 'string') throw new Error('Recovery HTTP test server did not bind.');
 const base = `http://127.0.0.1:${address.port}`;
 const url = `${base}/clip`;
+const testFetch = (input: RequestInfo | URL, init?: RequestInit) => fetch(new URL(String(input), base), init);
 
 try {
   assert.equal(await probeProjectVideoAccess(url, testFetch), 'ready');
