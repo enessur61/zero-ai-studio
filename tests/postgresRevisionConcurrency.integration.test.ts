@@ -227,12 +227,16 @@ try {
     ).then((removed) => { deleteCompleted = true; return removed; });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(deleteCompleted, false, 'shared row locks preserve bytes while admitted streams remain active');
-    await Promise.all(concurrentIterators.map((iterator) => iterator.return?.()));
+    // Release only one reader first: the queued third reader must acquire its
+    // shared row lock before the delete can proceed past the still-active second reader.
+    await concurrentIterators[0].return?.();
     const third = await thirdStream;
-    assert.ok(third, 'queued third stream is admitted after an active stream closes');
+    assert.ok(third, 'queued third stream is admitted as soon as one active slot is released');
     assert.equal(thirdStreamCompleted, true);
+    assert.equal(deleteCompleted, false, 'the remaining original reader still holds the deletion lock');
+    await concurrentIterators[1].return?.();
     await third!.close();
-    assert.equal(await blockedDelete, true, 'deletion proceeds after all stream readers release their locks');
+    assert.equal(await blockedDelete, true, 'deletion proceeds after all admitted stream readers release their locks');
   } finally {
     await Promise.all(concurrentIterators.map(async (iterator) => {
       try { await iterator.return?.(); } catch { /* cleanup continues */ }
