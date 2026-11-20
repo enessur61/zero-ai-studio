@@ -2708,13 +2708,17 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   if (db.projects.length <= 1) {
     return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
   }
-  db.projects = db.projects.filter((p) => p.id !== req.params.id);
-  await saveDb(db);
-  try {
-    await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
-  } catch {
-    // Expiring project clips are still cleaned by retention; never fail project deletion on storage outage.
+  const projectExists = db.projects.some((project) => project.id === req.params.id);
+  if (projectExists) {
+    if (db.projects.length <= 1) {
+      return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
+    }
+    db.projects = db.projects.filter((project) => project.id !== req.params.id);
+    await saveDb(db);
   }
+  // A retry after a storage outage is intentionally idempotent, even when the
+  // project state was already removed by the preceding request.
+  await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
   const projects = db.projects.map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),

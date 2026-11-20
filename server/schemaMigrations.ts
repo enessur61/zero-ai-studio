@@ -107,6 +107,168 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
       ON CONFLICT (day_utc, principal_hash, resource_type) DO NOTHING;
     `,
   },
+  {
+    version: 3,
+    name: 'principal-bound-durable-project-video-assets',
+    sql: `
+      CREATE TABLE IF NOT EXISTS zero_project_video_assets (
+        asset_id UUID PRIMARY KEY,
+        project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 128),
+        scene_id TEXT NOT NULL CHECK (length(scene_id) BETWEEN 1 AND 128),
+        principal_hash CHAR(64) NOT NULL CHECK (principal_hash ~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+),
+        job_id UUID,
+        content_type TEXT NOT NULL CHECK (content_type IN ('video/mp4', 'video/webm')),
+        size_bytes BIGINT NOT NULL CHECK (size_bytes BETWEEN 1024 AND 104857600),
+        sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+),
+        payload BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (principal_hash, job_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS zero_project_video_assets_project_idx
+        ON zero_project_video_assets (principal_hash, project_id, created_at DESC);
+    `,
+  },
 ];
 
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
