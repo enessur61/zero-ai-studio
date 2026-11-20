@@ -31,7 +31,7 @@ export function FilmDirectorView({
   const [episodeOnePreset, setEpisodeOnePreset] = useState(true);
   const [targetDurationSec, setTargetDurationSec] = useState(60);
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '');
-  const [generateImages, setGenerateImages] = useState(true);
+  const [generateImages, setGenerateImages] = useState(false);
   const [directing, setDirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -210,9 +210,12 @@ export function FilmDirectorView({
               type="checkbox"
               checked={generateImages}
               onChange={(event) => setGenerateImages(event.target.checked)}
-              className="rounded bg-[#090B10] border-white/20"
+              disabled={episodeOnePreset}
+              className="rounded bg-[#090B10] border-white/20 disabled:opacity-40"
             />
-            Szenenbilder mit FLUX.1 Schnell versuchen (kostenloses Tageskontingent; nur bei erfolgreichem Live-Test)
+            {episodeOnePreset
+              ? 'FLUX-Bilder für diese Folge gesperrt, bis 0-€-Nutzung nachgewiesen ist'
+              : 'Szenenbilder mit FLUX.1 Schnell versuchen (nur bei nachgewiesenem 0-€-Kontingent)'}
           </label>
 
           {error && (
