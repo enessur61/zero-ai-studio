@@ -2045,7 +2045,8 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    const char = characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0];
+    // Episode 1 has its own established protagonist (Elias); never inherit the unrelated seeded Elena profile.
+    const char = episodeOne ? undefined : (characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0]);
     const charContext = char
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
