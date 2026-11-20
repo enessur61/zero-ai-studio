@@ -104,8 +104,9 @@ jobs:
         env:
           DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
           ZERO_POSTGRES_TESTS: 'true'
-        run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
-        run: npx tsx tests/projectDeletionIdempotency.integration.test.ts
+        run: |
+          npx tsx tests/postgresRevisionConcurrency.integration.test.ts
+          npx tsx tests/projectDeletionIdempotency.integration.test.ts
       - name: Run ZERO RESOURCE GUARD PostgreSQL integration tests
         env:
           DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
