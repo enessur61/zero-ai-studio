@@ -12,9 +12,9 @@ permissions:
 # This workflow validates the current commit. Obsolete runs may be cancelled;
 # the full native iOS build is handled by its own workflow.
 concurrency:
-  # Give each commit an independent run so an orphaned macOS job cannot block newer PR validation.
-  group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}
-  cancel-in-progress: false
+  # Keep one active validation run per PR/ref; newer commits supersede stale runs.
+  group: zero-ai-studio-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
