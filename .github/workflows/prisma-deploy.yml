@@ -1,6 +1,9 @@
 name: prisma-deploy
 
 on:
+  push:
+    branches:
+      - prisma-cloud/setup-v3icl3cvq646n2a35puh95r3
   workflow_dispatch:
 
 concurrency:
