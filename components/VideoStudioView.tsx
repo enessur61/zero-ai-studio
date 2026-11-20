@@ -131,10 +131,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       }
       savePosition(document.visibilityState === 'hidden');
     };
+    const onTimeUpdate = () => savePosition();
+    const onSeeking = () => savePosition();
     video?.addEventListener('play', onPlay);
     video?.addEventListener('pause', onPause);
-    video?.addEventListener('timeupdate', savePosition);
-    video?.addEventListener('seeking', savePosition);
+    video?.addEventListener('timeupdate', onTimeUpdate);
+    video?.addEventListener('seeking', onSeeking);
     const onPageHide = () => savePosition(true);
     window.addEventListener('pagehide', onPageHide);
     const stopRecovery = watchProjectVideoRecovery({
@@ -166,8 +168,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       stopRecovery();
       video?.removeEventListener('play', onPlay);
       video?.removeEventListener('pause', onPause);
-      video?.removeEventListener('timeupdate', savePosition);
-      video?.removeEventListener('seeking', savePosition);
+      video?.removeEventListener('timeupdate', onTimeUpdate);
+      video?.removeEventListener('seeking', onSeeking);
       window.removeEventListener('pagehide', onPageHide);
     };
   }, [wanClipUrl]);
