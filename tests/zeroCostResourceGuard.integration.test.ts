@@ -179,6 +179,7 @@ try {
   let knownFailureAttempts = 0;
   const knownFailureKey = 'known-provider-429-0001';
   const beforeKnownFailureBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
+  const beforeRejectedVideoUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'video'");
   await assert.rejects(() => withZeroCostResourceOperation({ ...base, resourceType: 'video', idempotencyKey: knownFailureKey, env }, async () => {
     knownFailureAttempts += 1;
     throw knownProviderFailure;
@@ -190,8 +191,10 @@ try {
   const afterKnownFailureBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(afterKnownFailureBudget, beforeKnownFailureBudget + 1, 'definitive failed provider request remains counted in the global request budget');
   const rejectedUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'video'");
-  assert.equal(Number(rejectedUsage.rows[0].consumed_units), 0,
-    'provider rejection before acceptance does not consume resource units');
+  assert.equal(Number(rejectedUsage.rows[0].consumed_units), Number(beforeRejectedVideoUsage.rows[0].consumed_units),
+    'provider rejection before acceptance does not consume additional resource units');
+  assert.equal(Number(rejectedUsage.rows[0].reserved_units), Number(beforeRejectedVideoUsage.rows[0].reserved_units),
+    'provider rejection before acceptance releases its reservation');
   const acceptedFailureUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'text'");
   assert.ok(Number(acceptedFailureUsage.rows[0].consumed_units) >= 2,
     'accepted execution failures are charged as consumed resource units and cannot be refunded');
