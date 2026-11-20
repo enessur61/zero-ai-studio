@@ -25,6 +25,7 @@ import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReserv
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
+import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -241,33 +242,33 @@ app.use((_req, res, next) => {
   next();
 });
 
+const PUBLIC_ZERO_API_PATHS = new Set(['/live', '/health', '/auth/status', '/auth/login', '/auth/logout']);
+
 app.use('/api', (req, res, next) => {
-  if (['/live', '/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) return next();
+  if (PUBLIC_ZERO_API_PATHS.has(req.path)) return next();
   const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
   if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
     return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
   }
-  const requestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+  res.locals.zeroRequestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+  next();
+});
 
-  if (!IS_PRODUCTION) {
-    // Development has a distinct server-owned identity; no client principal is trusted.
-    res.locals.zeroPrincipal = 'zero-development';
-    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
-    return runWithZeroPrincipal('zero-development', requestIdempotencyKey, next);
-  }
-  if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
-    return res.status(503).json({
-      error: 'ZERO AI STUDIO ist gesperrt: ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen in der Serverumgebung gesetzt werden.',
-    });
-  }
-  void hasValidSession(req).then((valid) => {
-    if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-    // This application currently has one authenticated administrator identity.
-    // Bind quotas to that server-owned identity; never accept a principal from request data.
-    res.locals.zeroPrincipal = 'zero-admin';
-    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
-    return runWithZeroPrincipal('zero-admin', requestIdempotencyKey, next);
-  }).catch(next);
+app.use('/api', createApiAuthMiddleware({
+  isProduction: IS_PRODUCTION,
+  adminPassword: ZERO_ADMIN_PASSWORD,
+  sessionSecret: ZERO_SESSION_SECRET,
+  hasValidSession,
+}));
+
+app.use('/api', (req, res, next) => {
+  if (PUBLIC_ZERO_API_PATHS.has(req.path)) return next();
+  const principalId = IS_PRODUCTION ? 'zero-admin' : 'zero-development';
+  const requestIdempotencyKey = String(res.locals.zeroRequestIdempotencyKey ?? randomUUID());
+  // The principal is server-owned and is installed only after the API auth gate succeeds.
+  res.locals.zeroPrincipal = principalId;
+  res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
+  return runWithZeroPrincipal(principalId, requestIdempotencyKey, next);
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
