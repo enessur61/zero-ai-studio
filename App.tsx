@@ -131,6 +131,16 @@ export default function App() {
   );
 
   useEffect(() => {
+    const onSessionExpired = () => {
+      setAuthRequired(true);
+      setLoading(false);
+      setAuthStatusLoading(false);
+    };
+    window.addEventListener('zero:session-expired', onSessionExpired);
+    return () => window.removeEventListener('zero:session-expired', onSessionExpired);
+  }, []);
+
+  useEffect(() => {
     const userAgent = window.navigator.userAgent;
     const isIos = /iPhone|iPad|iPod/i.test(userAgent);
     const isStandalone =
