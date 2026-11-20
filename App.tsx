@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
-import { readProjectVideoPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
+import { readProjectVideoPlaybackSnapshot, shouldOpenVideoStudioForPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
   BackupConfigState,
@@ -97,7 +97,7 @@ const NAV_ITEMS: NavItem[] = [
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavigationTab>(() => {
     try {
-      return readProjectVideoPlaybackSnapshot(window.sessionStorage) ? 'video' : 'home';
+      return shouldOpenVideoStudioForPlaybackSnapshot(readProjectVideoPlaybackSnapshot(window.sessionStorage)) ? 'video' : 'home';
     } catch {
       return 'home';
     }
