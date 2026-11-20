@@ -49,6 +49,7 @@ app.use(express.json());
 app.use((req, res, next) => {
   if (req.headers.cookie === 'zero_session=valid-test-session') {
     res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
+    res.locals.zeroRequestIdempotencyKey = req.get('Idempotency-Key') ?? '';
   }
   next();
 });
@@ -56,7 +57,13 @@ const routeProjects = [
   { id: 'owned-http', ownerId: ZERO_ADMIN_PRINCIPAL_ID },
   { id: 'foreign-http', ownerId: 'admin:other' },
 ];
-app.use('/projects/:id', createProjectOwnershipMiddleware(async () => routeProjects));
+app.use('/projects/:id', createProjectOwnershipMiddleware(
+  async () => routeProjects,
+  async (projectId, principal, idempotencyKey) =>
+    projectId === 'missing-http' &&
+    principal.id === ZERO_ADMIN_PRINCIPAL_ID &&
+    idempotencyKey === 'delete-key-123',
+));
 app.get('/projects/:id', (req, res) => {
   res.json({ projectId: res.locals.zeroProjectId });
 });
@@ -102,9 +109,14 @@ try {
   assert.equal(missingProjectRead.status, 404, 'missing projects remain hidden for reads');
   const missingProjectDeleteRetry = await fetch(baseUrl + '/projects/missing-http', {
     method: 'DELETE',
-    headers: { cookie: 'zero_session=valid-test-session' },
+    headers: { cookie: 'zero_session=valid-test-session', 'Idempotency-Key': 'delete-key-123' },
   });
-  assert.equal(missingProjectDeleteRetry.status, 200, 'missing-project DELETE retries may perform principal-scoped idempotent cleanup');
+  assert.equal(missingProjectDeleteRetry.status, 200, 'missing-project DELETE retries require the original owner and idempotency key');
+  const missingProjectDeleteWrongKey = await fetch(baseUrl + '/projects/missing-http', {
+    method: 'DELETE',
+    headers: { cookie: 'zero_session=valid-test-session', 'Idempotency-Key': 'different-key-456' },
+  });
+  assert.equal(missingProjectDeleteWrongKey.status, 404, 'a different idempotency key cannot replay a deleted project operation');
   const foreignProjectDelete = await fetch(baseUrl + '/projects/foreign-http', {
     method: 'DELETE',
     headers: { cookie: 'zero_session=valid-test-session' },
