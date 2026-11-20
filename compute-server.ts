@@ -1,5 +1,5 @@
 import service from "./service.mjs";
-import { configureRuntimeConfig } from "./server/runtimeConfig.ts";
+import { clearRuntimeConfig, configureRuntimeConfig } from "./server/runtimeConfig.ts";
 
 const { db } = service.load();
 const input = service.input();
@@ -14,6 +14,22 @@ console.log("[ZERO Compute] PostgreSQL target:", {
 
 const secret = (value: { expose(): string } | undefined): string | undefined =>
   value?.expose();
+
+// Preview must not inherit provider credentials or worker destinations from the
+// hosting environment. Only values explicitly passed through typed service
+// inputs below may enable external integrations.
+clearRuntimeConfig([
+  "GEMINI_API_KEY",
+  "ZERO_GEMINI_FREE_TIER_ONLY",
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "ZERO_WEB_SEARCH_URL",
+  "ZERO_WEB_SEARCH_TOKEN",
+  "ZERO_TTS_WORKER_URL",
+  "ZERO_TTS_WORKER_TOKEN",
+  "ZERO_VIDEO_ENGINE_URL",
+  "ZERO_VIDEO_ENGINE_TOKEN",
+]);
 
 configureRuntimeConfig({
   DATABASE_URL: databaseUrl,
