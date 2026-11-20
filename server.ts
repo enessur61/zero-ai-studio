@@ -23,6 +23,7 @@ import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } f
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
 import { ensureZeroResourceSchema, getZeroResourceReservation, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
+import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -2041,6 +2042,17 @@ Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11,
 // Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
 app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
+  if (!isWanGpuAllowed()) {
+    return res.json({
+      configured: Boolean(process.env.ZERO_VIDEO_ENGINE_URL?.trim()),
+      online: false,
+      engine: 'Wan 2.1',
+      status: 'ZERO_COST_GATE_CLOSED',
+      message: 'Wan-GPU bleibt standardmäßig gesperrt. ZERO_WAN_GPU_ENABLED und ZERO_WAN_GPU_COSTS_CONFIRMED müssen nach einer separaten Kostenprüfung beide ausdrücklich true sein.',
+      maxDurationSec: 60,
+      costFallback: false,
+    });
+  }
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
   if (!configuredUrl || !token) {
@@ -2125,6 +2137,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
 // Authenticated server-side proxy for the self-hosted Wan worker.
 // The browser never receives the worker URL or its bearer token.
 function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
+  if (!isWanGpuAllowed()) return null;
   const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
   const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
   if (!configuredUrl || !token) return null;
