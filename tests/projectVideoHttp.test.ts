@@ -107,4 +107,52 @@ try {
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
-console.log('Project video HTTP range, resume, cancellation and download tests passed.');
+// Idle timeout must terminate a stalled response and close its asset lease.
+let timedOutAssetClosed = false;
+const stalledApp = express();
+stalledApp.get('/stalled', (req, res) => sendProjectVideoStream(req, res, {
+  ...asset, close: async () => { timedOutAssetClosed = true; },
+  chunksForRange: () => (async function* () {
+    yield bytes.subarray(0, 16); await new Promise(() => undefined);
+  })(),
+}, false, { idleTimeoutMs: 30, maxLifetimeMs: 500 }));
+const stalledServer = stalledApp.listen(0);
+await once(stalledServer, 'listening');
+const stalledAddress = stalledServer.address();
+if (!stalledAddress || typeof stalledAddress === 'string') throw new Error('Stalled stream test server did not bind.');
+try {
+  const stalledResponse = await fetch('http://127.0.0.1:' + stalledAddress.port + '/stalled');
+  const stalledReader = stalledResponse.body?.getReader();
+  assert.ok(stalledReader);
+  await assert.rejects(() => stalledReader.read(), 'idle timeout terminates stalled response');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(timedOutAssetClosed, true, 'idle timeout releases the stream lease');
+} finally {
+  await new Promise<void>((resolve, reject) => stalledServer.close((error) => error ? reject(error) : resolve()));
+}
+
+// Continuous data cannot keep a response alive beyond its absolute lifetime.
+let lifetimeAssetClosed = false;
+const lifetimeApp = express();
+lifetimeApp.get('/long-lived', (req, res) => sendProjectVideoStream(req, res, {
+  ...asset, close: async () => { lifetimeAssetClosed = true; },
+  chunksForRange: () => (async function* () {
+    while (true) { yield bytes.subarray(0, 16); await new Promise((resolve) => setTimeout(resolve, 8)); }
+  })(),
+}, false, { idleTimeoutMs: 100, maxLifetimeMs: 45 }));
+const lifetimeServer = lifetimeApp.listen(0);
+await once(lifetimeServer, 'listening');
+const lifetimeAddress = lifetimeServer.address();
+if (!lifetimeAddress || typeof lifetimeAddress === 'string') throw new Error('Lifetime stream test server did not bind.');
+try {
+  const response = await fetch('http://127.0.0.1:' + lifetimeAddress.port + '/long-lived');
+  const reader = response.body?.getReader();
+  assert.ok(reader);
+  await assert.rejects(async () => { while (!(await reader.read()).done) { /* drain */ } },
+    'absolute lifetime terminates a stream even while data keeps arriving');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(lifetimeAssetClosed, true, 'absolute lifetime releases the stream lease');
+} finally {
+  await new Promise<void>((resolve, reject) => lifetimeServer.close((error) => error ? reject(error) : resolve()));
+}
+console.log('Project video HTTP range, resume, cancellation, idle/lifetime timeout and download tests passed.');
