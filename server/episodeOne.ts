@@ -4,8 +4,8 @@ export const EPISODE_ONE = {
   title: 'DER FEHLENDE TAG',
   logline: 'Elias erhält nachts von seiner eigenen Telefonnummer die Nachricht: „Du hast mich gestern getötet.“',
   concept: 'Acht präzise Einstellungen eines düsteren psychologischen Mystery-Thrillers. Die Handlung bleibt auf die bereits festgelegten Ereignisse beschränkt.',
-  story: 'Elias wacht nachts auf. Eine Nachricht von seiner eigenen Telefonnummer behauptet: „Du hast mich gestern getötet.“ Sein eigenes Handy ruft ihn an. Eine mysteriöse Videobotschaft sagt: „Du hast es wieder vergessen.“ Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Die Folge endet mit „Dreh dich nicht um“ und dem Serienlogo.',
-  screenplay: 'Nacht. Elias wacht auf. Auf seinem Handy erscheint die Nachricht „Du hast mich gestern getötet.“ Elias erstarrt. Sein Handy klingelt: Elias ruft Elias an. Eine Videobotschaft erscheint: „Du hast es wieder vergessen.“ Im Spiegel bewegt sich die Silhouette, obwohl Elias stillsteht. Flüstern: „Dreh dich nicht um.“ PROJECT ZERO – Fortsetzung folgt.',
+  story: 'Elias wacht nachts auf. Eine Nachricht von seiner eigenen Telefonnummer behauptet: „Du hast mich gestern getötet.“ Sein eigenes Handy ruft ihn an. Eine mysteriöse Videobotschaft erscheint, ohne dass ein zusätzlicher Dialog festgelegt wird. Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Die Folge endet mit „Dreh dich nicht um“ und dem Serienlogo.',
+  screenplay: 'Nacht. Elias wacht auf. Auf seinem Handy erscheint die Nachricht „Du hast mich gestern getötet.“ Elias erstarrt. Sein Handy klingelt: Elias ruft Elias an. Eine mysteriöse Videobotschaft erscheint. Im Spiegel bewegt sich die Silhouette, obwohl Elias stillsteht. Flüstern: „Dreh dich nicht um.“ PROJECT ZERO – Fortsetzung folgt.',
   scenes: [
     {
       title: 'Nacht',
