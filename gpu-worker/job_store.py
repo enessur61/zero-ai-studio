@@ -165,3 +165,21 @@ class PersistentJobStore:
         for job in removed:
             self.delete(str(job["id"]))
         return removed
+
+
+def create_job_if_absent(
+    jobs: dict[str, dict[str, Any]],
+    store: PersistentJobStore,
+    job: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Persist one job per server-issued ID; caller holds the job registry lock."""
+    job_id = str(job.get("id", ""))
+    if not job_id:
+        raise ValueError("Job ID is required")
+    existing = jobs.get(job_id)
+    if existing is not None:
+        return dict(existing), False
+    stored = dict(job)
+    store.save(stored)
+    jobs[job_id] = stored
+    return dict(stored), True

@@ -8,12 +8,14 @@ import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sa
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, reserveZeroCostProviderRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
+import { ensureZeroResourceSchema, getZeroResourceReservation, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -210,7 +212,7 @@ app.use('/api', (req, res, next) => {
     res.locals.zeroPrincipal = ZERO_ADMIN_PRINCIPAL;
     return next();
   }
-  if (['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
+  if (['/live', '/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
     return next();
   }
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
@@ -292,6 +294,13 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // === SYSTEM & AUDIT ===
+// Liveness must not connect to PostgreSQL or initialize schemas.
+app.get('/api/live', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(200).json({ ok: true, app: 'ZERO AI STUDIO', status: 'alive' });
+});
+
+// Readiness is DB-backed; use /api/live for process liveness.
 app.get('/api/health', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const authConfigured =
@@ -304,22 +313,31 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'not_checked', authentication: 'not_configured' },
+      readiness: readinessForStage('not_configured'),
       message: 'Produktionsanmeldung ist nicht vollständig konfiguriert.',
     });
   }
 
+  let readinessStage: HealthReadinessStage = 'database';
   try {
     await loadDb();
     if (!(await checkPostgresConnection())) {
       throw new Error('PostgreSQL-Verbindung ist nicht verfügbar.');
     }
+    readinessStage = 'authentication';
+    // A green readiness probe must mean the production auth and resource-guard
+    // schemas are usable, not merely that PostgreSQL accepts TCP connections.
+    // Initialize these idempotent migrations before advertising the instance ready.
+    await authStore().ensureSchema();
+    readinessStage = 'resource_guard';
+    await ensureZeroResourceSchema();
+    readinessStage = 'ready';
     return res.json({
       ok: true,
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'ready', authentication: 'ready' },
+      readiness: readinessForStage(readinessStage),
     });
   } catch {
     return res.status(503).json({
@@ -327,8 +345,8 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'unavailable', authentication: 'ready' },
-      message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
+      readiness: readinessForStage(readinessStage),
+      message: 'Die Datenbank oder ein erforderliches Produktionsschema ist nicht verfügbar.',
     });
   }
 }));
@@ -1488,15 +1506,50 @@ function getPiperTtsWorkerConfig(): { baseUrl: URL; headers: Record<string, stri
   }
 }
 
+class WorkerPayloadTooLargeError extends Error {
+  constructor() {
+    super('Worker response exceeded the configured byte limit.');
+    this.name = 'WorkerPayloadTooLargeError';
+  }
+}
+
+async function readWorkerBodyLimited(response: Response, maxBytes: number): Promise<Buffer> {
+  const declaredLength = Number(response.headers.get('content-length') ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new WorkerPayloadTooLargeError();
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new WorkerPayloadTooLargeError();
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
 // Free, self-hosted German TTS through the optional Wan/Piper worker.
 // The voice model runs on the user's own host; no external TTS provider is contacted.
 app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const worker = getPiperTtsWorkerConfig();
   if (!worker) {
     return res.status(503).json({
       error: 'Der kostenlose deutsche Piper-Sprachdienst ist noch nicht verbunden. ZERO_TTS_WORKER_URL und ZERO_TTS_WORKER_TOKEN müssen in Render gesetzt sein. iPhone-Web-Speech bleibt direkt lokal verfügbar.',
-      costEur: 0,
-      paidFallback: false,
+      costEur: 0, paidFallback: false,
     });
   }
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
@@ -1504,40 +1557,71 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
   const speed = Number.isFinite(rawSpeed) ? Math.min(1.25, Math.max(0.75, rawSpeed)) : 1;
   if (!text) return res.status(400).json({ error: 'Text für Piper fehlt.' });
   if (text.length > 5000) return res.status(400).json({ error: 'Piper unterstützt maximal 5.000 Zeichen pro WAV-Datei.' });
+  const suppliedKey = req.get('Idempotency-Key')?.trim();
+  if (!suppliedKey || !/^[A-Za-z0-9._:-]{8,200}$/.test(suppliedKey)) {
+    return res.status(400).json({ error: 'Ungültiger Idempotency-Key.' });
+  }
+  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
+  try {
+    reservation = await reserveZeroResource({
+      principalId: principal.id, resourceId: 'piper-tts',
+      idempotencyKey: suppliedKey, units: text.length,
+      requestFingerprint: createHash('sha256').update(JSON.stringify({ text, speed })).digest('hex'),
+    });
+  } catch (error) {
+    const status = error instanceof ZeroResourceLimitError ? 429
+      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
+    return res.status(status).json({ error: error instanceof Error ? error.message : 'ZERO RESOURCE GUARD hat Piper gesperrt.', costEur: 0, paidFallback: false });
+  }
+  if (reservation.duplicate) {
+    return res.status(409).json({ error: 'Dieser Piper-Auftrag wurde mit diesem Idempotency-Key bereits angenommen oder abgeschlossen.', reservationId: reservation.reservationId, costEur: 0, paidFallback: false });
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 150000);
+  let completed = false;
+  let safeToRelease = false;
   try {
     const response = await fetch(new URL('/tts', worker.baseUrl), {
       method: 'POST',
       headers: { ...worker.headers, 'Content-Type': 'application/json', Accept: 'audio/wav' },
       body: JSON.stringify({ text, speed }),
-      signal: controller.signal,
-      redirect: 'error',
+      signal: controller.signal, redirect: 'error',
     });
     if (!response.ok) {
+      // Only a definitive 4xx rejection proves the worker did not accept work.
+      // A 5xx may follow partial processing, so keep the reservation until TTL.
+      safeToRelease = response.status >= 400 && response.status < 500;
       const payload = await response.json().catch(() => ({})) as { detail?: unknown };
       const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
-      return res.status(response.status === 400 ? 400 : 503).json({
-        error: detail.slice(0, 400),
-        costEur: 0,
-        paidFallback: false,
-      });
+      const message = safeToRelease
+        ? `Piper hat den Auftrag vor der Verarbeitung abgewiesen: ${detail.slice(0, 320)}`
+        : detail.slice(0, 400);
+      return res.status(response.status === 400 ? 400 : 503).json({ error: message, costEur: 0, paidFallback: false });
     }
-    const declaredLength = Number(response.headers.get('content-length') ?? 0);
-    if (declaredLength > 20 * 1024 * 1024) return res.status(413).json({ error: 'Piper-WAV überschreitet das 20-MB-Limit.' });
-    const bytes = Buffer.from(await response.arrayBuffer());
+    let bytes: Buffer;
+    try {
+      bytes = await readWorkerBodyLimited(response, 20 * 1024 * 1024);
+    } catch (error) {
+      if (error instanceof WorkerPayloadTooLargeError) {
+        safeToRelease = true;
+        return res.status(413).json({ error: 'Piper-WAV überschreitet das 20-MB-Limit.' });
+      }
+      throw error;
+    }
     if (bytes.length < 44 || bytes.length > 20 * 1024 * 1024 ||
         bytes.subarray(0, 4).toString('ascii') !== 'RIFF' ||
         bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      safeToRelease = true;
       return res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
     }
+    await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
+    completed = true;
     return res.json({
       audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}`,
       modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
-      voice: 'Thorsten · Deutsch',
-      costEur: 0,
-      paidFallback: false,
+      voice: 'Thorsten · Deutsch', costEur: 0, paidFallback: false,
+      resourceReservation: reservation.reservationId,
     });
   } catch (error) {
     const message = error instanceof Error && error.name === 'AbortError'
@@ -1546,6 +1630,9 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
   } finally {
     clearTimeout(timeout);
+    if (!completed && safeToRelease) {
+      await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'released' }).catch(() => undefined);
+    }
   }
 }));
 
@@ -1948,53 +2035,135 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
 }
 
 app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
   const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
   const seed = Number.isInteger(req.body?.seed) && req.body.seed >= 0 && req.body.seed <= 2147483647
-    ? req.body.seed
-    : undefined;
+    ? req.body.seed : undefined;
   if (prompt.length < 8 || prompt.length > 1800) {
     return res.status(400).json({ error: 'Der Wan-Prompt muss zwischen 8 und 1.800 Zeichen lang sein.' });
+  }
+  const suppliedKey = req.get('Idempotency-Key')?.trim();
+  if (!suppliedKey || !/^[A-Za-z0-9._:-]{8,200}$/.test(suppliedKey)) {
+    return res.status(400).json({ error: 'Ungültiger Idempotency-Key.' });
+  }
+  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
+  try {
+    reservation = await reserveZeroResource({
+      principalId: principal.id, resourceId: 'wan-video',
+      idempotencyKey: suppliedKey, units: 1,
+      requestFingerprint: createHash('sha256').update(JSON.stringify({ prompt, aspectRatio, seed: seed ?? null })).digest('hex'),
+    });
+  } catch (error) {
+    const status = error instanceof ZeroResourceLimitError ? 429
+      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
+    return res.status(status).json({ error: error instanceof Error ? error.message : 'ZERO RESOURCE GUARD hat Wan gesperrt.', costFallback: false });
+  }
+  if (reservation.status !== 'reserved') {
+    // Recover the original terminal job after a lost HTTP response; never enqueue it again.
+    if (reservation.duplicate && (reservation.status === 'completed' || reservation.status === 'released')) {
+      const recoveryController = new AbortController();
+      const recoveryTimeout = setTimeout(() => recoveryController.abort(), 10000);
+      try {
+        const recoveryResponse = await fetch(new URL(`/jobs/${reservation.reservationId}`, worker.baseUrl), {
+          headers: worker.headers, signal: recoveryController.signal, redirect: 'error',
+        });
+        const recoveryPayload = await recoveryResponse.json().catch(() => ({})) as Record<string, unknown>;
+        const expectedStatus = reservation.status === 'completed' ? 'succeeded' : 'failed';
+        if (recoveryResponse.ok && recoveryPayload.id === reservation.reservationId &&
+            recoveryPayload.status === expectedStatus) {
+          return res.status(202).json({
+            job: { id: reservation.reservationId, status: expectedStatus, durationSec: 5, engine: 'Wan 2.1' },
+            maxFinalDurationSec: 60, costFallback: false, duplicate: true,
+          });
+        }
+      } catch {
+        return res.status(503).json({ error: 'Der bestehende Wan-Auftrag konnte nach einem Verbindungsabbruch nicht wiederhergestellt werden.' });
+      } finally {
+        clearTimeout(recoveryTimeout);
+      }
+    }
+    return res.status(409).json({ error: 'Dieser Wan-Auftrag ist bereits beendet oder seine Reservierung ist abgelaufen.', reservationId: reservation.reservationId, costFallback: false });
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
+  let accepted = false;
+  let definitiveRejection = false;
   try {
     const response = await fetch(new URL('/jobs', worker.baseUrl), {
       method: 'POST',
       headers: { ...worker.headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }) }),
-      signal: controller.signal,
-      redirect: 'error',
+      body: JSON.stringify({
+        job_id: reservation.reservationId, prompt, duration_sec: 5, aspect_ratio: aspectRatio,
+        ...(seed === undefined ? {} : { seed }),
+      }),
+      signal: controller.signal, redirect: 'error',
     });
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok) return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
-    if (typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || payload.status !== 'queued') {
+    if (!response.ok) {
+      definitiveRejection = response.status < 500;
+      return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status, workerRejected: definitiveRejection });
+    }
+    if (payload.id !== reservation.reservationId ||
+        !['queued', 'running', 'succeeded', 'failed'].includes(String(payload.status))) {
       return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
     }
-    return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
+    accepted = true;
+    if (payload.status === 'succeeded' || payload.status === 'failed') {
+      await settleZeroResourceReservation({
+        principalId: principal.id, reservationId: reservation.reservationId,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
+    }
+    return res.status(202).json({
+      job: { id: reservation.reservationId, status: payload.status, durationSec: 5, engine: 'Wan 2.1' },
+      maxFinalDurationSec: 60, costFallback: false, duplicate: reservation.duplicate,
+    });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
   } finally {
     clearTimeout(timeout);
+    if (!accepted && definitiveRejection && !reservation.duplicate) {
+      await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'released' }).catch(() => undefined);
+    }
   }
 }));
 
 app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
-  const worker = getWanWorkerConfig();
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const id = req.params.id;
-  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
   if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  // Verify the authenticated principal owns a real Wan reservation before
+  // checking or contacting the private worker. Do not expose worker state for
+  // arbitrary UUIDs, even when the worker is currently unconfigured.
+  const reservation = await getZeroResourceReservation({ principalId: principal.id, reservationId: id });
+  if (!reservation || reservation.resourceId !== 'wan-video') {
+    return res.status(404).json({ error: 'ZERO RESOURCE GUARD: Keine gültige Wan-Reservierung gefunden.' });
+  }
+  const worker = getWanWorkerConfig();
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(new URL(`/jobs/${id}`, worker.baseUrl), {
       headers: worker.headers, signal: controller.signal, redirect: 'error',
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
+    if (payload.id !== id || !['queued', 'running', 'succeeded', 'failed'].includes(String(payload.status))) {
+      return res.status(502).json({ error: 'Ungültiger Wan-Jobstatus.' });
+    }
+    if (payload.status === 'succeeded' || payload.status === 'failed') {
+      await settleZeroResourceReservation({
+        principalId: principal.id, reservationId: id,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
+    }
     return res.json({ job: payload, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
@@ -2008,6 +2177,12 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
   if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+  const reservation = await getZeroResourceReservation({ principalId: principal.id, reservationId: id });
+  if (!reservation || reservation.resourceId !== 'wan-video' || reservation.status !== 'completed') {
+    return res.status(409).json({ error: 'ZERO RESOURCE GUARD: Video ist noch nicht vollständig reserviert und abgeschlossen.' });
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   try {
@@ -2015,9 +2190,15 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
       headers: worker.headers, signal: controller.signal, redirect: 'error',
     });
     if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
-    const length = Number(response.headers.get('content-length') ?? 0);
-    if (length > 100 * 1024 * 1024) return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
-    const bytes = Buffer.from(await response.arrayBuffer());
+    let bytes: Buffer;
+    try {
+      bytes = await readWorkerBodyLimited(response, 100 * 1024 * 1024);
+    } catch (error) {
+      if (error instanceof WorkerPayloadTooLargeError) {
+        return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
+      }
+      throw error;
+    }
     if (bytes.length < 1024 || bytes.length > 100 * 1024 * 1024) return res.status(502).json({ error: 'Ungültige oder zu große MP4-Datei vom Wan-Worker.' });
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="zero-wan-${id}.mp4"`);

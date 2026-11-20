@@ -40,6 +40,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   const [targetProjectId, setTargetProjectId] = useState(projects[0]?.id ?? '');
   const [savingAudio, setSavingAudio] = useState(false);
   const [savedAudioMsg, setSavedAudioMsg] = useState<string | null>(null);
+  const piperIdempotencyKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
   // Local Transcription
   const [recording, setRecording] = useState(false);
@@ -78,18 +79,29 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     setTtsLoading(true);
     setTtsError(null);
     try {
+      const requestBody = { text: text.trim(), speed: 0.96 };
+      const fingerprint = JSON.stringify(requestBody);
+      const previousKey = piperIdempotencyKeyRef.current;
+      const idempotencyKey = previousKey?.fingerprint === fingerprint ? previousKey.key : crypto.randomUUID();
+      piperIdempotencyKeyRef.current = { fingerprint, key: idempotencyKey };
       const data = await apiRequest<{ audioDataUrl: string; modelUsed: string }>('/api/audio/tts/piper', {
         method: 'POST',
-        body: JSON.stringify({ text, speed: 0.96 }),
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(requestBody),
       });
+      piperIdempotencyKeyRef.current = null;
       setAudioUrl(data.audioDataUrl);
       setAudioModelId('piper-tts-de-worker');
       setAudioVoiceLabel('Thorsten Deutsch');
       setSavedAudioMsg(null);
     } catch (err) {
-      setTtsError(err instanceof Error
+      const message = err instanceof Error
         ? err.message
-        : 'Piper-WAV konnte nicht erstellt werden. Verbinde den eigenen ZERO-Worker.');
+        : 'Piper-WAV konnte nicht erstellt werden. Verbinde den eigenen ZERO-Worker.';
+      if (message.includes('Piper hat den Auftrag vor der Verarbeitung abgewiesen')) {
+        piperIdempotencyKeyRef.current = null;
+      }
+      setTtsError(message);
     } finally {
       setTtsLoading(false);
     }

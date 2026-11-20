@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -30,6 +30,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const [wanClipScene, setWanClipScene] = useState('');
+  const wanIdempotencyKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
 
   useEffect(() => {
@@ -96,14 +97,22 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
+      const requestBody = { prompt: prompt.slice(0, 1800), aspectRatio };
+      const fingerprint = JSON.stringify(requestBody);
+      const previousKey = wanIdempotencyKeyRef.current;
+      const idempotencyKey = previousKey?.fingerprint === fingerprint ? previousKey.key : crypto.randomUUID();
+      wanIdempotencyKeyRef.current = { fingerprint, key: idempotencyKey };
       const created = await fetch('/api/video/engine/jobs', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(requestBody),
       });
       const createdPayload = await created.json();
       if (!created.ok || typeof createdPayload.job?.id !== 'string') {
+        // The server releases the reservation only for a definitive worker 4xx.
+        // Clear the key only in that case; keep it for ambiguous network/5xx outcomes.
+        if (createdPayload.workerRejected === true) wanIdempotencyKeyRef.current = null;
         throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
       }
       const jobId = createdPayload.job.id as string;
@@ -115,7 +124,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         const statusPayload = await statusResponse.json();
         if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
         const job = statusPayload.job;
-        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        if (job.status === 'failed') {
+          wanIdempotencyKeyRef.current = null;
+          throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        }
         if (job.status === 'succeeded') {
           setWanProgress('MP4 wird auf ZERO übertragen...');
           const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
@@ -150,6 +162,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
               : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
           completed = true;
+          wanIdempotencyKeyRef.current = null;
           break;
         }
         setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
