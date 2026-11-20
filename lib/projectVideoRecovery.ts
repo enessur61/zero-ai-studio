@@ -31,7 +31,7 @@ export async function probeProjectVideoAccess(
     if (
       response.status !== 206 ||
       !contentRange ||
-      !/^bytes 0-0\\/\\d+$/.test(contentRange) ||
+      !/^bytes 0-0\/\d+$/.test(contentRange) ||
       contentLength !== '1' ||
       acceptsRanges?.toLowerCase() !== 'bytes'
     ) {
