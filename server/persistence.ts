@@ -327,8 +327,8 @@ export function getPostgresPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: runtimeConfig.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30_000,
+      max: 1,
+      idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 8_000,
       statement_timeout: 15_000,
       application_name: 'zero-ai-studio',
