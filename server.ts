@@ -14,7 +14,7 @@ import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError 
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
+import { requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
