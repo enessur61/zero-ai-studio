@@ -36,7 +36,9 @@ if (!['localhost', '127.0.0.1', '::1'].includes(databaseUrl.hostname)) {
 }
 
 const schema = `zero_revision_test_${randomUUID().replaceAll('-', '')}`;
+const previewSchema = `zero_preview_isolation_test_${randomUUID().replaceAll('-', '')}`;
 const adminPool = new Pool({ connectionString, max: 1 });
+const previewPool = new Pool({ connectionString, options: `-c search_path=${previewSchema}`, max: 1 });
 const poolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const poolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
@@ -44,6 +46,7 @@ const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema
 
 try {
   await adminPool.query(`CREATE SCHEMA "${schema}"`);
+  await adminPool.query(`CREATE SCHEMA "${previewSchema}"`);
   const storeA = createPostgresStateStore(poolA);
   const storeB = createPostgresStateStore(poolB);
 
@@ -62,6 +65,17 @@ try {
   assert.equal(await authA.hasSession(sessionHash), false, 'logout on pool B must revoke the session on pool A');
   await authA.createSession('b'.repeat(64), new Date(Date.now() - 1));
   assert.equal(await authB.hasSession('b'.repeat(64)), false, 'expired sessions must fail closed across pools');
+
+  // Separate random schemas model independent preview and production namespaces.
+  // Both live only inside this CI job's local PostgreSQL test container.
+  const previewAuth = createPostgresAuthStore(previewPool);
+  await previewAuth.ensureSchema();
+  const previewOnlySessionHash = 'd'.repeat(64);
+  await authA.createSession(previewOnlySessionHash, new Date(Date.now() + 60_000));
+  assert.equal(await authB.hasSession(previewOnlySessionHash), true, 'sessions must be shared within one namespace');
+  assert.equal(await previewAuth.hasSession(previewOnlySessionHash), false, 'preview namespace must not inherit production-like sessions');
+  await previewAuth.createSession('e'.repeat(64), new Date(Date.now() + 60_000));
+  assert.equal(await authA.hasSession('e'.repeat(64)), false, 'production-like namespace must not see preview-only sessions');
 
   // Eight failed logins are shared; the ninth attempt is rejected across pools.
   const loginKeyHash = 'c'.repeat(64);
@@ -1499,7 +1513,8 @@ try {
 
   console.log('PostgreSQL revision, persistence restore-race, HTTP restore-vs-write, media ZIP snapshot, and atomic-backup tests passed using two independent pools.');
 } finally {
-  await Promise.all([poolA.end(), poolB.end(), gatePoolA.end(), gatePoolB.end()]);
+  await Promise.all([poolA.end(), poolB.end(), gatePoolA.end(), gatePoolB.end(), previewPool.end()]);
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+  await adminPool.query(`DROP SCHEMA IF EXISTS "${previewSchema}" CASCADE`);
   await adminPool.end();
 }
