@@ -58,9 +58,9 @@ def require_persistent_storage(configured: bool) -> None:
 WAN_MIN_GPU_VRAM_MB = 12 * 1024
 
 
-def has_sufficient_gpu_memory(total_bytes: int, minimum_mb: int = WAN_MIN_GPU_VRAM_MB) -> bool:
+def has_sufficient_gpu_memory(total_mb: int, minimum_mb: int = WAN_MIN_GPU_VRAM_MB) -> bool:
     """Require at least 12 GiB of GPU VRAM before accepting inference."""
-    return int(total_bytes) >= int(minimum_mb) * 1024 * 1024
+    return int(total_mb) >= int(minimum_mb)
 
 
 class PersistentJobStore:
