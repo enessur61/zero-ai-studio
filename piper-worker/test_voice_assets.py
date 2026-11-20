@@ -4,7 +4,6 @@ import hashlib
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
 
 import voice_assets
@@ -61,11 +60,18 @@ class PinnedVoiceAssetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "voice.onnx"
             path.write_bytes(payload)
-            with patch.object(voice_assets, "MODEL_SIZE_BYTES", len(payload)), patch.object(voice_assets, "MODEL_SHA256", expected):
-                voice_assets.validate_model_file(path)
-                path.write_bytes(b"pinned test modes")
-                with self.assertRaisesRegex(RuntimeError, "SHA-256"):
-                    voice_assets.validate_model_file(path)
+            voice_assets.validate_model_file(
+                path,
+                expected_size=len(payload),
+                expected_sha256=expected,
+            )
+            path.write_bytes(b"pinned test modes")
+            with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+                voice_assets.validate_model_file(
+                    path,
+                    expected_size=len(payload),
+                    expected_sha256=expected,
+                )
 
     def test_rejects_non_object_json(self):
         with tempfile.TemporaryDirectory() as directory:
