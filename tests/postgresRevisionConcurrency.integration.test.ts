@@ -151,7 +151,7 @@ try {
     maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
   });
   const byteLimitedB = createProjectVideoAssetStore(poolB, {
-    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
   });
   const byteLimitedWrites = await Promise.allSettled([
     byteLimitedA.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-a', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
