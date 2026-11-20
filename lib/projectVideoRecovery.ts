@@ -1,0 +1,96 @@
+export type ProjectVideoRecoveryState = 'ready' | 'offline' | 'session-expired' | 'missing' | 'error';
+
+export type RecoveryFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export async function probeProjectVideoAccess(
+  url: string,
+  fetcher: RecoveryFetch = fetch,
+): Promise<ProjectVideoRecoveryState> {
+  try {
+    const auth = await fetcher('/api/auth/status', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    if (auth.status === 401 || auth.status === 403) return 'session-expired';
+    if (!auth.ok) return 'error';
+    const authPayload = await auth.json() as { authenticated?: unknown };
+    if (authPayload.authenticated !== true) return 'session-expired';
+
+    const response = await fetcher(url, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Range: 'bytes=0-0' },
+    });
+    if (response.status === 401 || response.status === 403) return 'session-expired';
+    if (response.status === 404 || response.status === 410) return 'missing';
+    if (response.status !== 206) {
+      await response.body?.cancel().catch(() => undefined);
+      return 'error';
+    }
+    await response.body?.cancel().catch(() => undefined);
+    return 'ready';
+  } catch (error) {
+    return error instanceof TypeError ? 'offline' : 'error';
+  }
+}
+
+export interface ProjectVideoRecoveryOptions {
+  url: string;
+  onState: (state: ProjectVideoRecoveryState) => void;
+  onResume: () => void;
+  fetcher?: RecoveryFetch;
+  windowTarget?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
+  documentTarget?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
+  isVisible?: () => boolean;
+}
+
+export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions): () => void {
+  const windowTarget = options.windowTarget ?? window;
+  const documentTarget = options.documentTarget ?? document;
+  const isVisible = options.isVisible ?? (() => document.visibilityState !== 'hidden');
+  let disposed = false;
+  let interrupted = false;
+  let checking = false;
+
+  const check = async () => {
+    if (disposed || checking || !isVisible()) return;
+    checking = true;
+    try {
+      const state = await probeProjectVideoAccess(options.url, options.fetcher);
+      if (disposed) return;
+      options.onState(state);
+      if (state === 'offline' || state === 'session-expired') interrupted = true;
+      if (state === 'ready' && interrupted) {
+        interrupted = false;
+        options.onResume();
+      }
+    } finally {
+      checking = false;
+    }
+  };
+
+  const markBackgrounded = () => { interrupted = true; };
+  const resumeIfVisible = () => { if (isVisible()) void check(); };
+  const onVisibilityChange = () => {
+    if (isVisible()) void check();
+    else markBackgrounded();
+  };
+
+  windowTarget.addEventListener('online', resumeIfVisible);
+  windowTarget.addEventListener('focus', resumeIfVisible);
+  windowTarget.addEventListener('pageshow', resumeIfVisible);
+  windowTarget.addEventListener('pagehide', markBackgrounded);
+  documentTarget.addEventListener('visibilitychange', onVisibilityChange);
+  void check();
+
+  return () => {
+    disposed = true;
+    windowTarget.removeEventListener('online', resumeIfVisible);
+    windowTarget.removeEventListener('focus', resumeIfVisible);
+    windowTarget.removeEventListener('pageshow', resumeIfVisible);
+    windowTarget.removeEventListener('pagehide', markBackgrounded);
+    documentTarget.removeEventListener('visibilitychange', onVisibilityChange);
+  };
+}
