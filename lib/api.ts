@@ -24,7 +24,7 @@ export async function getOrCreatePersistentIdempotencyKey(
   const slot = IDEMPOTENCY_STORAGE_PREFIX + await getRequestFingerprint(url, body);
   const existing = storage.getItem(slot);
   const key = existing && existing.length >= 8 && existing.length <= 200 ? existing : createKey();
-  if (!existing) storage.setItem(slot, key);
+  if (key !== existing) storage.setItem(slot, key);
   return { key, clear: async () => { if (storage.getItem(slot) === key) storage.removeItem(slot); } };
 }
 
@@ -53,6 +53,7 @@ export async function apiRequest<T>(url: string, options?: RequestInit): Promise
     callerSignal?.addEventListener('abort', forwardCallerAbort, { once: true });
   }
 
+  try {
   const headers = new Headers(options?.headers);
   const method = (options?.method ?? 'GET').toUpperCase();
   let persistentIdempotency: Awaited<ReturnType<typeof getOrCreatePersistentIdempotencyKey>> | undefined;
@@ -65,7 +66,6 @@ export async function apiRequest<T>(url: string, options?: RequestInit): Promise
 
   const { signal: _ignoredSignal, ...requestOptions } = options ?? {};
 
-  try {
     const response = await fetch(url, {
       ...requestOptions,
       headers,
