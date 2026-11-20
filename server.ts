@@ -2240,7 +2240,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     }
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
-        !['queued', 'running', 'succeeded', 'failed'].includes(String(job.status))) {
+        !['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
       return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
     }
     return { status: payload.replayed === true ? 200 : 202, body: {
