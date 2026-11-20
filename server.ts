@@ -17,6 +17,7 @@ import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
+import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -238,6 +239,7 @@ app.use('/api', (req, res, next) => {
   if (!IS_PRODUCTION) {
     // Development has a distinct server-owned identity; no client principal is trusted.
     res.locals.zeroPrincipal = 'zero-development';
+    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
     return runWithZeroPrincipal('zero-development', requestIdempotencyKey, next);
   }
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
@@ -250,12 +252,16 @@ app.use('/api', (req, res, next) => {
     // This application currently has one authenticated administrator identity.
     // Bind quotas to that server-owned identity; never accept a principal from request data.
     res.locals.zeroPrincipal = 'zero-admin';
+    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
     return runWithZeroPrincipal('zero-admin', requestIdempotencyKey, next);
   }).catch(next);
 });
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
+
+// Enforce server-owned project identity before every project-id route.
+app.use('/api/projects/:id', createProjectOwnershipMiddleware(async () => (await loadDb()).projects));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
@@ -987,6 +993,12 @@ app.post('/api/brain/chat', asyncRoute(async (req, res) => {
     const needsFullContext = !isSimpleRequest;
 
     if (!message) return res.status(400).json({ error: 'Nachricht darf nicht leer sein.' });
+    const principal = getZeroPrincipal(res.locals);
+    if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    const activeProject = projectId
+      ? resolveOwnedProject(database.projects, principal, projectId)
+      : undefined;
+    if (projectId && !activeProject) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
     const routeDecision = chooseZeroChatModel(
       database.models,
@@ -1000,10 +1012,6 @@ app.post('/api/brain/chat', asyncRoute(async (req, res) => {
     }
     const selectedModel = routeDecision.modelId;
     routedModelId = selectedModel;
-
-    const activeProject = projectId
-      ? database.projects.find((p) => p.id === projectId)
-      : undefined;
 
     const availableModelsSummary = database.models
       .filter(
@@ -2139,6 +2147,8 @@ function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
 }
 
 app.post('/api/film/direct', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const db = await loadDb();
   try {
     const idea = String(req.body?.idea ?? '').trim();
@@ -2288,6 +2298,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
     const now = new Date().toISOString();
     const newProject: StudioProject = {
       id: `proj-${Date.now()}`,
+      ownerId: principal.id,
       title: parsed.title || 'Neuer Kurzfilm',
       logline: parsed.logline || idea,
       genre,
@@ -2348,12 +2359,14 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
 }));
 
 app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const db = await loadDb();
   try {
     const projectId = String(req.body?.projectId ?? '');
     const sceneId = String(req.body?.sceneId ?? '');
     const instruction = String(req.body?.instruction ?? 'Verbessere Bildkomposition und Spannung.').trim();
-    const project = db.projects.find((p) => p.id === projectId);
+    const project = resolveOwnedProject(db.projects, principal, projectId);
     if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
@@ -2393,8 +2406,10 @@ Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
 
 // === ZERO PROJECTS ===
 app.get('/api/projects', asyncRoute(async (_req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const db = await loadDb();
-  const projects = db.projects.map((project) => ({
+  const projects = db.projects.filter((project) => project.ownerId === principal.id).map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),
     assets: sanitizeProjectAssets(project.assets),
@@ -2404,6 +2419,8 @@ app.get('/api/projects', asyncRoute(async (_req, res) => {
 }));
 
 app.post('/api/projects', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const db = await loadDb();
   const now = new Date().toISOString();
   const rawDuration = Number(req.body?.targetDurationSec ?? 58);
@@ -2415,6 +2432,7 @@ app.post('/api/projects', asyncRoute(async (req, res) => {
   const projectDuration = Math.min(60, scenesDuration || clampedDuration);
   const newProject: StudioProject = {
     id: `proj-${Date.now()}`,
+    ownerId: principal.id,
     title: String(req.body?.title || 'Unbenanntes Projekt').trim(),
     logline: String(req.body?.logline || '').trim(),
     genre: String(req.body?.genre || 'Drama / Thriller').trim(),
@@ -2577,6 +2595,7 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
     ...project,
     ...snapshot.state,
     id: project.id,
+    ownerId: project.ownerId,
     scenes: restoredScenes,
     assets: sanitizeProjectAssets(snapshot.state.assets),
     targetDurationSec: restoredDuration,
@@ -2728,14 +2747,17 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
+  const principal = getZeroPrincipal(res.locals);
+  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const result = await withZeroProjectLifecycleLock(req.params.id, async () => {
   const db = await loadDb();
-  const projectExists = db.projects.some((project) => project.id === req.params.id);
+  const ownedProjects = db.projects.filter((project) => project.ownerId === principal.id);
+  const projectExists = ownedProjects.some((project) => project.id === req.params.id);
   if (projectExists) {
-    if (db.projects.length <= 1) {
+    if (ownedProjects.length <= 1) {
       return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
     }
-    db.projects = db.projects.filter((project) => project.id !== req.params.id);
+    db.projects = db.projects.filter((project) => !(project.id === req.params.id && project.ownerId === principal.id));
     await saveDb(db);
   }
   // Retry-safe cleanup spans both PostgreSQL project clips and the durable GPU worker.
@@ -2764,7 +2786,7 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
       clearTimeout(timeout);
     }
   }
-  const projects = db.projects.map((project) => ({
+  const projects = db.projects.filter((project) => project.ownerId === principal.id).map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),
     assets: sanitizeProjectAssets(project.assets),
