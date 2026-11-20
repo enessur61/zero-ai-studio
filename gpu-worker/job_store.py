@@ -7,6 +7,14 @@ from typing import Any
 
 
 
+WAN_MIN_GPU_VRAM_MB = 12 * 1024
+
+
+def has_sufficient_gpu_memory(total_bytes: int, minimum_mb: int = WAN_MIN_GPU_VRAM_MB) -> bool:
+    """Require a realistic minimum GPU memory budget before accepting inference."""
+    return total_bytes >= minimum_mb * 1024 * 1024
+
+
 _PERSISTENT_FILESYSTEMS = {
     "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs",
     "nfs", "nfs4", "cifs", "ceph", "glusterfs",
@@ -56,7 +64,7 @@ def require_persistent_storage(configured: bool) -> None:
     """Fail closed before accepting jobs when the worker volume is ephemeral."""
     if not configured:
         raise RuntimeError(
-            "GPU worker storage is ephemeral. Configure WAN_OUTPUT_DIR on a persistent volume before accepting jobs."
+            "GPU worker storage is ephemeral. Configure WAN_OUTPUT_DIR and HF_HOME on persistent volumes before accepting jobs."
         )
 
 
@@ -86,6 +94,121 @@ class PersistentJobStore:
                 )
                 """
             )
+
+    def daily_usage(self, utc_day: str | None = None) -> int:
+        """Return the number of accepted GPU jobs for the current UTC day."""
+        from datetime import datetime, timezone
+        day = utc_day or datetime.now(timezone.utc).date().isoformat()
+        quota_id = "zero-daily-usage:" + day
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM zero_video_jobs WHERE id = ?", (quota_id,)
+            ).fetchone()
+        if not row:
+            return 0
+        try:
+            payload = json.loads(row[0])
+            accepted = payload.get("accepted_jobs", 0) if isinstance(payload, dict) else 0
+            return max(0, int(accepted))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return 0
+
+    def create_job_if_allowed(
+        self, job: dict[str, Any], daily_limit: int = 3, max_concurrent: int = 1, utc_day: str | None = None
+    ) -> tuple[bool, str, int]:
+        """Atomically reserve one daily job and persist it before returning success."""
+        if daily_limit < 1 or max_concurrent < 1:
+            raise ValueError("Job limits must be positive.")
+        from datetime import datetime, timezone
+        day = utc_day or datetime.now(timezone.utc).date().isoformat()
+        if len(day) != 10:
+            raise ValueError("Invalid UTC day key.")
+        payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
+        quota_id = "zero-daily-usage:" + day
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute("SELECT payload FROM zero_video_jobs").fetchall()
+            active = 0
+            for (raw_payload,) in rows:
+                try:
+                    existing = json.loads(raw_payload)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(existing, dict) and existing.get("status") in {"queued", "running", "cancel_requested"}:
+                    active += 1
+            if active >= max_concurrent:
+                connection.rollback()
+                return False, "concurrency_limit", active
+            duplicate = connection.execute(
+                "SELECT 1 FROM zero_video_jobs WHERE id = ?", (str(job["id"]),)
+            ).fetchone()
+            if duplicate:
+                connection.rollback()
+                return False, "duplicate_id", active
+            quota_row = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", (quota_id,)).fetchone()
+            try:
+                accepted = int(json.loads(quota_row[0]).get("accepted_jobs", 0)) if quota_row else 0
+            except (TypeError, ValueError, json.JSONDecodeError):
+                accepted = daily_limit
+            if accepted >= daily_limit:
+                connection.rollback()
+                return False, "daily_limit", accepted
+            quota_payload = json.dumps({"id": quota_id, "kind": "daily_usage", "status": "quota", "utc_day": day, "accepted_jobs": accepted + 1}, separators=(",", ":"))
+            connection.execute(
+                "INSERT INTO zero_video_jobs (id, payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP",
+                (quota_id, quota_payload),
+            )
+            connection.execute(
+                "INSERT INTO zero_video_jobs (id, payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (str(job["id"]), payload),
+            )
+            connection.commit()
+            return True, "accepted", accepted + 1
+    def request_cancel(self, job_id: str) -> dict[str, Any] | None:
+        """Persist a cancellation request without pretending active inference stopped."""
+        from datetime import datetime, timezone
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM zero_video_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                return None
+            try:
+                job = json.loads(row[0])
+            except (TypeError, json.JSONDecodeError):
+                connection.rollback()
+                return None
+            if not isinstance(job, dict) or job.get("id") != job_id:
+                connection.rollback()
+                return None
+            status = job.get("status")
+            if status == "queued":
+                job.update({
+                    "status": "cancelled",
+                    "cancelled_at": datetime.now(timezone.utc).isoformat(),
+                    "cancel_reason": "Auftrag vor GPU-Start abgebrochen.",
+                })
+            elif status == "running":
+                job.update({
+                    "status": "cancel_requested",
+                    "cancel_requested_at": datetime.now(timezone.utc).isoformat(),
+                    "cancel_reason": "Abbruch angefordert; laufender GPU-Inferenzschritt wird sicher beendet.",
+                })
+            elif status in {"cancel_requested", "cancelled", "succeeded", "failed"}:
+                pass
+            else:
+                connection.rollback()
+                return None
+            payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
+            connection.execute(
+                "UPDATE zero_video_jobs SET payload = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (payload, job_id),
+            )
+            connection.commit()
+            return job
 
     def save(self, job: dict[str, Any]) -> None:
         payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
@@ -121,12 +244,21 @@ class PersistentJobStore:
             if not isinstance(job, dict) or job.get("id") != job_id:
                 self.delete(str(job_id))
                 continue
+            if job.get("kind") == "daily_usage":
+                continue
 
             if job.get("status") in {"queued", "running"}:
                 job.update({
                     "status": "failed",
                     "finished_at": job.get("finished_at") or job.get("updated_at") or job.get("created_at"),
                     "error": "GPU-Worker wurde während dieses Auftrags neu gestartet. Auftrag wurde nicht automatisch erneut ausgeführt.",
+                })
+                self.save(job)
+            elif job.get("status") == "cancel_requested":
+                job.update({
+                    "status": "cancelled",
+                    "finished_at": job.get("finished_at") or job.get("cancel_requested_at"),
+                    "cancel_reason": "Worker-Neustart beendet den zuvor angeforderten Abbruch; kein GPU-Prozess läuft weiter.",
                 })
                 self.save(job)
             elif job.get("status") == "succeeded":
@@ -142,6 +274,26 @@ class PersistentJobStore:
             jobs[str(job_id)] = job
         return jobs
 
+    def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Read persisted jobs without applying startup recovery to live work."""
+        if not 1 <= limit <= 50:
+            raise ValueError("Job list limit must be between 1 and 50.")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, payload FROM zero_video_jobs ORDER BY updated_at DESC"
+            ).fetchall()
+        jobs: list[dict[str, Any]] = []
+        for job_id, payload in rows:
+            try:
+                job = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(job, dict) or job.get("id") != job_id or job.get("kind") == "daily_usage":
+                continue
+            jobs.append(job)
+        jobs.sort(key=lambda job: str(job.get("created_at") or ""), reverse=True)
+        return jobs[:limit]
+
     def prune_completed(self, max_jobs: int = 50, retain_jobs: int = 40) -> list[dict[str, Any]]:
         if max_jobs < 1 or retain_jobs < 1 or retain_jobs >= max_jobs:
             raise ValueError("Invalid job retention limits.")
@@ -149,18 +301,22 @@ class PersistentJobStore:
             rows = connection.execute(
                 "SELECT id, payload FROM zero_video_jobs ORDER BY updated_at DESC"
             ).fetchall()
-        if len(rows) < max_jobs:
-            return []
+        job_rows: list[dict[str, Any]] = []
         completed: list[dict[str, Any]] = []
         for job_id, payload in rows:
             try:
                 job = json.loads(payload)
             except (TypeError, json.JSONDecodeError):
                 continue
-            if isinstance(job, dict) and job.get("status") in {"succeeded", "failed"}:
+            if not isinstance(job, dict) or job.get("id") != job_id or job.get("kind") == "daily_usage":
+                continue
+            job_rows.append(job)
+            if job.get("status") in {"succeeded", "failed", "cancelled"}:
                 completed.append(job)
+        if len(job_rows) < max_jobs:
+            return []
         completed.sort(key=lambda job: str(job.get("created_at", "")))
-        remove_count = max(0, len(rows) - retain_jobs)
+        remove_count = max(0, len(job_rows) - retain_jobs)
         removed = completed[:remove_count]
         for job in removed:
             self.delete(str(job["id"]))

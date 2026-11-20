@@ -76,7 +76,7 @@ const MEDIA_TASKS: Record<ZeroMediaTask, {
   },
   'text-to-speech': {
     category: 'Sprache & Audio',
-    cloudModelIds: ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'],
+    cloudModelIds: ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'piper-tts-de-worker'],
     localModelIds: ['apple-avspeech-webspeech', 'piper-tts-de', 'kokoro-82m'],
   },
   transcription: {
@@ -145,6 +145,8 @@ export function chooseZeroMediaModel(
     if (model.status !== 'FUNKTIONIERT' && model.status !== 'LOKAL INSTALLIERT') return false;
 
     if (spec.cloudModelIds.includes(model.id)) {
+      // Piper uses the separately approved self-hosted worker; it consumes no Gemini quota.
+      if (model.id === 'piper-tts-de-worker') return model.executionMode === 'FREE CLOUD';
       // Cloudflare enforces its shared Workers AI daily Neuron allocation provider-side.
       if (model.id === 'flux-1-schnell-free' || model.id === 'cloudflare-whisper-large-v3-turbo') {
         return model.executionMode === 'FREE CLOUD';

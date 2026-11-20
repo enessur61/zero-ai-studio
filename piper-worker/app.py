@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, hmac, io, os, threading, urllib.request, wave
+import hmac, io, os, threading, urllib.request, wave
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
@@ -7,19 +7,19 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from piper import PiperVoice, SynthesisConfig
+from voice_assets import MODEL_SHA256, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
 
 APP_TOKEN=os.environ.get("ZERO_TTS_WORKER_TOKEN","").strip()
 MODEL_DIR=Path(os.environ.get("PIPER_MODEL_DIR","/tmp/zero-piper"))
 MODEL_DIR.mkdir(parents=True,exist_ok=True)
-REV="95119a449dcd66ed7ad199313f76bda3eda7e286"
-VOICE="de_DE-thorsten-medium"
+REV=VOICE_REVISION
+VOICE=VOICE_ID
 URLS={
  "model":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx",
  "config":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx.json",
 }
-MD5={"model":"a129b00fb3078df43c96bab6c94535c0","config":"843a7bd7272724f750534dd5a26d1aad"}
 MODEL=MODEL_DIR/f"{VOICE}.onnx"; CONFIG=MODEL_DIR/f"{VOICE}.onnx.json"
-app=FastAPI(title="ZERO German Piper TTS",version="1.0.0")
+app=FastAPI(title="ZERO German Piper TTS",version="1.1.0")
 voice=None
 voice_lock=threading.Lock()
 synth_lock=threading.Lock()
@@ -33,23 +33,27 @@ def auth(value:str|None):
  supplied=value.removeprefix("Bearer ").strip() if value else ""
  if not hmac.compare_digest(supplied,APP_TOKEN): raise HTTPException(401,"Unauthorized")
 
-def md5(path:Path)->str:
- d=hashlib.md5()
- with path.open("rb") as f:
-  for chunk in iter(lambda:f.read(1024*1024),b""): d.update(chunk)
- return d.hexdigest()
+def validate_asset(key:str,path:Path):
+ if key=="model": validate_model_file(path)
+ elif key=="config": validate_voice_config(path)
+ else: raise RuntimeError("Unknown Piper voice asset")
 
 def download(key:str,dest:Path,max_bytes:int):
- if dest.is_file() and dest.stat().st_size<=max_bytes and md5(dest)==MD5[key]: return
- dest.unlink(missing_ok=True); tmp=dest.with_suffix(dest.suffix+".part"); d=hashlib.md5(); total=0
- req=urllib.request.Request(URLS[key],headers={"User-Agent":"ZERO-AI-STUDIO/1.0"})
+ if dest.is_file() and dest.stat().st_size<=max_bytes:
+  try:
+   validate_asset(key,dest)
+   return
+  except Exception:
+   dest.unlink(missing_ok=True)
+ tmp=dest.with_suffix(dest.suffix+".part"); total=0
+ req=urllib.request.Request(URLS[key],headers={"User-Agent":"ZERO-AI-STUDIO/1.1"})
  try:
   with urllib.request.urlopen(req,timeout=60) as response,tmp.open("wb") as out:
    while chunk:=response.read(1024*1024):
     total+=len(chunk)
     if total>max_bytes: raise RuntimeError("Voice file exceeded download size limit")
-    d.update(chunk); out.write(chunk)
-  if d.hexdigest()!=MD5[key]: raise RuntimeError("Piper voice failed published integrity check")
+    out.write(chunk)
+  validate_asset(key,tmp)
   tmp.replace(dest)
  except Exception:
   tmp.unlink(missing_ok=True); raise
@@ -66,7 +70,7 @@ def synthesize(text:str,speed:float)->bytes:
  clean=text.strip()
  if not clean: raise ValueError("Text für die Sprachausgabe fehlt")
  if len(clean)>5000: raise ValueError("Maximal 5.000 Zeichen pro WAV-Datei")
- cfg=SynthesisConfig(volume=1.0,length_scale=1.0/min(1.25,max(0.75,speed)),noise_scale=0.667,noise_w_scale=0.8,normalize_audio=True)
+ cfg=SynthesisConfig(volume=1.0,length_scale=1.0/min(1.25,max(0.75,speed)),noise_scale=0.5,noise_w_scale=0.333,normalize_audio=True)
  buf=io.BytesIO()
  with synth_lock,wave.open(buf,"wb") as wav:
   get_voice().synthesize_wav(clean,wav,syn_config=cfg)
@@ -77,7 +81,23 @@ def synthesize(text:str,speed:float)->bytes:
 
 @app.get("/health")
 def health():
- return {"ok":True,"engine":"Piper ONNX","voice":VOICE,"voice_loaded":voice is not None,"cost_eur":0,"paid_fallback":False}
+ return {
+  "ok":True,
+  "engine":"Piper ONNX",
+  "model_id":VOICE,
+  "voice":VOICE,
+  "voice_loaded":voice is not None,
+  "model_files_present":MODEL.is_file() and CONFIG.is_file(),
+  "model_revision":REV,
+  "engine_version":__import__("importlib.metadata",fromlist=["version"]).version("piper-tts"),
+  "engine_license":"GPL-3.0-or-later",
+  "voice_dataset_license":"CC0",
+  "voice_training_base":"rdh (nl_BE, one Flemish speaker, CC0)",
+  "model_sha256":MODEL_SHA256,
+  "commercial_use_confirmed":False,
+  "cost_eur":0,
+  "paid_fallback":False,
+ }
 
 @app.post("/tts")
 def tts(request:Request,authorization:str|None=Header(default=None)):

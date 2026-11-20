@@ -12,13 +12,140 @@ export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process
   return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
+/** Both independent operator confirmations are required. Missing values always deny. */
+export function isCloudflareWorkersAiEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ZERO_CLOUDFLARE_AI_ENABLED?.trim().toLowerCase() === 'true';
+}
+export function isCloudflareWorkersAiFreePlanConfirmed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED?.trim().toLowerCase() === 'true';
+}
+export function isCloudflareWorkersAiAllowed(env: NodeJS.ProcessEnv = process.env): boolean { return isCloudflareWorkersAiEnabled(env) && isCloudflareWorkersAiFreePlanConfirmed(env); }
+export class CloudflareWorkersAiGateError extends CloudflareWorkersAiError {
+  readonly code = 'CLOUDFLARE_BILLING_GATE_CLOSED';
+  constructor(message: string) { super(message, 403); this.name = 'CloudflareWorkersAiGateError'; }
+}
+export interface CloudflareAuditEvent {
+  provider: 'cloudflare-workers-ai';
+  adapterId: 'cloudflare-workers-ai';
+  modelId: string;
+  action: string;
+  decision: 'ERLAUBT_0_EUR' | 'BLOCKIERT_BUDGET_GUARD' | 'PROVIDER_FEHLER';
+  outcome: 'success' | 'gate_blocked' | 'http_error' | 'network_error' | 'timeout' | 'provider_error';
+  reason: string;
+  httpStatus: number | null;
+  providerRequestId: string | null;
+  errorCategory: string | null;
+  durationMs: number;
+  costEur: 0;
+  timestamp: string;
+}
+
+type CloudflareAuditSink = (event: CloudflareAuditEvent) => Promise<void>;
+
+export class CloudflareAuditPersistenceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'CloudflareAuditPersistenceError';
+  }
+}
+
+interface CloudflareAuditContext {
+  modelId: string;
+  action: string;
+  startedAt: number;
+  requestStarted: boolean;
+  auditAttempted: boolean;
+  httpStatus: number | null;
+  providerRequestId: string | null;
+  sink?: CloudflareAuditSink;
+}
+
+function createCloudflareAuditContext(modelId: string, action: string, sink?: CloudflareAuditSink): CloudflareAuditContext {
+  return { modelId, action, startedAt: Date.now(), requestStarted: false, auditAttempted: false, httpStatus: null, providerRequestId: null, sink };
+}
+
+function captureCloudflareResponse(context: CloudflareAuditContext, response: Response): void {
+  context.httpStatus = response.status;
+  for (const header of ['cf-ray', 'cf-request-id', 'cf-ai-request-id', 'x-request-id', 'request-id']) {
+    const value = response.headers.get(header)?.trim();
+    if (value) {
+      context.providerRequestId = header + ':' + value.slice(0, 160);
+      break;
+    }
+  }
+}
+
+async function finishCloudflareAudit(
+  context: CloudflareAuditContext,
+  outcome: CloudflareAuditEvent['outcome'],
+  reason: string,
+  errorCategory: string | null = null,
+): Promise<void> {
+  if (context.auditAttempted) return;
+  context.auditAttempted = true;
+  const event: CloudflareAuditEvent = {
+    provider: 'cloudflare-workers-ai',
+    adapterId: 'cloudflare-workers-ai',
+    modelId: context.modelId,
+    action: context.action,
+    decision: outcome === 'success' ? 'ERLAUBT_0_EUR' : outcome === 'gate_blocked' ? 'BLOCKIERT_BUDGET_GUARD' : 'PROVIDER_FEHLER',
+    outcome,
+    reason: reason.slice(0, 500),
+    httpStatus: context.httpStatus,
+    providerRequestId: context.providerRequestId,
+    errorCategory,
+    durationMs: Math.max(0, Date.now() - context.startedAt),
+    costEur: 0,
+    timestamp: new Date().toISOString(),
+  };
+  console.info(JSON.stringify({ event: 'ZERO_PROVIDER_AUDIT', ...event }));
+  try {
+    await context.sink?.(event);
+  } catch (error) {
+    throw new CloudflareAuditPersistenceError(
+      'Cloudflare-Aufruf wurde ausgeführt, aber sein Audit-Eintrag konnte nicht dauerhaft in ZERO gespeichert werden.',
+      { cause: error },
+    );
+  }
+}
+
+async function assertCloudflareWorkersAiAllowed(context: CloudflareAuditContext): Promise<void> {
+  if (!isCloudflareWorkersAiEnabled()) {
+    context.httpStatus = 403;
+    const reason = 'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_AI_ENABLED=true fehlt. Kein Provider-Aufruf wurde gestartet.';
+    await finishCloudflareAudit(context, 'gate_blocked', reason, 'billing_gate');
+    throw new CloudflareWorkersAiGateError(reason);
+  }
+  if (!isCloudflareWorkersAiFreePlanConfirmed()) {
+    context.httpStatus = 403;
+    const reason = 'Cloudflare Workers AI ist gesperrt: ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=true fehlt. Kein Provider-Aufruf wurde gestartet.';
+    await finishCloudflareAudit(context, 'gate_blocked', reason, 'free_plan_confirmation');
+    throw new CloudflareWorkersAiGateError(reason);
+  }
+}
+
+function classifyCloudflareFailure(error: unknown, context: CloudflareAuditContext): {
+  outcome: CloudflareAuditEvent['outcome'];
+  category: string;
+  reason: string;
+} {
+  const reason = error instanceof Error ? error.message : 'Unbekannter Cloudflare-Providerfehler.';
+  if (error instanceof Error && error.name === 'AbortError') return { outcome: 'timeout', category: 'timeout', reason };
+  if (context.httpStatus !== null && (context.httpStatus < 200 || context.httpStatus >= 300)) return { outcome: 'http_error', category: 'http', reason };
+  if (context.httpStatus !== null) return { outcome: 'provider_error', category: 'invalid_response', reason };
+  return { outcome: 'network_error', category: 'network', reason };
+}
+
 export async function generateCloudflareText(params: {
   prompt: string;
   systemPrompt?: string;
   maxTokens?: number;
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
+  onAudit?: CloudflareAuditSink;
 }): Promise<{ text: string; modelId: string }> {
+  const auditContext = createCloudflareAuditContext('cloudflare-glm-4.7-flash', 'CLOUDFLARE_TEXT', params.onAudit);
+  await assertCloudflareWorkersAiAllowed(auditContext);
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -36,9 +163,7 @@ export async function generateCloudflareText(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    // Cloudflare occasionally returns transient provider-side 5xx errors. Retry only
-    // those server failures; never retry 401/403/429 or switch to a paid provider.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    auditContext.requestStarted = true;
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_MODEL_ID}`,
         {
@@ -59,11 +184,8 @@ export async function generateCloudflareText(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-    }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine HTTP-Antwort geliefert.');
-
+    captureCloudflareResponse(auditContext, response);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: {
@@ -87,8 +209,14 @@ export async function generateCloudflareText(params: {
     const responseText = payload?.result?.response ?? payload?.result?.choices?.[0]?.message?.content;
     const text = typeof responseText === 'string' ? responseText.trim() : '';
     if (!text) throw new CloudflareWorkersAiError('Cloudflare Workers AI hat keine Textantwort geliefert.');
+    await finishCloudflareAudit(auditContext, 'success', 'Cloudflare-Textantwort erfolgreich verarbeitet.');
     return { text: text.slice(0, 20_000), modelId: CLOUDFLARE_MODEL_ID };
   } catch (error) {
+    if (error instanceof CloudflareAuditPersistenceError) throw error;
+    if (!auditContext.auditAttempted && auditContext.requestStarted) {
+      const failure = classifyCloudflareFailure(error, auditContext);
+      await finishCloudflareAudit(auditContext, failure.outcome, failure.reason, failure.category);
+    }
     if (error instanceof CloudflareWorkersAiError) throw error;
     if (error instanceof Error && error.name === 'AbortError') {
       throw new CloudflareWorkersAiError('Cloudflare-Anfrage nach 45 Sekunden abgebrochen (Timeout).');
@@ -106,7 +234,10 @@ export async function generateCloudflareImage(params: {
   prompt: string;
   steps?: number;
   fetchImpl?: typeof fetch;
+  onAudit?: CloudflareAuditSink;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
+  const auditContext = createCloudflareAuditContext('flux-1-schnell-free', 'CLOUDFLARE_IMAGE', params.onAudit);
+  await assertCloudflareWorkersAiAllowed(auditContext);
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -122,7 +253,7 @@ export async function generateCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    auditContext.requestStarted = true;
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_IMAGE_MODEL_ID}`,
         {
@@ -138,10 +269,8 @@ export async function generateCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-    }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare FLUX hat keine HTTP-Antwort geliefert.');
+    captureCloudflareResponse(auditContext, response);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: { image?: unknown };
@@ -161,8 +290,14 @@ export async function generateCloudflareImage(params: {
     if (typeof image !== 'string' || image.length < 100) {
       throw new CloudflareWorkersAiError('Cloudflare FLUX hat kein gültiges Base64-Bild zurückgegeben.');
     }
+    await finishCloudflareAudit(auditContext, 'success', 'Cloudflare-Bildantwort erfolgreich verarbeitet.');
     return { imageDataUrl: `data:image/jpeg;base64,${image}`, modelId: CLOUDFLARE_IMAGE_MODEL_ID };
   } catch (error) {
+    if (error instanceof CloudflareAuditPersistenceError) throw error;
+    if (!auditContext.auditAttempted && auditContext.requestStarted) {
+      const failure = classifyCloudflareFailure(error, auditContext);
+      await finishCloudflareAudit(auditContext, failure.outcome, failure.reason, failure.category);
+    }
     if (error instanceof CloudflareWorkersAiError) throw error;
     if (error instanceof Error && error.name === 'AbortError') {
       throw new CloudflareWorkersAiError('Cloudflare FLUX Bildgenerierung nach 90 Sekunden abgebrochen (Timeout).');
@@ -181,12 +316,15 @@ export async function transcribeCloudflareAudio(params: {
   language?: string;
   task?: 'transcribe' | 'translate';
   fetchImpl?: typeof fetch;
+  onAudit?: CloudflareAuditSink;
 }): Promise<{
   text: string;
   vtt: string | null;
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
+  const auditContext = createCloudflareAuditContext('cloudflare-whisper-large-v3-turbo', 'CLOUDFLARE_TRANSCRIBE', params.onAudit);
+  await assertCloudflareWorkersAiAllowed(auditContext);
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -200,7 +338,7 @@ export async function transcribeCloudflareAudio(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    auditContext.requestStarted = true;
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_TRANSCRIPTION_MODEL_ID}`,
         {
@@ -217,10 +355,8 @@ export async function transcribeCloudflareAudio(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-    }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Whisper hat keine HTTP-Antwort geliefert.');
+    captureCloudflareResponse(auditContext, response);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: {
@@ -252,6 +388,7 @@ export async function transcribeCloudflareAudio(params: {
         ? [{ start, end, text: segmentText }]
         : [];
     });
+    await finishCloudflareAudit(auditContext, 'success', 'Cloudflare-Transkriptionsantwort erfolgreich verarbeitet.');
     return {
       text,
       vtt: typeof payload?.result?.vtt === 'string' ? payload.result.vtt : null,
@@ -259,6 +396,11 @@ export async function transcribeCloudflareAudio(params: {
       modelId: CLOUDFLARE_TRANSCRIPTION_MODEL_ID,
     };
   } catch (error) {
+    if (error instanceof CloudflareAuditPersistenceError) throw error;
+    if (!auditContext.auditAttempted && auditContext.requestStarted) {
+      const failure = classifyCloudflareFailure(error, auditContext);
+      await finishCloudflareAudit(auditContext, failure.outcome, failure.reason, failure.category);
+    }
     if (error instanceof CloudflareWorkersAiError) throw error;
     if (error instanceof Error && error.name === 'AbortError') {
       throw new CloudflareWorkersAiError('Cloudflare Whisper Transkription nach 90 Sekunden abgebrochen (Timeout).');
@@ -276,7 +418,10 @@ export async function analyzeCloudflareImage(params: {
   imageDataUrl: string;
   question: string;
   fetchImpl?: typeof fetch;
+  onAudit?: CloudflareAuditSink;
 }): Promise<{ answer: string; modelId: string }> {
+  const auditContext = createCloudflareAuditContext('cloudflare-moondream-3.1-9b-a2b', 'CLOUDFLARE_VISION', params.onAudit);
+  await assertCloudflareWorkersAiAllowed(auditContext);
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -296,7 +441,7 @@ export async function analyzeCloudflareImage(params: {
   try {
     const fetcher = params.fetchImpl ?? fetch;
     let response: Response | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    auditContext.requestStarted = true;
       response = await fetcher(
         `${API_BASE}/${encodeURIComponent(accountId)}/ai/run/${CLOUDFLARE_VISION_MODEL_ID}`,
         {
@@ -316,10 +461,8 @@ export async function analyzeCloudflareImage(params: {
           signal: controller.signal,
         },
       );
-      if (![500, 502, 503, 504].includes(response.status) || attempt === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-    }
     if (!response) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine HTTP-Antwort geliefert.');
+    captureCloudflareResponse(auditContext, response);
     const payload = await response.json().catch(() => null) as {
       success?: boolean;
       result?: { answer?: unknown };
@@ -337,8 +480,14 @@ export async function analyzeCloudflareImage(params: {
     }
     const answer = typeof payload?.result?.answer === 'string' ? payload.result.answer.trim() : '';
     if (!answer) throw new CloudflareWorkersAiError('Cloudflare Moondream hat keine Bildanalyse zurückgegeben.');
+    await finishCloudflareAudit(auditContext, 'success', 'Cloudflare-Bildanalyse erfolgreich verarbeitet.');
     return { answer: answer.slice(0, 12_000), modelId: CLOUDFLARE_VISION_MODEL_ID };
   } catch (error) {
+    if (error instanceof CloudflareAuditPersistenceError) throw error;
+    if (!auditContext.auditAttempted && auditContext.requestStarted) {
+      const failure = classifyCloudflareFailure(error, auditContext);
+      await finishCloudflareAudit(auditContext, failure.outcome, failure.reason, failure.category);
+    }
     if (error instanceof CloudflareWorkersAiError) throw error;
     if (error instanceof Error && error.name === 'AbortError') {
       throw new CloudflareWorkersAiError('Cloudflare Moondream Bildanalyse nach 60 Sekunden abgebrochen (Timeout).');

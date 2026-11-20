@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { ContinuityState } from '../src/types/continuity.ts';
 import type {
   AutomationRun,
   BackupConfigState,
@@ -39,6 +40,7 @@ export interface ZeroDatabase {
   automationRuns: AutomationRun[];
   backups: SystemBackupMeta[];
   backupConfig: BackupConfigState;
+  continuity?: ContinuityState;
   settings: {
     targetDevice: 'iPhone 16 Pro Max';
     maxVideoDurationSec: 60;
@@ -470,6 +472,18 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
+    // Optional continuity payload keeps pre-feature JSONB and local snapshots backward-compatible.
+    parsed.continuity = parsed.continuity && typeof parsed.continuity === 'object' ? {
+      series: Array.isArray(parsed.continuity.series) ? parsed.continuity.series : [],
+      knowledge: Array.isArray(parsed.continuity.knowledge) ? parsed.continuity.knowledge : [],
+      relationships: Array.isArray(parsed.continuity.relationships) ? parsed.continuity.relationships : [],
+      locations: Array.isArray(parsed.continuity.locations) ? parsed.continuity.locations : [],
+      events: Array.isArray(parsed.continuity.events) ? parsed.continuity.events : [],
+      sceneVersions: Array.isArray(parsed.continuity.sceneVersions) ? parsed.continuity.sceneVersions : [],
+      dramaturgyAnalyses: Array.isArray(parsed.continuity.dramaturgyAnalyses) ? parsed.continuity.dramaturgyAnalyses : [],
+      dramaturgyDecisions: Array.isArray(parsed.continuity.dramaturgyDecisions) ? parsed.continuity.dramaturgyDecisions : [],
+      dramaturgyApplications: Array.isArray(parsed.continuity.dramaturgyApplications) ? parsed.continuity.dramaturgyApplications : [],
+    } : { series: [], knowledge: [], relationships: [], locations: [], events: [], sceneVersions: [], dramaturgyAnalyses: [], dramaturgyDecisions: [], dramaturgyApplications: [] };
     const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
@@ -704,8 +718,8 @@ export function recordBudgetAudit(
     ...entry,
   };
   db.budgetGuard.auditLog.unshift(event);
-  if (db.budgetGuard.auditLog.length > 60) {
-    db.budgetGuard.auditLog = db.budgetGuard.auditLog.slice(0, 60);
+  if (db.budgetGuard.auditLog.length > 500) {
+    db.budgetGuard.auditLog = db.budgetGuard.auditLog.slice(0, 500);
   }
   if (entry.decision === 'ERLAUBT_0_EUR' && db.budgetGuard.freeQuotaUsage[entry.modelId]) {
     db.budgetGuard.freeQuotaUsage[entry.modelId].requestsToday += 1;

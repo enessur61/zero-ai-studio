@@ -1,22 +1,34 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
-import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { projectMediaService } from '../lib/services/projectMediaService.ts';
+import { projectService } from '../lib/services/projectService.ts';
+import { wanJobService } from '../lib/services/wanJobService.ts';
+import type { WanJob } from '../lib/services/types.ts';
+import { matchWanJobScene } from '../server/wanJobList.ts';
+import { VideoObjectUrlRegistry } from '../lib/videoObjectUrlRegistry.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
   activeProjectId?: string;
   soundtrack?: { url: string; title: string } | null;
+  onProjectUpdated?: (project: StudioProject) => void;
 }
 
-export function VideoStudioView({ projects, activeProjectId, soundtrack }: VideoStudioViewProps) {
+export function VideoStudioView({ projects, activeProjectId, soundtrack, onProjectUpdated }: VideoStudioViewProps) {
   const [selectedProjectId, setSelectedProjectId] = useState(
     activeProjectId || projects[0]?.id || ''
   );
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
+  const [scenesOwnerProjectId, setScenesOwnerProjectId] = useState(currentProject?.id ?? '');
+  const scenesRef = useRef<FilmScene[]>(currentProject?.scenes ?? []);
+  const projectVersionsRef = useRef(new Map(projects.map((project) => [project.id, project.version])));
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const activeProjectIdRef = useRef(currentProject?.id);
+  activeProjectIdRef.current = currentProject?.id;
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeVoiceovers, setIncludeVoiceovers] = useState(true);
@@ -25,49 +37,185 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [progress, setProgress] = useState({ pct: 0, label: '' });
   const [result, setResult] = useState<VideoRenderResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [wanWorker, setWanWorker] = useState({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...' });
+  const [wanWorker, setWanWorker] = useState<{ online: boolean; status: string; message: string; gpuName: string | null; gpuVramTotalMb: number | null; gpuVramFreeMb: number | null; readiness: Array<{ id: string; label: string; ready: boolean; detail: string }> }>({ online: false, status: 'CHECKING', message: 'Prüfe Wan-GPU-Verbindung...', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
   const [wanBusy, setWanBusy] = useState(false);
+  const [wanJobs, setWanJobs] = useState<WanJob[]>([]);
+  const [wanJobsLoading, setWanJobsLoading] = useState(true);
+  const [wanJobsError, setWanJobsError] = useState('');
+  const [wanJobId, setWanJobId] = useState<string | null>(null);
+  const [wanJobState, setWanJobState] = useState<'idle' | 'queued' | 'running' | 'downloading' | 'cancel_requested' | 'cancelled' | 'stopped' | 'failed' | 'succeeded'>('idle');
+  const wanAbortRef = useRef<AbortController | null>(null);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const [wanClipScene, setWanClipScene] = useState('');
+  const wanClipUrlRef = useRef<string | null>(null);
+  const resultRef = useRef<VideoRenderResult | null>(null);
+  const objectUrlRegistryRef = useRef<VideoObjectUrlRegistry | null>(null);
+  if (!objectUrlRegistryRef.current) objectUrlRegistryRef.current = new VideoObjectUrlRegistry();
+  const objectUrlRegistry = objectUrlRegistryRef.current;
 
+  function updateScenes(next: FilmScene[] | ((previous: FilmScene[]) => FilmScene[])) {
+    const resolved = typeof next === 'function' ? next(scenesRef.current) : next;
+    scenesRef.current = resolved;
+    setScenes(resolved);
+    setScenesOwnerProjectId(activeProjectIdRef.current ?? '');
+  }
+
+  function replaceWanClipPreview(nextUrl: string | null, projectId?: string, kind: 'restored' | 'generated' = 'generated') {
+    const previous = wanClipUrlRef.current;
+    if (nextUrl && nextUrl !== previous) {
+      objectUrlRegistry.retainPreview(nextUrl, 'wan-clip-preview', projectId ?? currentProject?.id ?? '__preview__', kind);
+    }
+    wanClipUrlRef.current = nextUrl;
+    setWanClipUrl(nextUrl);
+    if (previous && previous !== nextUrl) objectUrlRegistry.releasePreview(previous, 'wan-clip-preview');
+  }
+
+  function attachSceneVideo(projectId: string, sceneId: string, url: string) {
+    const previousUrl = scenesRef.current.find((scene) => scene.id === sceneId)?.videoUrl;
+    if (activeProjectIdRef.current === projectId) {
+      updateScenes((previous) => previous.map((scene) =>
+        scene.id === sceneId ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene
+      ));
+    } else {
+      objectUrlRegistry.releaseSceneReference(url, projectId, sceneId);
+    }
+    if (previousUrl && previousUrl !== url) objectUrlRegistry.releaseSceneReference(previousUrl, projectId, sceneId);
+  }
+
+  function releaseExportPreview() {
+    const previous = resultRef.current?.videoUrl;
+    if (previous) objectUrlRegistry.releasePreview(previous, 'export-preview');
+    resultRef.current = null;
+  }
+
+  // Persist user-authored timeline edits with optimistic project-version checks.
+  // Temporary Blob URLs are excluded; ProjectMediaService owns the actual clip bytes.
+  useEffect(() => {
+    if (!currentProject || scenesOwnerProjectId !== currentProject.id) return;
+    const projectId = currentProject.id;
+    const persistedScenes = scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    const serverScenes = currentProject.scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    if (JSON.stringify(persistedScenes) === JSON.stringify(serverScenes)) return;
+    if (!projectVersionsRef.current.has(projectId)) projectVersionsRef.current.set(projectId, currentProject.version);
+    const timer = window.setTimeout(() => {
+      saveQueueRef.current = saveQueueRef.current.then(async () => {
+        const expectedVersion = projectVersionsRef.current.get(projectId) ?? currentProject.version;
+        try {
+          const updated = await projectService.update(projectId, { scenes: persistedScenes }, expectedVersion);
+          projectVersionsRef.current.set(projectId, updated.version);
+          onProjectUpdated?.(updated);
+        } catch (saveError) {
+          setError(saveError instanceof Error ? saveError.message : 'VideoStudio-Änderungen konnten nicht dauerhaft gespeichert werden.');
+        }
+      });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [scenes, scenesOwnerProjectId, currentProject?.id, currentProject?.version, onProjectUpdated]);
 
   useEffect(() => {
     let active = true;
     if (!currentProject) {
-      setScenes([]);
+      updateScenes([]);
       return () => { active = false; };
     }
-    setScenes(currentProject.scenes);
+    const projectId = currentProject.id;
+    updateScenes(currentProject.scenes);
     Promise.all(currentProject.scenes.map(async (scene) => {
       try {
-        const blob = await loadSceneVideoClip(currentProject.id, scene.id);
-        return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
-      } catch {
-        return null;
-      }
+        const blob = await projectMediaService.loadSceneVideo(projectId, scene.id);
+        if (!blob) return null;
+        const url = objectUrlRegistry.create(blob, { projectId, sceneId: scene.id, kind: 'restored' });
+        return { sceneId: scene.id, url };
+      } catch { return null; }
     })).then((restored) => {
       if (!active) {
-        restored.forEach((item) => { if (item) URL.revokeObjectURL(item.url); });
+        restored.forEach((item) => {
+          if (item) objectUrlRegistry.releaseSceneReference(item.url, projectId, item.sceneId);
+        });
         return;
       }
       const urls = new Map(restored.filter((item): item is { sceneId: string; url: string } => Boolean(item))
         .map((item) => [item.sceneId, item.url]));
       if (urls.size) {
-        setScenes((previous) => previous.map((scene) => {
+        updateScenes((previous) => previous.map((scene) => {
           const url = urls.get(scene.id);
           return url ? { ...scene, videoUrl: url, status: 'Szenenbereit' } : scene;
         }));
       }
     });
-    return () => { active = false; };
-  }, [selectedProjectId, currentProject]);
+    return () => {
+      active = false;
+      const leavingProject = activeProjectIdRef.current !== projectId;
+      const restoredUrls = new Set(objectUrlRegistry.getProjectUrls(projectId, 'restored'));
+      if (leavingProject && restoredUrls.size) {
+        updateScenes((previous) => previous.map((scene) =>
+          scene.videoUrl && restoredUrls.has(scene.videoUrl) ? { ...scene, videoUrl: undefined } : scene
+        ));
+      }
+      if (leavingProject && wanClipUrlRef.current &&
+          objectUrlRegistry.getProjectUrls(projectId).includes(wanClipUrlRef.current)) {
+        replaceWanClipPreview(null);
+      }
+      if (leavingProject) objectUrlRegistry.releaseProjectRestored(projectId);
+    };
+  }, [selectedProjectId, currentProject?.id]);
+
+  useEffect(() => () => {
+    objectUrlRegistry.releaseAll();
+    wanClipUrlRef.current = null;
+    resultRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (soundtrack?.url) {
       setSelectedAudioUrl(soundtrack.url);
     }
   }, [soundtrack]);
+
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    let controller: AbortController | null = null;
+    const refreshJobs = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const jobs = await wanJobService.list(50, controller.signal);
+        if (active) {
+          setWanJobs(jobs);
+          setWanJobsError('');
+        }
+      } catch (loadError) {
+        if (active && !(loadError instanceof Error && loadError.name === 'AbortError')) {
+          setWanJobsError(loadError instanceof Error ? loadError.message : 'Wan-Auftragsliste konnte nicht geladen werden.');
+        }
+      } finally {
+        inFlight = false;
+        controller = null;
+        if (active) setWanJobsLoading(false);
+      }
+    };
+    void refreshJobs();
+    const interval = window.setInterval(() => { void refreshJobs(); }, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshJobs();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      controller?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (wanBusy || !wanJobId) return;
+    const selected = wanJobs.find((job) => job.id === wanJobId);
+    if (selected) setWanJobState(selected.status);
+  }, [wanJobs, wanJobId, wanBusy]);
 
   useEffect(() => {
     let active = true;
@@ -79,58 +227,173 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           online: payload.online === true,
           status: String(payload.status || 'UNKNOWN'),
           message: String(payload.message || 'Kein Status verfügbar.'),
+          gpuName: typeof payload.gpuName === 'string' ? payload.gpuName : null,
+          gpuVramTotalMb: typeof payload.gpuVramTotalMb === 'number' ? payload.gpuVramTotalMb : null,
+          gpuVramFreeMb: typeof payload.gpuVramFreeMb === 'number' ? payload.gpuVramFreeMb : null,
+          readiness: Array.isArray(payload.readiness) ? payload.readiness.filter((item: unknown) => item && typeof item === 'object' && typeof (item as { label?: unknown }).label === 'string').map((item: { id?: string; label: string; ready?: boolean; detail?: string }) => ({ id: String(item.id || item.label), label: item.label, ready: item.ready === true, detail: String(item.detail || '') })) : [],
         });
       })
       .catch((err) => {
-        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.' });
+        if (active) setWanWorker({ online: false, status: 'STATUS_ERROR', message: err instanceof Error ? err.message : 'Wan-Status konnte nicht geladen werden.', gpuName: null, gpuVramTotalMb: null, gpuVramFreeMb: null, readiness: [] });
       });
     return () => { active = false; };
   }, []);
 
+  async function handleCancelWanJob(jobIdOverride?: string) {
+    const targetJobId = jobIdOverride || wanJobId;
+    if (!targetJobId) return;
+    const selectedJob = wanJobs.find((job) => job.id === targetJobId);
+    if (selectedJob?.status === 'cancel_requested' || selectedJob?.status === 'cancelled' || selectedJob?.status === 'succeeded' || selectedJob?.status === 'failed') return;
+    setWanJobId(targetJobId);
+    setWanProgress('Sende echte Abbruchanforderung an den Worker...');
+    try {
+      const cancelledJob = await wanJobService.cancel(targetJobId);
+      if (cancelledJob.id !== targetJobId) throw new Error('Der Worker hat einen fremden Auftrag zurückgegeben.');
+      setWanJobs((previous) => previous.map((job) => job.id === targetJobId ? { ...job, ...cancelledJob } : job));
+      if (cancelledJob.status === 'cancelled') {
+        setWanJobState('cancelled');
+        setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
+      } else if (cancelledJob.status === 'cancel_requested') {
+        setWanJobState('cancel_requested');
+        setWanProgress('Abbruch angefordert. Der aktuelle GPU-Inferenzschritt läuft noch und wird sicher beendet; erst danach bestätigt ZERO den Abbruch.');
+      } else {
+        setWanJobState(cancelledJob.status === 'succeeded' ? 'succeeded' : 'failed');
+        setWanProgress(cancelledJob.status === 'succeeded' ? 'Der Clip war bereits fertig; ein Abbruch war nicht mehr möglich.' : 'Der Auftrag war bereits beendet.');
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Abbruchstatus konnte nicht bestätigt werden.');
+      setWanProgress('Keine Abbruchbestätigung erhalten. ZERO prüft den Workerstatus weiter.');
+    }
+  }
+
+  async function handleResumeWanJob(jobId: string) {
+    setWanJobId(jobId);
+    const job = wanJobs.find((item) => item.id === jobId);
+    if (job) {
+      setWanJobState(job.status);
+      setWanProgress(job.status === 'cancel_requested'
+        ? 'Abbruch angefordert – ZERO fragt den Workerstatus weiter automatisch ab.'
+        : job.status === 'queued' || job.status === 'running'
+          ? 'Statusüberwachung aus der persistenten Worker-Auftragsliste wieder aufgenommen.'
+          : job.status === 'cancelled'
+            ? 'Auftrag wurde abgebrochen.'
+            : job.status === 'succeeded'
+              ? 'Auftrag ist fertig. Du kannst den gespeicherten Clip wiederherstellen.'
+              : job.error || 'Auftrag fehlgeschlagen.');
+    }
+    try {
+      const resumedJob = await wanJobService.get(jobId);
+      if (resumedJob.id !== jobId) throw new Error('Wan hat einen fremden Auftrag zurückgegeben.');
+      const status = resumedJob.status;
+      if (['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(status)) {
+        setWanJobState(status);
+        setWanJobs((previous) => previous.map((item) => item.id === jobId ? { ...item, status } : item));
+      }
+    } catch (resumeError) {
+      setWanJobsError(resumeError instanceof Error ? resumeError.message : 'Jobstatus konnte nicht aktualisiert werden.');
+    }
+  }
+
+  async function handleRestoreWanClip(job: typeof wanJobs[number]) {
+    if (job.status !== 'succeeded') return;
+    try {
+      setWanJobId(job.id);
+      setWanProgress('Gespeichertes Wan-MP4 wird wiederhergestellt...');
+      const blob = await wanJobService.download(job.id);
+      const targetScene = matchWanJobScene(job, currentProject?.id, scenesRef.current) ?? undefined;
+      const projectId = currentProject?.id ?? job.projectId ?? '__unassigned__';
+      const clipUrl = objectUrlRegistry.create(blob, { projectId, sceneId: targetScene?.id, kind: 'restored' });
+      replaceWanClipPreview(clipUrl, projectId, 'restored');
+      setWanJobState('succeeded');
+      if (targetScene && currentProject) {
+        attachSceneVideo(currentProject.id, targetScene.id, clipUrl);
+        setWanClipScene(targetScene.title);
+        try {
+          const storage = await projectMediaService.saveSceneVideo(currentProject.id, targetScene.id, blob);
+          setWanProgress(storage.serverPersisted
+            ? 'Gespeicherter Wan-Clip wiederhergestellt und dem aktuellen ZERO-Projekt zugeordnet.'
+            : 'Clip wiederhergestellt und in der Szene angezeigt, aber nicht dauerhaft synchronisiert. Bitte vor Gerätewechsel exportieren.');
+        } catch {
+          setWanProgress('Clip wiederhergestellt und in der Szene angezeigt. Die dauerhafte Serversynchronisierung ist fehlgeschlagen; bitte vor Gerätewechsel exportieren.');
+        }
+      } else {
+        setWanClipScene('Wiederhergestellter Wan-Clip');
+        setWanProgress('MP4 wiederhergestellt. Es wurde keinem anderen Projekt oder keiner anderen Szene zugeordnet.');
+      }
+    } catch (restoreError) {
+      setWanJobsError(restoreError instanceof Error ? restoreError.message : 'Wan-Clip konnte nicht wiederhergestellt werden.');
+    }
+  }
+
   async function handleWanSceneGeneration(scene: FilmScene) {
     if (wanBusy || !wanWorker.online) return;
+    const controller = new AbortController();
+    wanAbortRef.current = controller;
     setWanBusy(true);
+    setWanJobId(null);
+    setWanJobState('queued');
     setWanProgress('Sende Szene an den Wan-GPU-Worker...');
     setError(null);
-    setWanClipUrl(null);
+    replaceWanClipPreview(null);
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
-      const created = await fetch('/api/video/engine/jobs', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
-      });
-      const createdPayload = await created.json();
-      if (!created.ok || typeof createdPayload.job?.id !== 'string') {
-        throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
-      }
-      const jobId = createdPayload.job.id as string;
+      if (!currentProject?.id) throw new Error('Bitte zuerst ein ZERO-Projekt auswählen, damit der Wan-Auftrag eindeutig zugeordnet wird.');
+      const createdJob = await wanJobService.create({
+        projectId: currentProject.id,
+        sceneId: scene.id,
+        prompt: prompt.slice(0, 1800),
+        aspectRatio,
+      }, controller.signal);
+      const jobId = createdJob.id;
+      setWanJobId(jobId);
+      setWanJobState('queued');
       setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
       let completed = false;
+      let cancellationPending = false;
       for (let attempt = 0; attempt < 180; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 10000));
-        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
-        const statusPayload = await statusResponse.json();
-        if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
-        const job = statusPayload.job;
-        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        await new Promise<void>((resolve, reject) => {
+          const finish = () => {
+            controller.signal.removeEventListener('abort', abort);
+            resolve();
+          };
+          const timer = window.setTimeout(finish, 3000);
+          const abort = () => {
+            window.clearTimeout(timer);
+            controller.signal.removeEventListener('abort', abort);
+            reject(new DOMException('Überwachung beendet', 'AbortError'));
+          };
+          controller.signal.addEventListener('abort', abort, { once: true });
+        });
+        const job = await wanJobService.get(jobId, controller.signal);
+        if (job.status === 'failed') { setWanJobState('failed'); throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.')); }
+        if (job.status === 'cancelled') {
+          setWanJobState('cancelled');
+          setWanProgress('Der Worker hat den Auftrag abgebrochen. Es wird kein Clip bereitgestellt.');
+          completed = true;
+          break;
+        }
+        if (job.status === 'cancel_requested') {
+          cancellationPending = true;
+          setWanJobState('cancel_requested');
+          setWanProgress('Abbruch angefordert. Der Worker beendet den laufenden GPU-Schritt; ZERO wartet auf die endgültige Bestätigung.');
+        } else {
+          setWanJobState(job.status === 'queued' ? 'queued' : 'running');
+        }
         if (job.status === 'succeeded') {
+          setWanJobState('downloading');
           setWanProgress('MP4 wird auf ZERO übertragen...');
-          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
-          if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
-          const blob = await videoResponse.blob();
-          if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
-          const clipUrl = URL.createObjectURL(blob);
-          setWanClipUrl(clipUrl);
+          const blob = await wanJobService.download(jobId, controller.signal);
+          const projectId = currentProject.id;
+          const clipUrl = objectUrlRegistry.create(blob, { projectId, sceneId: scene.id, kind: 'generated' });
+          replaceWanClipPreview(clipUrl, projectId, 'generated');
           let persistedLocally = false;
           let persistedOnServer = false;
           let storagePersistent: boolean | null = null;
           let storageError = '';
           if (currentProject?.id) {
             try {
-              const storageStatus = await saveSceneVideoClip(currentProject.id, scene.id, blob);
+              const storageStatus = await projectMediaService.saveSceneVideo(currentProject.id, scene.id, blob);
               persistedLocally = storageStatus.localSaved;
               persistedOnServer = storageStatus.serverPersisted === true;
               storagePersistent = storageStatus.persistent;
@@ -139,9 +402,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             }
           }
           setWanClipScene(scene.title);
-          setScenes((previous) => previous.map((item) =>
-            item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
-          ));
+          attachSceneVideo(projectId, scene.id, clipUrl);
           setWanProgress(persistedOnServer
             ? persistedLocally && storagePersistent === true
               ? 'Echter Wan-2.1-Clip fertig · lokal und dauerhaft im ZERO-Projekt gespeichert · geräteübergreifend verfügbar.'
@@ -149,16 +410,28 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             : persistedLocally
               ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
               : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
+          setWanJobState('succeeded');
           completed = true;
           break;
         }
         setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
       }
-      if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+      if (!completed && cancellationPending) {
+        setWanProgress('Der Worker hat den Abbruch noch nicht final bestätigt. Der Auftrag kann weiterhin GPU-Ressourcen belegen; bitte später den Status erneut prüfen.');
+      } else if (!completed) {
+        throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
-      setWanProgress('');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setWanJobState('stopped');
+        setWanProgress('ZERO hat die Live-Überwachung in diesem Fenster beendet. Der Auftrag bleibt in der persistenten Auftragsliste und wird nach Rückkehr erneut abgefragt; der GPU-Worker läuft dadurch nicht automatisch aus.');
+      } else {
+        setWanJobState('failed');
+        setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
+        setWanProgress('');
+      }
     } finally {
+      if (wanAbortRef.current === controller) wanAbortRef.current = null;
       setWanBusy(false);
     }
   }
@@ -185,10 +458,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           throw new Error(`„${file.name}“ ist größer als 20 MB.`);
         }
         const source = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const url = URL.createObjectURL(file);
+          const url = objectUrlRegistry.create(file, { projectId: currentProject?.id ?? '__image-import__', kind: 'temporary' });
           const img = new Image();
-          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
+          img.onload = () => { objectUrlRegistry.releaseTemporary(url); resolve(img); };
+          img.onerror = () => { objectUrlRegistry.releaseTemporary(url); reject(new Error(`„${file.name}“ konnte nicht geöffnet werden.`)); };
           img.src = url;
         });
         const scale = Math.min(1, 1920 / Math.max(source.width, source.height));
@@ -200,11 +473,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         context.drawImage(source, 0, 0, canvas.width, canvas.height);
         return canvas.toDataURL('image/jpeg', 0.84);
       }));
-      setScenes((previous) => previous.map((scene, index) => ({
+      updateScenes((previous) => previous.map((scene, index) => ({
         ...scene,
         imageUrl: optimized[index % optimized.length],
         status: 'Bild bereit',
       })));
+      releaseExportPreview();
       setResult(null);
       setError(null);
     } catch (err) {
@@ -214,11 +488,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   function updateSceneDuration(id: string, val: number) {
     const safeVal = Math.max(3, Math.min(30, val));
-    setScenes((prev) => prev.map((s) => (s.id === id ? { ...s, durationSec: safeVal } : s)));
+    updateScenes((prev) => prev.map((s) => (s.id === id ? { ...s, durationSec: safeVal } : s)));
   }
 
   function updateCamera(id: string, movement: FilmScene['cameraMovement']) {
-    setScenes((prev) =>
+    updateScenes((prev) =>
       prev.map((s) => (s.id === id ? { ...s, cameraMovement: movement } : s))
     );
   }
@@ -230,7 +504,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     if (current <= 60) return;
     const ratio = target / current;
     let sum = 0;
-    setScenes((prev) =>
+    updateScenes((prev) =>
       prev.map((s, idx) => {
         if (idx === prev.length - 1) {
           return { ...s, durationSec: Math.max(4, target - sum) };
@@ -284,7 +558,17 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         includeSceneVoiceovers: includeVoiceovers,
         onProgress: (pct, label) => setProgress({ pct, label }),
       });
+      const previousResultUrl = resultRef.current?.videoUrl;
+      if (rendered.videoUrl.startsWith('blob:')) {
+        const projectId = currentProject?.id ?? '__export__';
+        objectUrlRegistry.register(rendered.videoUrl, { projectId, kind: 'export' });
+        objectUrlRegistry.retainPreview(rendered.videoUrl, 'export-preview', projectId, 'export');
+      }
+      resultRef.current = rendered;
       setResult(rendered);
+      if (previousResultUrl && previousResultUrl !== rendered.videoUrl) {
+        objectUrlRegistry.releasePreview(previousResultUrl, 'export-preview');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Videoexport fehlgeschlagen');
     } finally {
@@ -380,9 +664,79 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               </span>
             </div>
             <p className="text-xs text-slate-400">{wanWorker.message}</p>
+            {(wanWorker.gpuName || wanWorker.gpuVramTotalMb !== null) && (
+              <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5 space-y-1">
+                {wanWorker.gpuName && <p className="text-xs text-white">{wanWorker.gpuName}</p>}
+                {wanWorker.gpuVramTotalMb !== null && <p className="text-[11px] text-slate-400">GPU-Speicher: {(wanWorker.gpuVramTotalMb / 1024).toFixed(1)} GB gesamt{wanWorker.gpuVramFreeMb !== null ? ` · ${(wanWorker.gpuVramFreeMb / 1024).toFixed(1)} GB frei` : ''}</p>}
+              </div>
+            )}
+            {wanWorker.readiness.length > 0 && (
+              <details className="rounded-lg border border-white/[0.08] bg-black/20 p-2.5">
+                <summary className="cursor-pointer text-xs text-slate-300">Technische Bereitschaft ({wanWorker.readiness.filter((item) => item.ready).length}/{wanWorker.readiness.length})</summary>
+                <ul className="mt-2 space-y-2">
+                  {wanWorker.readiness.map((item) => (
+                    <li key={item.id} className="flex items-start gap-2 text-[11px]">
+                      <span className={item.ready ? 'text-emerald-400' : 'text-amber-300'}>{item.ready ? '✓' : '•'}</span>
+                      <span className="min-w-0"><span className="text-slate-200">{item.label}</span><span className="block text-slate-500">{item.detail}</span></span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
             <p className="text-[11px] text-slate-500">Ein echter KI-Clip pro Auftrag · 5 Sekunden · 480p. Hinzugefügte Clips werden beim finalen Timeline-Export eingebettet. Kein kostenpflichtiger Fallback; die GPU muss separat bereitgestellt werden.</p>
-            {wanBusy && <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>}
-            {!wanBusy && wanProgress && <p className="text-xs text-emerald-300">{wanProgress}</p>}
+            <section className="space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-3" aria-label="Persistente Wan-Aufträge">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-white">Wan-Aufträge</h3>
+                <span className="text-[10px] text-slate-500">{wanJobs.length} gespeichert · automatische Aktualisierung alle 5 s</span>
+              </div>
+              {wanJobsLoading && <p className="text-[11px] text-slate-500">Lade gespeicherte Aufträge...</p>}
+              {wanJobsError && <p className="text-[11px] text-rose-300">{wanJobsError}</p>}
+              {!wanJobsLoading && !wanJobsError && wanJobs.length === 0 && <p className="text-[11px] text-slate-500">Noch keine Wan-Aufträge gespeichert.</p>}
+              <div className="max-h-72 space-y-2 overflow-y-auto">
+                {wanJobs.map((job) => {
+                  const statusLabel = ({
+                    queued: 'Wartet auf GPU',
+                    running: 'Wird generiert',
+                    cancel_requested: 'Abbruch angefordert · GPU läuft aus',
+                    cancelled: 'Abgebrochen',
+                    succeeded: 'Erfolgreich',
+                    failed: 'Fehlgeschlagen',
+                  } as const)[job.status];
+                  const active = job.status === 'queued' || job.status === 'running' || job.status === 'cancel_requested';
+                  const statusClass = job.status === 'succeeded' ? 'text-emerald-300' : job.status === 'failed' || job.status === 'cancelled' ? 'text-slate-400' : 'text-amber-300';
+                  return (
+                    <div key={job.id} className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="break-all text-[10px] text-slate-400">{job.id}</p>
+                          <p className={`mt-1 text-[11px] font-medium ${statusClass}`}>{statusLabel}</p>
+                          <p className="mt-0.5 text-[10px] text-slate-500">{job.createdAt ? new Date(job.createdAt).toLocaleString('de-DE') : 'Zeit unbekannt'} · {job.durationSec}s</p>
+                          {job.error && <p className="mt-1 text-[10px] text-rose-300">{job.error}</p>}
+                          {job.cancelReason && <p className="mt-1 text-[10px] text-slate-500">{job.cancelReason}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-1">
+                          <button type="button" onClick={() => void handleResumeWanJob(job.id)} className="min-h-[34px] rounded-md border border-white/10 px-2 text-[10px] text-slate-200">Status übernehmen</button>
+                          {active && job.status !== 'cancel_requested' && <button type="button" onClick={() => void handleCancelWanJob(job.id)} className="min-h-[34px] rounded-md border border-rose-400/30 px-2 text-[10px] text-rose-200">Abbrechen</button>}
+                          {job.status === 'succeeded' && <button type="button" onClick={() => void handleRestoreWanClip(job)} className="min-h-[34px] rounded-md border border-emerald-400/30 px-2 text-[10px] text-emerald-200">Clip wiederherstellen</button>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+            {wanBusy && <div className="space-y-2">
+              <div className="text-xs text-sky-300 inline-flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" />{wanProgress}</div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/3 animate-pulse rounded-full bg-sky-400" /></div>
+              {wanJobId && <p className="text-[10px] text-slate-500 break-all">Auftrags-ID: {wanJobId}</p>}
+              <button type="button" onClick={() => void handleCancelWanJob()} disabled={!wanJobId || wanJobState === 'cancel_requested'} className="min-h-[44px] w-full rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 text-xs font-medium text-rose-200 disabled:opacity-50">{wanJobState === 'cancel_requested' ? 'Abbruch angefordert – GPU-Schritt läuft aus' : 'Wan-Auftrag abbrechen'}</button>
+            </div>}
+            {!wanBusy && wanJobState === 'stopped' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'cancelled' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'cancel_requested' && <p className="text-xs text-amber-300">{wanProgress}</p>}
+            {!wanBusy && wanJobState === 'failed' && <p className="text-xs text-rose-300">Auftrag fehlgeschlagen. Du kannst die Szene erneut starten.</p>}
+            {!wanBusy && wanJobState === 'succeeded' && <p className="text-xs text-emerald-300">Auftrag abgeschlossen.</p>}
+            {!wanBusy && wanProgress && !['cancelled', 'failed', 'stopped'].includes(wanJobState) && <p className="text-xs text-emerald-300">{wanProgress}</p>}
             {wanClipUrl && (
               <div className="space-y-2">
                 <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>

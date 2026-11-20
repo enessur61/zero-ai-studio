@@ -10,24 +10,34 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_gpu_memory, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
+WAN_GPU_ENABLED = os.environ.get("ZERO_WAN_GPU_ENABLED", "false").strip().lower() == "true"
+WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false").strip().lower() == "true"
+try:
+    WAN_DAILY_JOB_LIMIT = min(max(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), 1), 3)
+except ValueError:
+    WAN_DAILY_JOB_LIMIT = 0
+WAN_MAX_CONCURRENT_JOBS = 1
 MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
+HF_CACHE_DIR = Path(os.environ.get("HF_HOME", "/data/huggingface-cache")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
+MODEL_CACHE_PERSISTENT = has_persistent_mount(HF_CACHE_DIR)
 if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true":
     require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+    require_persistent_storage(MODEL_CACHE_PERSISTENT)
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
 
@@ -45,6 +55,13 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
+    scene_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def require_cost_gate() -> None:
+    if not WAN_GPU_ENABLED or not WAN_GPU_COSTS_CONFIRMED or WAN_DAILY_JOB_LIMIT < 1:
+        raise HTTPException(status_code=403, detail="Wan-GPU gesperrt: ZERO_WAN_GPU_ENABLED und ZERO_WAN_GPU_COSTS_CONFIRMED müssen separat true sein; Tageslimit maximal 3.")
 
 
 def require_auth(authorization: str | None) -> None:
@@ -55,11 +72,19 @@ def require_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def gpu_vram_total_mb() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    return round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024))
+
+
 def get_pipeline() -> WanPipeline:
     global _pipeline
     if _pipeline is None:
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU not detected. Wan worker requires an NVIDIA CUDA GPU.")
+        if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+            raise RuntimeError("Wan worker requires at least 12 GB of NVIDIA GPU VRAM; 24 GB is recommended.")
         # Load lazily so health checks do not download multi-GB model weights.
         _pipeline = WanPipeline.from_pretrained(
             MODEL_ID,
@@ -72,20 +97,48 @@ def get_pipeline() -> WanPipeline:
 def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
     with _jobs_lock:
         job = _jobs[job_id]
+        if job.get("status") == "cancelled":
+            return dict(job)
+        if job.get("status") == "cancel_requested" and changes.get("status") in {"running", "succeeded", "failed"}:
+            return dict(job)
         job.update(changes)
         _JOB_STORE.save(dict(job))
         return dict(job)
 
 
+def finish_cancelled_job(job_id: str, output_path: Path) -> None:
+    output_path.unlink(missing_ok=True)
+    with _jobs_lock:
+        job = _jobs[job_id]
+        job.update({
+            "status": "cancelled",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "cancel_reason": "Abbruch abgeschlossen; es wird kein MP4 bereitgestellt.",
+        })
+        _JOB_STORE.save(dict(job))
+
+
 def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None) -> None:
     output_path = OUTPUT_DIR / f"{job_id}.mp4"
     try:
-        update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        started = update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        if started.get("status") != "running":
+            return
         # Wan T2V-1.3B generates one short 480p shot (81 frames / about 5s).
         width, height = (832, 480) if aspect_ratio == "16:9" else (480, 832)
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
         with _generation_lock, torch.inference_mode():
+            with _jobs_lock:
+                cancelled_before_gpu = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_before_gpu:
+                finish_cancelled_job(job_id, output_path)
+                return
             pipe = get_pipeline()
+            with _jobs_lock:
+                cancelled_during_model_load = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_during_model_load:
+                finish_cancelled_job(job_id, output_path)
+                return
             result = pipe(
                 prompt=prompt,
                 negative_prompt="low quality, blurry, distorted, watermark, text",
@@ -97,10 +150,15 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
                 generator=generator,
             )
             frames = result.frames[0]
+            with _jobs_lock:
+                cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+            if cancellation_requested:
+                finish_cancelled_job(job_id, output_path)
+                return
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
-        update_job(
+        finished = update_job(
             job_id,
             status="succeeded",
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -108,7 +166,14 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             size_bytes=output_path.stat().st_size,
             duration_sec=5,
         )
+        if finished.get("status") == "cancel_requested":
+            finish_cancelled_job(job_id, output_path)
     except Exception as exc:  # Report failure; never fall back to a paid API.
+        with _jobs_lock:
+            cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+        if cancellation_requested:
+            finish_cancelled_job(job_id, output_path)
+            return
         update_job(
             job_id,
             status="failed",
@@ -119,17 +184,28 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    daily_jobs_accepted = _JOB_STORE.daily_usage()
     return {
         "ok": True,
         "engine": "Wan 2.1",
         "model": MODEL_ID,
         "model_loaded": _pipeline is not None,
         "cuda_available": torch.cuda.is_available(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "gpu_vram_total_mb": gpu_vram_total_mb(),
+        "gpu_vram_free_mb": round(torch.cuda.mem_get_info(0)[0] / (1024 * 1024)) if torch.cuda.is_available() else 0,
+        "gpu_vram_recommended_min_mb": 12 * 1024,
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
+        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and 1 <= WAN_DAILY_JOB_LIMIT <= 3,
+        "daily_job_limit": WAN_DAILY_JOB_LIMIT,
+        "daily_jobs_accepted": daily_jobs_accepted,
+        "daily_jobs_remaining": max(0, WAN_DAILY_JOB_LIMIT - daily_jobs_accepted),
+        "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
+        "model_cache_persistent": MODEL_CACHE_PERSISTENT,
     }
 
 
@@ -140,12 +216,16 @@ def create_job(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_auth(authorization)
+    require_cost_gate()
     try:
         require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+        require_persistent_storage(MODEL_CACHE_PERSISTENT)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
+    if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+        raise HTTPException(status_code=503, detail="Wan requires at least 12 GB GPU VRAM; 24 GB is recommended.")
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     with _jobs_lock:
@@ -160,14 +240,23 @@ def create_job(
                     old_file.unlink(missing_ok=True)
             if len(_jobs) >= 50:
                 raise HTTPException(status_code=429, detail="Worker job queue is full")
-        _jobs[job_id] = {
+        job = {
             "id": job_id,
             "status": "queued",
             "created_at": now,
             "duration_sec": 5,
             "engine": "Wan 2.1",
+            **({"project_id": request.project_id} if request.project_id else {}),
+            **({"scene_id": request.scene_id} if request.scene_id else {}),
         }
-        _JOB_STORE.save(dict(_jobs[job_id]))
+        allowed, reason, count = _JOB_STORE.create_job_if_allowed(job, daily_limit=WAN_DAILY_JOB_LIMIT, max_concurrent=WAN_MAX_CONCURRENT_JOBS)
+        if not allowed:
+            if reason == "daily_limit":
+                raise HTTPException(status_code=429, detail=f"Wan-Tageslimit erreicht ({count}/{WAN_DAILY_JOB_LIMIT}).")
+            if reason == "duplicate_id":
+                raise HTTPException(status_code=409, detail="Doppelte Wan-Auftrags-ID; bitte erneut versuchen.")
+            raise HTTPException(status_code=429, detail="Wan-GPU ist ausgelastet; maximal ein aktiver Job gleichzeitig.")
+        _jobs[job_id] = job
     background_tasks.add_task(
         asyncio.to_thread,
         run_generation,
@@ -176,7 +265,41 @@ def create_job(
         request.aspect_ratio,
         request.seed,
     )
-    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1"}
+    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1", "daily_jobs_accepted": count, "daily_job_limit": WAN_DAILY_JOB_LIMIT}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_auth(authorization)
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    with _jobs_lock:
+        job = _JOB_STORE.request_cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        _jobs[job_id] = dict(job)
+        return {
+            "id": job_id,
+            "status": job["status"],
+            "cancel_requested": job["status"] == "cancel_requested",
+            "cancelled": job["status"] == "cancelled",
+            "message": job.get("cancel_reason", "Auftrag ist bereits abgeschlossen."),
+        }
+
+
+@app.get("/jobs")
+def list_jobs(
+    limit: int = Query(default=50, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_auth(authorization)
+    with _jobs_lock:
+        persisted = _JOB_STORE.list_jobs(limit)
+        for job in persisted:
+            _jobs[str(job["id"])] = dict(job)
+        return {"jobs": persisted, "limit": limit}
 
 
 @app.get("/jobs/{job_id}")

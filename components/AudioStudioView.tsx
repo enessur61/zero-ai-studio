@@ -78,9 +78,9 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     setTtsLoading(true);
     setTtsError(null);
     try {
-      const data = await apiRequest<{ audioDataUrl: string; modelUsed: string }>('/api/audio/tts/piper', {
+      const data = await apiRequest<{ audioDataUrl: string; modelUsed: string }>('/api/audio/tts', {
         method: 'POST',
-        body: JSON.stringify({ text, speed: 0.96 }),
+        body: JSON.stringify({ text, modelId: 'piper-tts-de-worker', speed: 0.96 }),
       });
       setAudioUrl(data.audioDataUrl);
       setAudioModelId('piper-tts-de-worker');
