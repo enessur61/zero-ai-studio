@@ -5,7 +5,16 @@ import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { cacheSceneVideoClip, deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
 
-interface WanJobHistoryItem {\n  id: string;\n  status: string;\n  scene_id?: string;\n  created_at?: string;\n  finished_at?: string;\n  error?: string;\n}\n\ninterface ProjectVideoHistoryItem {
+interface WanJobHistoryItem {
+  id: string;
+  status: string;
+  scene_id?: string;
+  created_at?: string;
+  finished_at?: string;
+  error?: string;
+}
+
+interface ProjectVideoHistoryItem {
   id: string;
   projectId: string;
   sceneId: string;
