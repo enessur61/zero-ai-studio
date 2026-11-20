@@ -65,6 +65,10 @@ assert.match(principalMigration.sql, /zero_cost_principal_resource_usage/);
 assert.match(principalMigration.sql, /principal_hash CHAR\(64\)/);
 assert.match(principalMigration.sql, /FROM zero_cost_operations/);
 assert.match(principalMigration.sql, /status IN \('RESERVED', 'UNKNOWN'\)/);
+assert.match(projectVideoMigration.sql, /zero_project_video_assets/);
+assert.match(projectVideoMigration.sql, /principal_hash CHAR\\(64\\)/);
+assert.match(projectVideoMigration.sql, /payload BYTEA NOT NULL/);
+assert.match(projectVideoMigration.sql, /size_bytes BIGINT NOT NULL CHECK \\(size_bytes BETWEEN 1024 AND 104857600\\)/);
 
 const client = new FakeMigrationClient();
 await runZeroSchemaMigrations(poolFor(client));
