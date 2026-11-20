@@ -55,6 +55,11 @@ export function migrateProjectOwnership<T extends ProjectIdentityShape>(projects
 /** Express middleware that enforces project ownership using the authenticated server principal. */
 export function createProjectOwnershipMiddleware(
   loadProjects: () => Promise<readonly ProjectIdentityShape[]>,
+  allowMissingDeleteRetry?: (
+    projectId: string,
+    principal: ZeroPrincipal,
+    idempotencyKey: string,
+  ) => Promise<boolean>,
 ): RequestHandler {
   return asyncRoute(async (req, res, next) => {
     const principal = getZeroPrincipal(res.locals);
@@ -66,9 +71,11 @@ export function createProjectOwnershipMiddleware(
     const projects = await loadProjects();
     const existingProject = projects.find((candidate) => candidate.id === projectId);
     if (!existingProject) {
-      // Idempotent DELETE retries may proceed to principal-scoped cleanup.
-      // Other methods and existing foreign-owned projects remain hidden.
-      if (req.method === 'DELETE') {
+      const idempotencyKey = String(res.locals.zeroRequestIdempotencyKey ?? '');
+      const isAllowedRetry = req.method === 'DELETE' &&
+        allowMissingDeleteRetry !== undefined &&
+        await allowMissingDeleteRetry(projectId, principal, idempotencyKey);
+      if (isAllowedRetry) {
         res.locals.zeroProjectId = projectId;
         return next();
       }
