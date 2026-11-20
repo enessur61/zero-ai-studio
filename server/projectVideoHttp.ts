@@ -74,7 +74,10 @@ export function sendProjectVideoStream(
   }
   const body = Readable.from(asset.chunks, { objectMode: false });
   res.once('close', () => {
-    if (!res.writableEnded) body.destroy();
+    if (!res.writableEnded) {
+      body.destroy();
+      void asset.close();
+    }
   });
   body.once('error', (error) => {
     if (!res.headersSent) res.status(500).end();
