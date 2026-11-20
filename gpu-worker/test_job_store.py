@@ -153,6 +153,18 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             self.assertEqual(store.list_by_principal("f" * 64), [])
             self.assertEqual(store.list_by_principal("a" * 64, "other-project"), [])
 
+    def test_job_list_orders_latest_updated_jobs_first_even_with_same_second_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            for job_id, key_hash in (("older", "1" * 64), ("newer", "2" * 64)):
+                store.create_or_get({
+                    "id": job_id, "status": "succeeded", "principal_hash": "a" * 64,
+                    "idempotency_key_hash": key_hash, "request_fingerprint": "f" * 64,
+                    "project_id": "project-1", "scene_id": "scene-1",
+                })
+            listed = store.list_by_principal("a" * 64, "project-1")
+            self.assertEqual([job["id"] for job in listed], ["newer", "older"])
+
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)

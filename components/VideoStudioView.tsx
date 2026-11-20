@@ -160,7 +160,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         // The worker returns newest-updated jobs first; restore only the latest
         // completed clip per scene so an older render cannot overwrite it.
         const latestCompletedByScene = new Map<string, typeof completed[number]>();
-        for (const job of latestCompletedByScene.values()) {
+        for (const job of completed) {
           const sceneId = job.scene_id ?? '';
           if (!latestCompletedByScene.has(sceneId)) latestCompletedByScene.set(sceneId, job);
         }
@@ -175,7 +175,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           }
           if (active) setWanBusy(false);
         }
-        for (const job of completed) {
+        for (const job of latestCompletedByScene.values()) {
           if (!active) return;
           const scene = sceneById.get(job.scene_id ?? '');
           if (!scene || scene.videoUrl) continue;
