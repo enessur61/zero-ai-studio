@@ -547,10 +547,12 @@ jobs:
               !Array.isArray(reconciliation.orphanedBlobIds) || !Array.isArray(reconciliation.missingBlobIds)) {
             throw new Error('PostgreSQL backup reconciliation found inconsistent metadata/blob state: ' + JSON.stringify(reconciliation));
           }
-          const deleteProjectResponse = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
-          if (!deleteProjectResponse.ok) throw new Error('Project deletion did not complete its durable clip cleanup: ' + deleteProjectResponse.status);
-          const retryProjectDelete = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
-          if (!retryProjectDelete.ok) throw new Error('Idempotent project deletion retry failed: ' + retryProjectDelete.status);
+          const projectDeleteIdempotencyKey = 'ci-project-delete-' + durationProject.id;
+          const projectDeleteOptions = { method: 'DELETE', headers: { 'Idempotency-Key': projectDeleteIdempotencyKey } };
+          const deleteProjectResponse = await authFetch('/api/projects/' + durationProject.id, projectDeleteOptions);
+          if (!deleteProjectResponse.ok) throw new Error('Project deletion did not complete its durable clip cleanup: ' + deleteProjectResponse.status + ' ' + await deleteProjectResponse.text());
+          const retryProjectDelete = await authFetch('/api/projects/' + durationProject.id, projectDeleteOptions);
+          if (!retryProjectDelete.ok) throw new Error('Idempotent project deletion retry failed: ' + retryProjectDelete.status + ' ' + await retryProjectDelete.text());
           const deletedProjectClip = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
           if (deletedProjectClip.status !== 404) throw new Error('Project deletion left a scene clip readable');
           const deletedProjectHistory = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos', { headers: { cookie } });
