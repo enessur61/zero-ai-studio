@@ -119,7 +119,7 @@ def synthesize(text:str,speed:float)->bytes:
 def health():
  if not token_is_configured():
   raise HTTPException(503,"TTS worker authentication is not securely configured")
- return {"ok":True,"auth_configured":True,"engine":"Piper ONNX CPU","model_id":VOICE,"voice":VOICE,"voice_revision":REV,"voice_sample_rate":22050,"voice_loaded":voice is not None,"architecture":platform.machine(),"execution_providers":ONNX_PROVIDERS,"engine_version":__import__("importlib.metadata",fromlist=["version"]).version("piper-tts"),"engine_license":"GPL-3.0-or-later","voice_dataset_license":"CC0","voice_training_base":"rdh (nl_BE, one Flemish speaker, CC0)","model_sha256":MODEL_SHA256,"commercial_use_confirmed":False,"model_dir":str(MODEL_DIR),"cost_eur":0,"paid_fallback":False}
+ return {"ok":True,"auth_configured":True,"engine":"Piper ONNX CPU","model_id":VOICE,"voice":VOICE,"voice_revision":REV,"model_revision":REV,"voice_sample_rate":22050,"voice_loaded":voice is not None,"architecture":platform.machine(),"execution_providers":ONNX_PROVIDERS,"engine_version":__import__("importlib.metadata",fromlist=["version"]).version("piper-tts"),"engine_license":"GPL-3.0-or-later","voice_dataset_license":"CC0","voice_training_base":"rdh (nl_BE, one Flemish speaker, CC0)","model_sha256":MODEL_SHA256,"commercial_use_confirmed":False,"model_dir":str(MODEL_DIR),"cost_eur":0,"paid_fallback":False}
 
 @app.post("/tts")
 def tts(request:Request,authorization:str|None=Header(default=None)):
