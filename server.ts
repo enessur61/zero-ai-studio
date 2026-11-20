@@ -16,7 +16,8 @@ import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError,
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { ensureZeroResourceSchema, getZeroResourceReservation, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -231,7 +232,7 @@ app.use((_req, res, next) => {
 });
 
 app.use('/api', (req, res, next) => {
-  if (['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) return next();
+  if (['/live', '/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) return next();
   const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
   if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
     return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
@@ -343,22 +344,28 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'not_checked', authentication: 'not_configured' },
+      readiness: readinessForStage('not_configured'),
       message: 'Produktionsanmeldung ist nicht vollständig konfiguriert.',
     });
   }
 
+  let readinessStage: HealthReadinessStage = 'database';
   try {
     await loadDb();
     if (!(await checkPostgresConnection())) {
       throw new Error('PostgreSQL-Verbindung ist nicht verfügbar.');
     }
+    readinessStage = 'authentication';
+    await authStore().ensureSchema();
+    readinessStage = 'resource_guard';
+    await ensureZeroResourceSchema();
+    readinessStage = 'ready';
     return res.json({
       ok: true,
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'ready', authentication: 'ready' },
+      readiness: readinessForStage(readinessStage),
     });
   } catch {
     return res.status(503).json({
@@ -366,8 +373,8 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
-      readiness: { database: 'unavailable', authentication: 'ready' },
-      message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
+      readiness: readinessForStage(readinessStage),
+      message: 'Die Datenbank oder ein erforderliches Produktionsschema ist nicht verfügbar.',
     });
   }
 }));
