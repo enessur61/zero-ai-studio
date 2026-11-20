@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Download, FolderPlus, Loader2, RotateCcw, Search, Trash2, UserPlus } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { deleteProjectSceneVideos } from '../lib/sceneVideoStore.ts';
 import type { CharacterProfile, StudioProject } from '../types/zero.ts';
 
 interface ProjectsCharactersViewProps {
@@ -238,6 +239,7 @@ export function ProjectsCharactersView({
                           setDeletingProjId(p.id);
                           try {
                             await apiRequest(`/api/projects/${p.id}`, { method: 'DELETE' });
+                            await deleteProjectSceneVideos(p.id).catch(() => undefined);
                             onProjectDeleted(p.id);
                           } finally {
                             setDeletingProjId(null);

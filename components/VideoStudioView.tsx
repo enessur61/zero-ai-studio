@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
-import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { cacheSceneVideoClip, deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
 
 interface ProjectVideoHistoryItem {
@@ -63,6 +63,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     if (!response.ok) throw new Error('Gespeicherter ZERO-Clip ist nicht mehr verfügbar.');
     const blob = await response.blob();
     if (!blob.type.startsWith('video/') || blob.size < 1024) throw new Error('Gespeicherter ZERO-Clip ist ungültig.');
+    await cacheSceneVideoClip(currentProject.id, asset.sceneId, blob).catch(() => undefined);
     const clipUrl = URL.createObjectURL(blob);
     setWanClipUrl(clipUrl);
     const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
@@ -82,7 +83,24 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         { method: 'DELETE', credentials: 'same-origin' }
       );
       if (!response.ok) throw new Error('Clip konnte nicht gelöscht werden.');
-      setVideoHistory((previous) => previous.filter((item) => item.id !== asset.id));
+      const remaining = videoHistory.filter((item) => item.id !== asset.id);
+      setVideoHistory(remaining);
+      const nextForScene = remaining.filter((item) => item.sceneId === asset.sceneId);
+      if (nextForScene.length) {
+        await restoreArchivedVideo(nextForScene[0]);
+      } else {
+        await deleteSceneVideoClip(currentProject.id, asset.sceneId).catch(() => undefined);
+        const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
+        if (scene && wanClipScene === scene.title) {
+          if (wanClipUrl) URL.revokeObjectURL(wanClipUrl);
+          setWanClipUrl(null);
+          setWanClipScene('');
+        }
+        setScenes((previous) => previous.map((item) =>
+          item.id === asset.sceneId ? { ...item, videoUrl: undefined, status: item.imageUrl ? 'Bild bereit' : 'Entwurf' } : item
+        ));
+      }
+      setVideoHistoryError('');
     } finally {
       setDeletingClipId(null);
     }

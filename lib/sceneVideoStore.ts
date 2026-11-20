@@ -125,6 +125,53 @@ export async function saveSceneVideoClip(
   return { ...storageStatus, localSaved, serverPersisted };
 }
 
+export async function cacheSceneVideoClip(projectId: string, sceneId: string, blob: Blob): Promise<void> {
+  if (!projectId || !sceneId || blob.size < 1024 || !blob.type.startsWith('video/')) {
+    throw new Error('Der Szenenclip ist ungültig und wurde nicht lokal zwischengespeichert.');
+  }
+  await saveLocally(projectId, sceneId, blob);
+}
+
+export async function deleteSceneVideoClip(projectId: string, sceneId: string): Promise<void> {
+  if (!projectId || !sceneId) return;
+  const db = await openMediaDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(clipKey(projectId, sceneId));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Lokaler Szenenclip konnte nicht gelöscht werden.'));
+      tx.onabort = () => reject(tx.error || new Error('Löschen des lokalen Szenenclips wurde abgebrochen.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function deleteProjectSceneVideos(projectId: string): Promise<void> {
+  if (!projectId) return;
+  const db = await openMediaDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const objectStore = tx.objectStore(STORE_NAME);
+      const request = objectStore.getAllKeys();
+      request.onsuccess = () => {
+        const prefix = `${projectId}:`;
+        for (const key of request.result) {
+          if (typeof key === 'string' && key.startsWith(prefix)) objectStore.delete(key);
+        }
+      };
+      request.onerror = () => reject(request.error || new Error('Lokale Projektclips konnten nicht gefunden werden.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Lokale Projektclips konnten nicht gelöscht werden.'));
+      tx.onabort = () => reject(tx.error || new Error('Löschen der lokalen Projektclips wurde abgebrochen.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 async function loadLocally(projectId: string, sceneId: string): Promise<Blob | null> {
   const db = await openMediaDb();
   try {
