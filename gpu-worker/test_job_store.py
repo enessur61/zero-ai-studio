@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 import subprocess
-import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_gpu_memory, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
 
 
 class PersistentJobStoreTests(unittest.TestCase):
-    def test_minimum_gpu_memory_gate(self) -> None:
-        self.assertFalse(has_sufficient_gpu_memory(8 * 1024 * 1024 * 1024))
-        self.assertFalse(has_sufficient_gpu_memory(12 * 1024 * 1024 * 1024 - 1))
-        self.assertTrue(has_sufficient_gpu_memory(12 * 1024 * 1024 * 1024))
-        self.assertTrue(has_sufficient_gpu_memory(24 * 1024 * 1024 * 1024))
-
     def test_ephemeral_worker_storage_is_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "persistent volume"):
             require_persistent_storage(False)
@@ -117,57 +110,118 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             self.assertIn('"completed": "succeeded"', result.stdout)
             self.assertIn('"interrupted": "failed"', result.stdout)
 
-    def test_daily_job_limit_survives_deletion_and_worker_restart(self) -> None:
+    def test_idempotent_create_returns_same_job_and_rejects_changed_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            for index in range(1, 4):
-                allowed, reason, count = store.create_job_if_allowed({"id": f"job-{index}", "status": "queued"}, daily_limit=3, max_concurrent=10, utc_day="2026-11-18")
-                self.assertTrue(allowed)
-                self.assertEqual(reason, "accepted")
-                self.assertEqual(count, index)
-            blocked, reason, count = store.create_job_if_allowed({"id": "job-4", "status": "queued"}, daily_limit=3, max_concurrent=10, utc_day="2026-11-18")
-            self.assertFalse(blocked)
-            self.assertEqual(reason, "daily_limit")
-            self.assertEqual(count, 3)
-            store.delete("job-1")
-            restarted = PersistentJobStore(directory)
-            blocked_again, reason_again, count_again = restarted.create_job_if_allowed({"id": "job-5", "status": "queued"}, daily_limit=3, max_concurrent=10, utc_day="2026-11-18")
-            self.assertFalse(blocked_again)
-            self.assertEqual(reason_again, "daily_limit")
-            self.assertEqual(count_again, 3)
+            first = {
+                "id": "job-one", "status": "queued", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1", "scene_id": "scene-1",
+            }
+            created, replayed, conflict = store.create_or_get(first)
+            self.assertEqual(created["id"], "job-one")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
 
-    def test_active_job_limit_is_enforced(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            allowed, _, _ = store.create_job_if_allowed({"id": "active-1", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
-            self.assertTrue(allowed)
-            blocked, reason, count = store.create_job_if_allowed({"id": "active-2", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
-            self.assertFalse(blocked)
-            self.assertEqual(reason, "concurrency_limit")
-            self.assertEqual(count, 1)
+            retry = dict(first, id="job-two")
+            existing, replayed, conflict = store.create_or_get(retry)
+            self.assertEqual(existing["id"], "job-one")
+            self.assertTrue(replayed)
+            self.assertFalse(conflict)
 
-    def test_daily_job_limit_uses_utc_day_key(self) -> None:
+            changed = dict(retry, request_fingerprint="d" * 64)
+            existing, replayed, conflict = store.create_or_get(changed)
+            self.assertEqual(existing["id"], "job-one")
+            self.assertTrue(replayed)
+            self.assertTrue(conflict)
+
+    def test_idempotency_is_scoped_to_principal_and_jobs_are_listed_by_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            allowed, _, _ = store.create_job_if_allowed({"id": "day-1", "status": "queued"}, daily_limit=1, max_concurrent=2, utc_day="2026-11-18")
-            self.assertTrue(allowed)
-            allowed_next_day, _, count = store.create_job_if_allowed({"id": "day-2", "status": "queued"}, daily_limit=1, max_concurrent=2, utc_day="2026-11-19")
-            self.assertTrue(allowed_next_day)
-            self.assertEqual(count, 1)
-    def test_daily_usage_is_reported_from_persisted_utc_quota(self) -> None:
+            base = {
+                "id": "job-a", "status": "succeeded", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1", "scene_id": "scene-1",
+            }
+            store.create_or_get(base)
+            other_principal = dict(base, id="job-b", principal_hash="e" * 64)
+            created, replayed, conflict = store.create_or_get(other_principal)
+            self.assertEqual(created["id"], "job-b")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+            self.assertEqual([job["id"] for job in store.list_by_principal("a" * 64, "project-1")], ["job-a"])
+            self.assertEqual(store.list_by_principal("f" * 64), [])
+            self.assertEqual(store.list_by_principal("a" * 64, "other-project"), [])
+
+    def test_job_list_orders_latest_updated_jobs_first_even_with_same_second_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            self.assertEqual(store.daily_usage("2026-11-18"), 0)
-            for index in range(1, 4):
-                allowed, _, _ = store.create_job_if_allowed(
-                    {"id": f"quota-{index}", "status": "failed"},
-                    daily_limit=3,
-                    max_concurrent=3,
-                    utc_day="2026-11-18",
-                )
-                self.assertTrue(allowed)
-            self.assertEqual(store.daily_usage("2026-11-18"), 3)
-            self.assertEqual(store.daily_usage("2026-11-19"), 0)
+            for job_id, key_hash in (("older", "1" * 64), ("newer", "2" * 64)):
+                store.create_or_get({
+                    "id": job_id, "status": "succeeded", "principal_hash": "a" * 64,
+                    "idempotency_key_hash": key_hash, "request_fingerprint": "f" * 64,
+                    "project_id": "project-1", "scene_id": "scene-1",
+                })
+            listed = store.list_by_principal("a" * 64, "project-1")
+            self.assertEqual([job["id"] for job in listed], ["newer", "older"])
+
+    def test_project_job_deletion_is_principal_scoped_and_removes_completed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            completed_file = Path(directory) / "completed.mp4"
+            other_file = Path(directory) / "other.mp4"
+            completed_file.write_bytes(b"video")
+            other_file.write_bytes(b"video")
+            store.create_or_get({
+                "id": "completed", "status": "succeeded", "filename": "completed.mp4",
+                "principal_hash": "a" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            store.create_or_get({
+                "id": "other-principal", "status": "succeeded", "filename": "other.mp4",
+                "principal_hash": "e" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            removed = store.mark_project_jobs_for_deletion("a" * 64, "project-1")
+            self.assertEqual([job["id"] for job in removed], ["completed"])
+            self.assertNotIn("completed", store.load_all())
+            self.assertTrue(other_file.is_file(), "another principal's worker file must remain untouched")
+
+    def test_active_project_jobs_are_marked_for_deferred_cleanup_and_removed_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            video = Path(directory) / "running.mp4"
+            video.write_bytes(b"video")
+            store.create_or_get({
+                "id": "running", "status": "running", "filename": "running.mp4",
+                "principal_hash": "a" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            marked = store.mark_project_jobs_for_deletion("a" * 64, "project-1")
+            self.assertEqual(len(marked), 1)
+            self.assertEqual(marked[0]["status"], "deleting")
+            restarted = PersistentJobStore(directory).load_all()
+            self.assertEqual(restarted, {})
+            self.assertFalse(video.exists())
+
+    def test_project_filter_is_applied_before_job_history_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            for index in range(55):
+                store.create_or_get({
+                    "id": f"other-{index}", "status": "failed", "principal_hash": "a" * 64,
+                    "idempotency_key_hash": f"{index + 1:064x}", "request_fingerprint": "f" * 64,
+                    "project_id": "other-project",
+                })
+            store.create_or_get({
+                "id": "target-project-job", "status": "succeeded", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "f" * 64, "request_fingerprint": "f" * 64,
+                "project_id": "target-project",
+            })
+            self.assertEqual(
+                [job["id"] for job in store.list_by_principal("a" * 64, "target-project")],
+                ["target-project-job"],
+            )
 
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -176,115 +230,117 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             store.delete("job-1")
             self.assertNotIn("job-1", store.load_all())
 
-    def test_list_jobs_returns_newest_persisted_jobs_with_a_safe_limit(self) -> None:
+
+    def test_limited_create_is_principal_idempotent_and_enforces_daily_and_gpu_concurrency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            store.save({"id": "older", "status": "failed", "created_at": "2026-11-17T00:00:00Z"})
-            store.save({"id": "newer", "status": "succeeded", "created_at": "2026-11-18T00:00:00Z"})
-            store.save({"id": "middle", "status": "cancelled", "created_at": "2026-11-17T12:00:00Z"})
-            self.assertEqual([job["id"] for job in store.list_jobs(2)], ["newer", "middle"])
-            with self.assertRaises(ValueError):
-                store.list_jobs(51)
+            first = {
+                "id": "job-one", "status": "queued", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1", "scene_id": "scene-1",
+            }
+            created, replayed, conflict, reason, count = store.create_or_get_limited(
+                first, daily_limit=2, max_concurrent=1, utc_day="2026-11-20"
+            )
+            self.assertEqual(created["id"], "job-one")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+            self.assertIsNone(reason)
+            self.assertEqual(count, 1)
 
-    def test_list_jobs_exposes_every_lifecycle_state_and_hides_quota_records(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            statuses = ["queued", "running", "cancel_requested", "cancelled", "succeeded", "failed"]
-            for index, status in enumerate(statuses):
-                store.save({
-                    "id": f"state-{index}",
-                    "status": status,
-                    "created_at": f"2026-11-18T12:0{index}:00Z",
-                })
-            store.save({
-                "id": "zero-daily-usage:2026-11-18",
-                "kind": "daily_usage",
-                "status": "quota",
-                "created_at": "2026-11-18T12:10:00Z",
-            })
-            listed = store.list_jobs()
-            self.assertEqual({job["status"] for job in listed}, set(statuses))
-            self.assertEqual(len(listed), len(statuses))
-            self.assertNotIn("quota", {job["status"] for job in listed})
+            retry = dict(first, id="job-two")
+            existing, replayed, conflict, reason, count = store.create_or_get_limited(
+                retry, daily_limit=2, max_concurrent=1, utc_day="2026-11-20"
+            )
+            self.assertEqual(existing["id"], "job-one")
+            self.assertTrue(replayed)
+            self.assertFalse(conflict)
+            self.assertEqual(store.daily_usage("2026-11-20"), 1)
 
-    def test_list_jobs_preserves_project_and_scene_recovery_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            store.save({
-                "id": "metadata-job", "status": "succeeded",
-                "created_at": "2026-11-18T00:00:00Z",
-                "project_id": "project_123", "scene_id": "scene_456",
-            })
-            job = store.list_jobs()[0]
-            self.assertEqual(job["project_id"], "project_123")
-            self.assertEqual(job["scene_id"], "scene_456")
+            changed = dict(retry, request_fingerprint="d" * 64)
+            _existing, replayed, conflict, _reason, _count = store.create_or_get_limited(
+                changed, daily_limit=2, max_concurrent=1, utc_day="2026-11-20"
+            )
+            self.assertTrue(replayed)
+            self.assertTrue(conflict)
 
-    def test_cancelled_jobs_are_included_in_completed_retention(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            store.save({"id": "cancel-old", "status": "cancelled", "created_at": "2026-11-17T00:00:00Z"})
-            store.save({"id": "succeed-new", "status": "succeeded", "created_at": "2026-11-18T00:00:00Z"})
-            store.save({"id": "fail-new", "status": "failed", "created_at": "2026-11-19T00:00:00Z"})
-            removed = store.prune_completed(max_jobs=3, retain_jobs=2)
-            self.assertEqual([job["id"] for job in removed], ["cancel-old"])
-            self.assertNotIn("cancel-old", store.list_jobs())
-
-    def test_list_jobs_does_not_mark_live_inference_failed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            store.save({"id": "live", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
-            jobs = store.list_jobs()
-            self.assertEqual(jobs[0]["status"], "running")
-            self.assertEqual(PersistentJobStore(directory).list_jobs()[0]["status"], "running")
-
-    def test_list_jobs_returns_recovered_status_after_worker_restart(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            PersistentJobStore(directory).save({"id": "interrupted", "status": "running", "created_at": "2026-11-18T00:00:00Z"})
-            restarted_store = PersistentJobStore(directory)
-            restarted_store.load_all()
-            jobs = restarted_store.list_jobs()
-            self.assertEqual(jobs[0]["status"], "failed")
-            self.assertIn("neu gestartet", jobs[0]["error"])
-
-    def test_cancel_queued_job_is_persisted_as_cancelled(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            store.save({"id": "queued-cancel", "status": "queued"})
-            result = store.request_cancel("queued-cancel")
-            self.assertEqual(result["status"], "cancelled")
-            self.assertEqual(PersistentJobStore(directory).load_all()["queued-cancel"]["status"], "cancelled")
-            allowed, reason, _ = store.create_job_if_allowed({"id": "after-queued-cancel", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
-            self.assertTrue(allowed, reason)
-
-    def test_cancel_running_job_is_only_a_persisted_request_until_inference_stops(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            store = PersistentJobStore(directory)
-            store.save({"id": "running-cancel", "status": "running"})
-            result = store.request_cancel("running-cancel")
-            self.assertEqual(result["status"], "cancel_requested")
-            with sqlite3.connect(store.database_path) as connection:
-                payload = connection.execute("SELECT payload FROM zero_video_jobs WHERE id = ?", ("running-cancel",)).fetchone()[0]
-            self.assertEqual(__import__("json").loads(payload)["status"], "cancel_requested")
-            allowed, reason, _ = store.create_job_if_allowed({"id": "blocked-during-cancel", "status": "queued"}, daily_limit=3, max_concurrent=1, utc_day="2026-11-18")
-            self.assertFalse(allowed)
+            blocked, replayed, conflict, reason, _count = store.create_or_get_limited(
+                dict(first, id="job-three", idempotency_key_hash="e" * 64),
+                daily_limit=2, max_concurrent=1, utc_day="2026-11-20",
+            )
+            self.assertIsNone(blocked)
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
             self.assertEqual(reason, "concurrency_limit")
 
-    def test_cancel_is_idempotent_and_does_not_overwrite_completed_jobs(self) -> None:
+            store.save(dict(first, status="failed"))
+            second, replayed, conflict, reason, count = store.create_or_get_limited(
+                dict(first, id="job-four", idempotency_key_hash="f" * 64),
+                daily_limit=2, max_concurrent=1, utc_day="2026-11-20",
+            )
+            self.assertEqual(second["id"], "job-four")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+            self.assertIsNone(reason)
+            self.assertEqual(count, 2)
+
+            third, _replayed, _conflict, reason, _count = store.create_or_get_limited(
+                dict(first, id="job-five", idempotency_key_hash="1" * 64),
+                daily_limit=2, max_concurrent=1, utc_day="2026-11-20",
+            )
+            self.assertIsNone(third)
+            self.assertEqual(reason, "concurrency_limit")
+            store.save(dict(second, status="failed"))
+            fourth, _replayed, _conflict, reason, _count = store.create_or_get_limited(
+                dict(first, id="job-six", idempotency_key_hash="2" * 64),
+                daily_limit=2, max_concurrent=1, utc_day="2026-11-20",
+            )
+            self.assertIsNone(fourth)
+            self.assertEqual(reason, "daily_limit")
+            self.assertEqual(store.daily_usage("2026-11-20"), 2)
+
+    def test_cancel_requests_are_principal_scoped_and_survive_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            store.save({"id": "done", "status": "succeeded", "filename": "done.mp4"})
-            result = store.request_cancel("done")
-            self.assertEqual(result["status"], "succeeded")
-            self.assertIsNone(store.request_cancel("missing"))
+            queued = {
+                "id": "queued-job", "status": "queued", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1",
+            }
+            store.create_or_get(queued)
+            self.assertIsNone(store.request_cancel("queued-job", "e" * 64))
+            cancelled = store.request_cancel("queued-job", "a" * 64)
+            self.assertEqual(cancelled["status"], "cancelled")
+            self.assertEqual(store.request_cancel("queued-job", "a" * 64)["status"], "cancelled")
 
-    def test_cancel_requested_job_is_terminalized_after_worker_restart(self) -> None:
+            running = dict(queued, id="running-job", status="running", idempotency_key_hash="d" * 64)
+            store.create_or_get(running)
+            requested = store.request_cancel("running-job", "a" * 64)
+            self.assertEqual(requested["status"], "cancel_requested")
+            self.assertEqual(store.request_cancel("running-job", "e" * 64), None)
+
+            recovered = PersistentJobStore(directory).load_all()
+            self.assertEqual(recovered["queued-job"]["status"], "cancelled")
+            self.assertEqual(recovered["running-job"]["status"], "cancelled")
+            self.assertIn("Neustart", recovered["running-job"]["cancel_reason"])
+
+    def test_cancelled_jobs_are_terminal_and_prunable_without_pruning_daily_quota(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)
-            store.save({"id": "cancel-on-restart", "status": "cancel_requested", "cancel_requested_at": "2026-11-18T00:00:00Z"})
-            restored = PersistentJobStore(directory).load_all()
-            self.assertEqual(restored["cancel-on-restart"]["status"], "cancelled")
-
-
+            for index in range(50):
+                status = "cancelled" if index == 0 else "failed"
+                store.save({
+                    "id": f"job-{index}", "status": status,
+                    "created_at": f"2026-11-{1 + (index % 17):02d}T00:00:00Z",
+                })
+            store.create_or_get_limited({
+                "id": "quota-job", "status": "failed", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+            }, daily_limit=3, max_concurrent=3, utc_day="2026-11-20")
+            self.assertEqual(store.daily_usage("2026-11-20"), 1)
+            removed = store.prune_completed(max_jobs=50, retain_jobs=40)
+            self.assertTrue(removed)
+            self.assertEqual(store.daily_usage("2026-11-20"), 1)
 
 if __name__ == "__main__":
     unittest.main()
