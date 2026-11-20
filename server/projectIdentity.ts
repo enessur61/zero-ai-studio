@@ -59,7 +59,22 @@ export function createProjectOwnershipMiddleware(
   return asyncRoute(async (req, res, next) => {
     const principal = getZeroPrincipal(res.locals);
     if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-    const project = resolveOwnedProject(await loadProjects(), principal, req.params.id);
+    const projectId = req.params.id;
+    if (typeof projectId !== 'string' || !projectId.trim() || projectId.length > 128) {
+      return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+    }
+    const projects = await loadProjects();
+    const existingProject = projects.find((candidate) => candidate.id === projectId);
+    if (!existingProject) {
+      // Idempotent DELETE retries may proceed to principal-scoped cleanup.
+      // Other methods and existing foreign-owned projects remain hidden.
+      if (req.method === 'DELETE') {
+        res.locals.zeroProjectId = projectId;
+        return next();
+      }
+      return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+    }
+    const project = resolveOwnedProject(projects, principal, projectId);
     if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
     res.locals.zeroProjectId = project.id;
     next();
