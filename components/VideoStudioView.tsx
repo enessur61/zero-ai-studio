@@ -617,6 +617,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                 {videoRecoveryStatus === 'missing' && <p role="status" className="text-xs text-rose-300">Dieser Clip ist nicht mehr verfügbar oder wurde gelöscht.</p>}
                 {videoRecoveryStatus === 'error' && <p role="status" className="text-xs text-amber-300">Clip-Verbindung konnte nicht geprüft werden. Tippe auf Wiedergabe, um es erneut zu versuchen.</p>}
                 <a href={wanClipUrl} download="zero-wan-shot.mp4" className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white"><Download className="w-4 h-4" />Wan-MP4 herunterladen</a>
+                <p className="text-[10px] text-slate-500">Safari-Download unterbrochen? Erneut antippen. ZERO liefert bytegenaue HTTP-Range-Bereiche mit ETag-Prüfung; die Fortsetzung steuert Safari. Nach erneuter Anmeldung den Download erneut starten.</p>
               </div>
             )}
           </div>
