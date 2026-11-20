@@ -333,6 +333,15 @@ jobs:
           if (!clipDownload.ok || !downloadedClip.equals(mp4Bytes) || !clipDownload.headers.get('content-disposition')?.includes('attachment')) {
             throw new Error('Archived project clip download failed');
           }
+          const rangedClipDownload = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos/' + archivedClip.id + '?download=1', {
+            headers: { cookie, range: 'bytes=65536-131071' }
+          });
+          const rangedClipBytes = Buffer.from(await rangedClipDownload.arrayBuffer());
+          if (rangedClipDownload.status !== 206 || rangedClipDownload.headers.get('content-range') !== 'bytes 65536-131071/' + mp4Bytes.length ||
+              !rangedClipBytes.equals(mp4Bytes.subarray(65536, 131072)) ||
+              !rangedClipDownload.headers.get('content-disposition')?.includes('attachment')) {
+            throw new Error('Archived clip HTTP range download failed or lost attachment disposition');
+          }
           if (!durationProject.snapshots[0].state ||
               durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
             throw new Error('New projects must store a complete, restorable initial snapshot');
