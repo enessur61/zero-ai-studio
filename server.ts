@@ -6,6 +6,7 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { EPISODE_ONE } from './server/episodeOne.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -2036,8 +2037,9 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
   try {
     const idea = String(req.body?.idea ?? '').trim();
     const genre = String(req.body?.genre ?? 'Thriller / Neo-Noir').trim();
+    const episodeOne = req.body?.episodePreset === 'der-fehlende-tag';
     const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
-    const targetDurationSec = Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
+    const targetDurationSec = episodeOne ? 60 : Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
     const generateImages = Boolean(req.body?.generateImages);
 
@@ -2048,11 +2050,35 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
 
-    requireActiveCloudflareTextModel(db);
+    type FilmDirectorDraft = {
+      title: string;
+      logline: string;
+      concept: string;
+      story: string;
+      screenplay: string;
+      scenes: Array<{
+        title: string;
+        location: string;
+        timeOfDay: string;
+        durationSec: number;
+        cameraMovement: string;
+        narrationText: string;
+        subtitleText: string;
+        soundCue: string;
+        imagePrompt: string;
+        videoPrompt: string;
+      }>;
+    };
 
-    const modelResponse = await generateCloudflareText({
-      systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
-      prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
+    let parsed: FilmDirectorDraft;
+    if (episodeOne) {
+      // This is a locked, previously planned episode. Do not ask a text model to invent or alter its plot.
+      parsed = JSON.parse(JSON.stringify(EPISODE_ONE)) as FilmDirectorDraft;
+    } else {
+      requireActiveCloudflareTextModel(db);
+      const modelResponse = await generateCloudflareText({
+        systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
+        prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
 Genre: ${genre}
 Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
@@ -2083,29 +2109,18 @@ Gib ausschließlich dieses JSON-Schema zurück:
 }
 cameraMovement muss einer dieser Werte sein: Statisch, Langsamer Zoom-In, Sanfter Zoom-Out, Schwenk Links, Schwenk Rechts, Vertikaler Tilt.
 Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
-      maxTokens: 1800,
-    });
-    const parsed = parseCloudflareJsonObject(modelResponse.text) as {
-      title: string;
-      logline: string;
-      concept: string;
-      story: string;
-      screenplay: string;
-      scenes: Array<{
-        title: string;
-        location: string;
-        timeOfDay: string;
-        durationSec: number;
-        cameraMovement: string;
-        narrationText: string;
-        subtitleText: string;
-        soundCue: string;
-        imagePrompt: string;
-        videoPrompt: string;
-      }>;
-    };
-    if (!Array.isArray(parsed.scenes) || parsed.scenes.length < 4) {
-      throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
+        maxTokens: 1800,
+      });
+      parsed = parseCloudflareJsonObject(modelResponse.text) as FilmDirectorDraft;
+    }
+
+    if (!Array.isArray(parsed.scenes) || parsed.scenes.length !== (episodeOne ? 8 : 4)) {
+      throw new Error(episodeOne
+        ? 'Die gesperrte Pilotfolge muss exakt acht Einstellungen enthalten.'
+        : 'ZERO FILM DIRECTOR muss exakt vier Szenen liefern. Bitte den Entwurf erneut erstellen.');
+    }
+    if (episodeOne && parsed.scenes.reduce((sum, scene) => sum + Number(scene.durationSec), 0) !== 60) {
+      throw new Error('Die acht Einstellungen der Pilotfolge müssen zusammen exakt 60 Sekunden ergeben.');
     }
 
     const validMoves: FilmScene['cameraMovement'][] = [
@@ -2117,13 +2132,15 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       'Vertikaler Tilt',
     ];
 
-    let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
+    let mappedScenes: FilmScene[] = parsed.scenes.map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
       title: s.title,
       location: s.location,
       timeOfDay: s.timeOfDay,
-      durationSec: Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
+      durationSec: episodeOne
+        ? Number(s.durationSec)
+        : Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
       cameraMovement: validMoves[idx % validMoves.length],
       characterIds: char ? [char.id] : [],
       narrationText: s.narrationText,
@@ -2135,13 +2152,18 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       status: 'Entwurf',
     }));
 
-    // Keep the requested total duration exact and guarantee four valid 5–15-second scenes.
-    const baseSceneDuration = Math.floor(targetDurationSec / 4);
-    const extraSceneSeconds = targetDurationSec % 4;
-    mappedScenes.forEach((scene, idx) => {
-      scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
-    });
+    // Preserve the pilot's authored eight-shot timings; other projects retain the existing four-scene timing normalization.
+    if (!episodeOne) {
+      const baseSceneDuration = Math.floor(targetDurationSec / 4);
+      const extraSceneSeconds = targetDurationSec % 4;
+      mappedScenes.forEach((scene, idx) => {
+        scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
+      });
+    }
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
+    if (episodeOne && mappedScenes.reduce((sum, scene) => sum + scene.durationSec, 0) !== 60) {
+      throw new Error('Die Pilotfolge überschreitet nach der Sicherheitsnormalisierung nicht exakt 60 Sekunden.');
+    }
 
     const imageGenerationWarnings: string[] = [];
     if (generateImages) {
