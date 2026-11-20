@@ -249,7 +249,7 @@ def health() -> dict[str, Any]:
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
-        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED,
+        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and WAN_DAILY_JOB_LIMIT > 0,
         "daily_job_limit": WAN_DAILY_JOB_LIMIT,
         "daily_jobs_remaining": max(0, WAN_DAILY_JOB_LIMIT - _JOB_STORE.daily_usage()),
         "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
@@ -427,7 +427,7 @@ def get_job(
     principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
 ) -> dict[str, Any]:
     require_auth(authorization)
-    if not principal_hash:
+    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
         raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
@@ -447,7 +447,7 @@ def get_video(
     principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
 ) -> FileResponse:
     require_auth(authorization)
-    if not principal_hash:
+    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
         raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
