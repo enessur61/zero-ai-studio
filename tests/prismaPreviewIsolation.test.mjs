@@ -5,6 +5,7 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const moduleSource = read('../module.mjs');
 const serviceSource = read('../service.mjs');
 const computeSource = read('../compute-server.ts');
+const runtimeConfigSource = read('../server/runtimeConfig.ts');
 const workflowSource = read('../.github/workflows/prisma-deploy.yml');
 
 const targetBranch = 'prisma-cloud/setup-v3icl3cvq646n2a35puh95r3';
@@ -44,6 +45,27 @@ assert.doesNotMatch(workflowSource, /^\s*pull_request\s*:/m);
 assert.match(workflowSource, /permissions:\s*\n\s+contents:\s*read/);
 assert.match(workflowSource, /id-token:\s*write/);
 assert.match(workflowSource, /s5j2brwlvh3d4mkm2cyrycm5\.fra\.prisma\.build/);
+
+const providerKeys = [
+  'GEMINI_API_KEY',
+  'ZERO_GEMINI_FREE_TIER_ONLY',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_API_TOKEN',
+  'ZERO_WEB_SEARCH_URL',
+  'ZERO_WEB_SEARCH_TOKEN',
+  'ZERO_TTS_WORKER_URL',
+  'ZERO_TTS_WORKER_TOKEN',
+  'ZERO_VIDEO_ENGINE_URL',
+  'ZERO_VIDEO_ENGINE_TOKEN',
+];
+assert.match(runtimeConfigSource, /export function clearRuntimeConfig\\(keys: readonly string\\[\\]\\): void/);
+assert.match(runtimeConfigSource, /delete runtimeConfig\\[key\\]/);
+const clearCall = computeSource.indexOf('clearRuntimeConfig([');
+const configureCall = computeSource.indexOf('configureRuntimeConfig({');
+assert.ok(clearCall >= 0 && configureCall > clearCall, 'Inherited provider configuration must be cleared before explicit inputs are applied.');
+for (const key of providerKeys) {
+  assert.ok(computeSource.includes(`"${key}"`), `Preview must clear inherited ${key}.`);
+}
 
 console.log(
   'Prisma preview code-boundary tests passed. This static test does not prove external Prisma ' +
