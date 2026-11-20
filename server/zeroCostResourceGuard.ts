@@ -657,3 +657,40 @@ export async function heartbeatZeroCostResourceLeaseWithPool(
     client.release(destroyClient);
   }
 }
+
+
+/** Read-only status lookup bound to the authenticated principal; never returns lease credentials or payloads. */
+export async function getZeroResourceOperationStatusWithPool(
+  pool: Pool,
+  principal: string,
+  operationId: string,
+): Promise<{
+  operationId: string;
+  status: ZeroOperationStatus;
+  dayUtc: string;
+  resourceType: ZeroResourceType;
+  reservedUnits: number;
+  updatedAt: string;
+} | null> {
+  if (!principal.trim() || !/^[0-9a-f-]{36}$/i.test(operationId)) return null;
+  await ensureZeroCostResourceSchema(pool);
+  const result = await pool.query<{
+    operation_id: string; status: ZeroOperationStatus; day_utc: string;
+    resource_type: ZeroResourceType; reserved_units: number; updated_at: Date | string;
+  }>(
+    `SELECT operation_id, status, day_utc::text, resource_type, reserved_units, updated_at
+     FROM zero_cost_operations
+     WHERE operation_id = $1::uuid AND principal_hash = $2`,
+    [operationId, digest(principal.trim())],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    operationId: row.operation_id,
+    status: row.status,
+    dayUtc: row.day_utc,
+    resourceType: row.resource_type,
+    reservedUnits: Number(row.reserved_units),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
