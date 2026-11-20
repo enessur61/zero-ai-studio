@@ -98,7 +98,7 @@ export async function saveSceneVideoClip(
   }
 
   try {
-    const headers: Record<string, string> = { 'Content-Type': blob.type };
+    const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream', 'X-Zero-Video-Type': blob.type };
     if (jobId) headers['X-Zero-Wan-Job-Id'] = jobId;
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,

@@ -288,7 +288,7 @@ jobs:
           mp4Bytes.write('ftyp', 4, 'ascii');
           const sceneVideoPath = '/api/projects/' + durationProject.id + '/scenes/' + durationProject.scenes[0].id + '/video';
           const mediaWrite = await fetch(base + sceneVideoPath, {
-            method: 'PUT', headers: { cookie, 'content-type': 'video/mp4' }, body: mp4Bytes
+            method: 'PUT', headers: { cookie, 'content-type': 'application/octet-stream', 'x-zero-video-type': 'video/mp4' }, body: mp4Bytes
           });
           const mediaWritePayload = await mediaWrite.json();
           if (!mediaWrite.ok || !mediaWritePayload.serverPersisted || mediaWritePayload.asset?.sizeBytes !== mp4Bytes.length) {

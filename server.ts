@@ -2667,7 +2667,7 @@ app.delete('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
 
 app.put(
   '/api/projects/:id/scenes/:sceneId/video',
-  express.raw({ type: ['video/mp4', 'video/webm'], limit: '100mb' }),
+  express.raw({ type: 'application/octet-stream', limit: '100mb' }),
   asyncRoute(async (req, res) => {
     const db = await loadDb();
     const project = db.projects.find((item) => item.id === req.params.id);
@@ -2675,7 +2675,7 @@ app.put(
     if (!project.scenes.some((item) => item.id === req.params.sceneId)) {
       return res.status(404).json({ error: 'Szene nicht gefunden.' });
     }
-    const contentType = String(req.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+    const contentType = String(req.get('X-Zero-Video-Type') || '').split(';')[0].trim().toLowerCase();
     if (!Buffer.isBuffer(req.body) || !isValidProjectVideoPayload(req.body, contentType)) {
       return res.status(400).json({ error: 'Ungültiger Videoclip. Erlaubt sind MP4/WebM zwischen 1 KB und 100 MB.' });
     }
