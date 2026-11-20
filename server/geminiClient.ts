@@ -1,3 +1,4 @@
+import { withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
@@ -25,6 +26,22 @@ const PAID_GEMINI_MODELS = new Set([
   'lyria-3-pro-preview',
 ]);
 
+export function classifyGeminiResourceType(modelId: string, payload: string): ZeroResourceType {
+  if (/tts|transcrib/i.test(modelId) || payload.includes('audio/')) return 'audio';
+  if (payload.includes('video/')) return 'video';
+  if (payload.includes('image/')) return 'image';
+  return 'text';
+}
+
+export function classifyGeminiResourceError(error: unknown): 'FAILED' | 'UNKNOWN' {
+  const kind = classifyProviderError(error);
+  if (kind === 'quota-exhausted' || kind === 'rate-limited' || kind === 'auth' || kind === 'not-found') return 'FAILED';
+  const message = error instanceof Error ? error.message : String(error);
+  const clientStatus = message.match(/\b(?:HTTP\s*)?(4\d{2})\b/i);
+  if (clientStatus) return 'FAILED';
+  return 'UNKNOWN';
+}
+
 let sharedClient: GoogleGenAI | null = null;
 
 export function getGeminiClient(): GoogleGenAI {
@@ -47,6 +64,35 @@ export function getGeminiClient(): GoogleGenAI {
         },
       },
     });
+    const models = sharedClient.models;
+    const originalGenerateContent = models.generateContent.bind(models);
+    const originalEmbedContent = models.embedContent.bind(models);
+    models.generateContent = (async (request: Parameters<typeof models.generateContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      const resourceType = classifyGeminiResourceType(modelId, payload);
+      return withZeroCostResourceOperation(
+        { provider: 'google-gemini-free', modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
+          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
+          inputChars: resourceType === 'text' ? payload.length : undefined },
+        () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
+      );
+    }) as typeof models.generateContent;
+    models.embedContent = (async (request: Parameters<typeof models.embedContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Embedding-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      return withZeroCostResourceOperation(
+        { provider: 'google-gemini-free', modelId, resourceType: 'text', studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
+          payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length },
+        () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
+      );
+    }) as typeof models.embedContent;
   }
   return sharedClient;
 }
@@ -368,7 +414,9 @@ export function formatGermanApiError(err: unknown): string {
 
 export async function withTransientRetry<T>(
   operation: () => Promise<T>,
-  maxRetries = 1
+  // Retries are disabled by default: provider requests must each reserve budget first.
+  // Callers may opt in only when they supply per-attempt budget reservations.
+  maxRetries = 0
 ): Promise<T> {
   let attempt = 0;
   while (true) {

@@ -58,23 +58,12 @@ jobs:
             console.error('Forbidden local data or secret files are tracked:', forbidden);
             process.exit(1);
           }
-          for (const archive of files.filter((file) => file.toLowerCase().endsWith('.zip'))) {
-            const entries = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).split(String.fromCharCode(10));
-            const unsafeArchiveEntries = entries.filter((file) => {
-              const parts = file.replaceAll(String.fromCharCode(92), '/').split('/');
-              const name = parts.at(-1) ?? '';
-              return name === '.env' ||
-                (name.startsWith('.env.') && name !== '.env.example') ||
-                name === 'zero-studio-db.json' ||
-                parts[0] === 'data' ||
-                ['.pem', '.key', '.p12', '.pfx', '.sqlite', '.db'].some((ext) => name.toLowerCase().endsWith(ext));
-            });
-            if (unsafeArchiveEntries.length) {
-              console.error('Archive contains local data or secrets:', archive, unsafeArchiveEntries);
-              process.exit(1);
-            }
+          const archives = files.filter((file) => file.toLowerCase().endsWith('.zip'));
+          if (archives.length) {
+            console.error('Tracked ZIP archives are not allowed; CI does not open or inspect archive contents:', archives);
+            process.exit(1);
           }
-          console.log('No prohibited local database or credential files are tracked.');
+          console.log('No prohibited local database, credential, or ZIP archive files are tracked.');
           NODE
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
         with:
@@ -112,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
+          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 ZERO_COST_GUARD_DAILY_REQUEST_LIMIT=1000)
           env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
           SERVER_PID_A=$!
           trap 'status=$?; if [ "$status" -ne 0 ]; then echo "--- ZERO SERVER A LOG ---"; cat /tmp/zero-server-a.log; echo "--- ZERO SERVER B LOG ---"; cat /tmp/zero-server-b.log; fi; kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true; exit "$status"' EXIT
@@ -171,6 +160,64 @@ jobs:
           const authenticatedStatus = await authFetch('/api/auth/status');
           const authenticatedInfo = await authenticatedStatus.json();
           if (!authenticatedInfo.authenticated) throw new Error('Session cookie rejected: ' + JSON.stringify(authenticatedInfo));
+
+          // Real HTTP E2E for the production-authenticated ZERO COST GUARD control.
+          // This runs against the live CI server process and the CI-local PostgreSQL service;
+          // it never contacts either AI provider.
+          const costGuardPath = '/api/system/cost-guard/pause';
+          const unauthenticatedCostGuard = await fetch(base + costGuardPath, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: base },
+            body: JSON.stringify({ paused: true })
+          });
+          if (unauthenticatedCostGuard.status !== 401) {
+            throw new Error('Unauthenticated cost-guard mutation must be rejected before route handling: ' + unauthenticatedCostGuard.status);
+          }
+          const missingOriginCostGuard = await authFetch(costGuardPath, {
+            method: 'POST', body: JSON.stringify({ paused: true })
+          });
+          if (missingOriginCostGuard.status !== 403) {
+            throw new Error('Authenticated cost-guard mutation without Origin must return 403: ' + missingOriginCostGuard.status);
+          }
+          const foreignOriginCostGuard = await authFetch(costGuardPath, {
+            method: 'POST',
+            headers: { origin: 'https://attacker.example' },
+            body: JSON.stringify({ paused: true })
+          });
+          if (foreignOriginCostGuard.status !== 403) {
+            throw new Error('Authenticated cost-guard mutation with foreign Origin must return 403: ' + foreignOriginCostGuard.status);
+          }
+          const sameOriginPause = await authFetch(costGuardPath, {
+            method: 'POST',
+            headers: { origin: new URL(base).origin },
+            body: JSON.stringify({ paused: true })
+          });
+          if (!sameOriginPause.ok) {
+            throw new Error('Authenticated same-origin pause failed: ' + sameOriginPause.status + ' ' + await sameOriginPause.text());
+          }
+          const pausedOnSecondInstance = await fetch(baseB + '/api/system/cost-guard', {
+            headers: { cookie }
+          });
+          const pausedStatus = await pausedOnSecondInstance.json();
+          if (!pausedOnSecondInstance.ok || pausedStatus.paused !== true) {
+            throw new Error('Pause state was not persisted and visible through the second server instance: ' + JSON.stringify(pausedStatus));
+          }
+          const sameOriginResume = await authFetch(costGuardPath, {
+            method: 'POST',
+            headers: { origin: new URL(base).origin },
+            body: JSON.stringify({ paused: false })
+          });
+          if (!sameOriginResume.ok) {
+            throw new Error('Authenticated same-origin resume failed: ' + sameOriginResume.status + ' ' + await sameOriginResume.text());
+          }
+          const resumedOnSecondInstance = await fetch(baseB + '/api/system/cost-guard', {
+            headers: { cookie }
+          });
+          const resumedStatus = await resumedOnSecondInstance.json();
+          if (!resumedOnSecondInstance.ok || resumedStatus.paused !== false) {
+            throw new Error('Resume state was not persisted and visible through the second server instance: ' + JSON.stringify(resumedStatus));
+          }
+          console.log('Verified real HTTP cost-guard E2E: authenticated same-origin pause/resume, missing/foreign Origin rejection, unauthenticated rejection, and PostgreSQL persistence across two server instances.');
           const crossInstanceLogin = await fetch(base + '/api/auth/login', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ password: 'zero-ci-password-123' })

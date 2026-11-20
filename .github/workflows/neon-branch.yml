@@ -1,4 +1,4 @@
-name: Create/Delete Branch for Pull Request
+name: Create/Delete Neon Preview Branch for Pull Request
 
 on:
   pull_request:
@@ -6,10 +6,18 @@ on:
       - opened
       - reopened
       - synchronize
+      - labeled
+      - unlabeled
       - closed
+
+# Neon is an optional external database service. No branch is created unless
+# a maintainer explicitly opts in by adding the `neon-preview` PR label.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   setup:
@@ -20,19 +28,20 @@ jobs:
     steps:
       - name: Get branch name
         id: branch_name
-        uses: tj-actions/branch-names@v8
+        uses: tj-actions/branch-names@dde14ac574a8b9b1cedc59a1cf312788af43d8d8
 
   create_neon_branch:
-    name: Create Neon Branch
+    name: Create Neon Branch (explicit opt-in only)
     outputs:
       db_url: ${{ steps.create_neon_branch.outputs.db_url }}
       db_url_with_pooler: ${{ steps.create_neon_branch.outputs.db_url_with_pooler }}
     needs: setup
-    if: |
-      github.event_name == 'pull_request' && (
-      github.event.action == 'synchronize'
-      || github.event.action == 'opened'
-      || github.event.action == 'reopened')
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'neon-preview') &&
+      (github.event.action == 'opened' || github.event.action == 'reopened' ||
+       github.event.action == 'synchronize' ||
+       (github.event.action == 'labeled' && github.event.label.name == 'neon-preview'))
     runs-on: ubuntu-latest
     steps:
       - name: Get branch expiration date as an env variable (2 weeks from now)
@@ -40,7 +49,7 @@ jobs:
         run: echo "EXPIRES_AT=$(date -u --date '+14 days' +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
       - name: Create Neon Branch
         id: create_neon_branch
-        uses: neondatabase/create-branch-action@v6
+        uses: neondatabase/create-branch-action@fb620d43d4c565abaf088b848a4e28e5c4ea4d9c
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
           branch_name: preview/pr-${{ github.event.number }}-${{ needs.setup.outputs.branch }}
@@ -50,11 +59,14 @@ jobs:
   delete_neon_branch:
     name: Delete Neon Branch
     needs: setup
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: >-
+      github.event_name == 'pull_request' &&
+      ((github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'neon-preview')) ||
+       (github.event.action == 'unlabeled' && github.event.label.name == 'neon-preview'))
     runs-on: ubuntu-latest
     steps:
       - name: Delete Neon Branch
-        uses: neondatabase/delete-branch-action@v3
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776
         with:
           project_id: ${{ vars.NEON_PROJECT_ID }}
           branch: preview/pr-${{ github.event.number }}-${{ needs.setup.outputs.branch }}

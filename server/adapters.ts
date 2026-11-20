@@ -286,7 +286,7 @@ export async function runLiveModelTest(
                   : {}),
             },
           }),
-        1
+        0
       );
       const text = (res.text ?? '').trim();
       model.testPassed = text.length > 0;
@@ -313,7 +313,7 @@ export async function runLiveModelTest(
               },
             },
           }),
-        1
+        0
       );
       const audioPart = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
       const audioB64 = audioPart?.inlineData?.data;
@@ -341,7 +341,7 @@ export async function runLiveModelTest(
               ],
             },
           }),
-        1
+        0
       );
       const hasCandidate = Boolean(res.candidates?.[0]?.finishReason);
       model.testPassed = hasCandidate;
@@ -362,7 +362,7 @@ export async function runLiveModelTest(
             model: 'gemini-embedding-2',
             contents: ['ZERO AI STUDIO Test Embedding'],
           }),
-        1
+        0
       );
       const dims = res.embeddings?.[0]?.values?.length ?? 0;
       model.testPassed = dims > 0;
@@ -387,7 +387,7 @@ export async function runLiveModelTest(
               tools: [{ googleSearch: {} }],
             },
           }),
-        1
+        0
       );
       const chunks = res.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
       model.testPassed = Boolean(res.text);
@@ -413,7 +413,7 @@ export async function runLiveModelTest(
           generateFreeOpenText({
             messages: [{ role: 'user', content: 'Antworte mit genau einem Wort: BEREIT' }],
           }),
-        1
+        0
       );
       model.testPassed = res.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
