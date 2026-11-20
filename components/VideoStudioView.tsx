@@ -53,6 +53,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
   const shouldResumeArchivedVideoRef = useRef(false);
   const recoveringArchivedVideoRef = useRef(false);
+  const restoreArchivedVideoListenerRef = useRef<(() => void) | null>(null);
   const [videoRecoveryStatus, setVideoRecoveryStatus] = useState<ProjectVideoRecoveryState>('ready');
   const [wanClipScene, setWanClipScene] = useState('');
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
@@ -88,7 +89,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
         const shouldResumePlayback = shouldResumeArchivedVideoRef.current && !video.ended;
         recoveringArchivedVideoRef.current = true;
+        if (restoreArchivedVideoListenerRef.current) {
+          video.removeEventListener('loadedmetadata', restoreArchivedVideoListenerRef.current);
+        }
         const restorePosition = () => {
+          restoreArchivedVideoListenerRef.current = null;
           video.currentTime = position;
           if (shouldResumePlayback) {
             void video.play().catch(() => undefined).finally(() => {
@@ -98,12 +103,17 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             recoveringArchivedVideoRef.current = false;
           }
         };
+        restoreArchivedVideoListenerRef.current = restorePosition;
         video.addEventListener('loadedmetadata', restorePosition, { once: true });
         video.load();
       },
     });
     return () => {
       stopRecovery();
+      if (video && restoreArchivedVideoListenerRef.current) {
+        video.removeEventListener('loadedmetadata', restoreArchivedVideoListenerRef.current);
+        restoreArchivedVideoListenerRef.current = null;
+      }
       video?.removeEventListener('play', onPlay);
       video?.removeEventListener('pause', onPause);
     };
