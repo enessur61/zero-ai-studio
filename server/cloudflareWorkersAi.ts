@@ -1,4 +1,4 @@
-import { runtimeConfig } from './server/runtimeConfig.ts';
+import { runtimeConfig } from './runtimeConfig.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 
