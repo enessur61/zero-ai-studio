@@ -67,6 +67,8 @@ import {
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
 import { createContinuityRouter } from './src/routes/continuity.ts';
+import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
+import { streamWanVideoResponse } from './server/wanVideoStream.ts';
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
@@ -2236,14 +2238,14 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   try {
     const url = new URL('/jobs', worker.baseUrl);
     url.searchParams.set('project_id', projectId);
-    const response = await fetch(url, {
+    const loaded = await loadWanJobList(fetch, url, {
       headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
       signal: controller.signal,
       redirect: 'error',
     });
-    const payload = await response.json().catch(() => ({})) as { jobs?: unknown };
-    if (!response.ok || !Array.isArray(payload.jobs)) return res.status(502).json({ error: 'Gespeicherte Wan-Aufträge konnten nicht geladen werden.' });
-    return res.json({ jobs: payload.jobs, costFallback: false });
+    if (loaded.kind === 'unavailable') return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
+    if (loaded.kind !== 'ok') return res.status(502).json({ error: 'Gespeicherte Wan-Aufträge enthalten ungültige Daten.' });
+    return res.json({ jobs: loaded.jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
   } finally {
@@ -2261,7 +2263,7 @@ app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
   try {
     const response = await fetch(new URL(`/jobs/${id}/cancel`, worker.baseUrl), {
       method: 'POST',
-      headers: worker.headers,
+      headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
       signal: controller.signal,
       redirect: 'error',
     });
@@ -2300,9 +2302,11 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
       signal: controller.signal,
       redirect: 'error',
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => null);
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
-    return res.json({ job: payload, costFallback: false });
+    const job = normalizeWanJobStatus(payload, id);
+    if (!job) return res.status(502).json({ error: 'Wan-Worker hat einen ungültigen Jobstatus zurückgegeben.' });
+    return res.json({ job, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
   } finally {
@@ -2324,14 +2328,17 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
       redirect: 'error',
     });
     if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
-    const length = Number(response.headers.get('content-length') ?? 0);
-    if (length > 100 * 1024 * 1024) return res.status(413).json({ error: 'Wan-Video überschreitet das 100-MB-Proxy-Limit.' });
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length < 1024 || bytes.length > 100 * 1024 * 1024) return res.status(502).json({ error: 'Ungültige oder zu große MP4-Datei vom Wan-Worker.' });
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="zero-wan-${id}.mp4"`);
-    res.setHeader('Content-Length', String(bytes.length));
-    return res.send(bytes);
+    try {
+      await streamWanVideoResponse(response, res);
+      return;
+    } catch (streamError) {
+      if (res.headersSent) {
+        res.destroy(streamError instanceof Error ? streamError : undefined);
+        return;
+      }
+      const message = streamError instanceof Error ? streamError.message : 'Ungültiger MP4-Stream vom Wan-Worker.';
+      return res.status(message.includes('100-MB') ? 413 : 502).json({ error: message });
+    }
   } catch {
     return res.status(503).json({ error: 'Wan-Video konnte nicht geladen werden.' });
   } finally {
