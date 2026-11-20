@@ -1,3 +1,4 @@
+import { runtimeConfig } from './runtimeConfig.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import fs from 'node:fs/promises';
@@ -454,19 +455,24 @@ let persistenceSaveQueue: Promise<void> = Promise.resolve();
 export async function loadDb(): Promise<ZeroDatabase> {
   // PostgreSQL is the cross-instance source of truth. Only file-backed local
   // development may reuse the process cache between requests.
-  if (dbCache && !process.env.DATABASE_URL) return dbCache;
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.mkdir(BACKUP_DIR, { recursive: true });
-  await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+  if (dbCache && !runtimeConfig.DATABASE_URL) return dbCache;
+  // Prisma Compute's code mount is read-only. With PostgreSQL enabled,
+  // ZERO state, system backups and ZIP archives live in the database, so local
+  // data directories are needed only for file-backed development mode.
+  if (!runtimeConfig.DATABASE_URL) {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.mkdir(BACKUP_DIR, { recursive: true });
+    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+  }
 
   try {
-    if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL && process.env.ZERO_ALLOW_EPHEMERAL_DB !== 'true') {
+    if (runtimeConfig.NODE_ENV === 'production' && !runtimeConfig.DATABASE_URL && runtimeConfig.ZERO_ALLOW_EPHEMERAL_DB !== 'true') {
       throw new Error('DATABASE_URL fehlt. ZERO startet in Produktion nicht mit flüchtiger Dateispeicherung.');
     }
-    const stored = process.env.DATABASE_URL
+    const stored = runtimeConfig.DATABASE_URL
       ? await readPersistentState<ZeroDatabase>()
       : null;
-    const raw = stored ? JSON.stringify(stored.payload) : process.env.DATABASE_URL
+    const raw = stored ? JSON.stringify(stored.payload) : runtimeConfig.DATABASE_URL
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
@@ -605,7 +611,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       };
     }
     dbCache = parsed;
-    if (process.env.DATABASE_URL) {
+    if (runtimeConfig.DATABASE_URL) {
       const persistedShape = JSON.parse(JSON.stringify(parsed)) as ZeroDatabase;
       const needsPersistence = !stored || !isDeepStrictEqual(persistedShape, stored.payload);
       if (needsPersistence) {
@@ -629,7 +635,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
     }
     return dbCache;
   } catch (error) {
-    if (process.env.DATABASE_URL || process.env.NODE_ENV === 'production') throw error;
+    if (runtimeConfig.DATABASE_URL || runtimeConfig.NODE_ENV === 'production') throw error;
     dbCache = createDefaultDatabase();
     dbCache.models = dbCache.models.map(enrichModelMetadata);
     await saveDb(dbCache);
@@ -662,7 +668,7 @@ export function getZipBackupRevision(backup: ZipBackupVersion): number {
 }
 
 export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     // All writers share the PostgreSQL advisory transaction lock and revision check.
     const operation = persistenceSaveQueue.then(async () => {
       const expectedRevision = options.expectedRevision ?? dbRevisions.get(db);
@@ -714,7 +720,7 @@ export function recordBudgetAudit(
 
 export async function createSystemBackup(note: string): Promise<SystemBackupMeta> {
   const current = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getDbRevision(current) : undefined;
+  const expectedRevision = runtimeConfig.DATABASE_URL ? getDbRevision(current) : undefined;
   const nextDb = JSON.parse(JSON.stringify(current)) as ZeroDatabase;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `zero-backup-${stamp}.json`;
@@ -731,7 +737,7 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
   const removedBackups = nextDb.backups.length > 20 ? nextDb.backups.slice(20) : [];
   if (removedBackups.length) nextDb.backups = nextDb.backups.slice(0, 20);
 
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     await saveDb(nextDb, {
       expectedRevision,
       backupFile: { id: meta.id, filename, contentType: 'application/json', payload: bytes },
@@ -749,7 +755,7 @@ export async function createSystemBackup(note: string): Promise<SystemBackupMeta
     }
   }
 
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     await Promise.all(removedBackups.map((backup) => deleteBackupFile(backup.id)));
   } else {
     await Promise.all(removedBackups.map((backup) =>
@@ -805,7 +811,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   const found = db.backups.find((b) => b.id === backupId);
   if (!found) throw new Error('Backup nicht gefunden.');
 
-  const raw = process.env.DATABASE_URL
+  const raw = runtimeConfig.DATABASE_URL
     ? (await readBackupFile(found.id)).toString('utf8')
     : await fs.readFile(path.join(BACKUP_DIR, found.filename), 'utf8');
 
@@ -822,7 +828,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   // normal write that lands between the safety backup and the restore replacement.
   const safetyBackup = await createSystemBackup(`Sicherheitsbackup vor Wiederherstellung von ${found.filename}`);
   const current = await loadDb();
-  const expectedRevision = process.env.DATABASE_URL ? getSystemBackupRevision(safetyBackup) : undefined;
+  const expectedRevision = runtimeConfig.DATABASE_URL ? getSystemBackupRevision(safetyBackup) : undefined;
   restored.backups = current.backups;
   restored.backupConfig = current.backupConfig;
   restored.settings = { ...restored.settings, maxVideoDurationSec: 60 };
@@ -839,7 +845,7 @@ export const createVersionedZipBackup = createVersionedZipBackupService({
   buildFullProjectZip,
   verifyZipBuffer,
   excludedSecrets: EXCLUDED_SECRETS_DOC,
-  isPersistent: () => Boolean(process.env.DATABASE_URL),
+  isPersistent: () => Boolean(runtimeConfig.DATABASE_URL),
   rootDir: () => process.cwd(),
   zipBackupDir: ZIP_BACKUP_DIR,
   rememberBackupRevision: (record, revision) => zipBackupRevisions.set(record, revision),
@@ -849,7 +855,7 @@ export async function inspectZipBackupConsistency(): Promise<{
   orphanedBlobIds: string[];
   missingBlobIds: string[];
 }> {
-  if (!process.env.DATABASE_URL) {
+  if (!runtimeConfig.DATABASE_URL) {
     throw new Error('Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.');
   }
   return inspectPersistentBackupConsistency();
@@ -883,7 +889,7 @@ export async function maybeAutoCreateZipBackup(changelog: string): Promise<ZipBa
     recordAutoBackupSuccess,
   });
 
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     // Background auto-backups share the same two global ZIP slots as HTTP
     // downloads, exports, restores and manual backup creation.
     const zipLease = await acquirePersistentZipOperationLease();
@@ -921,7 +927,7 @@ export async function getZipBackupFilePath(zipId: string): Promise<{
     throw new Error(`ZIP-Backup überschreitet das Archivlimit von ${MAX_ZIP_ARCHIVE_BYTES} Bytes.`);
   }
   let buffer: Buffer;
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     // PostgreSQL checks octet_length before returning the BYTEA payload, avoiding
     // an oversized blob allocation in the application process.
     buffer = await readBackupFile(record.id, MAX_ZIP_ARCHIVE_BYTES);
@@ -958,7 +964,7 @@ export async function deleteUnprotectedZipBackup(zipId: string): Promise<void> {
   db.backupConfig.zipBackups.splice(idx, 1);
   await saveDb(db);
   try {
-    if (process.env.DATABASE_URL) await deleteBackupFile(target.id);
+    if (runtimeConfig.DATABASE_URL) await deleteBackupFile(target.id);
     else await fs.rm(path.join(ZIP_BACKUP_DIR, target.filename), { force: true });
   } catch (error) {
     throw new BackupCleanupError(target, [target.id], [error]);

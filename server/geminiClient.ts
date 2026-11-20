@@ -1,3 +1,4 @@
+import { runtimeConfig } from './runtimeConfig.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
@@ -28,17 +29,17 @@ const PAID_GEMINI_MODELS = new Set([
 let sharedClient: GoogleGenAI | null = null;
 
 export function getGeminiClient(): GoogleGenAI {
-  if (!process.env.GEMINI_API_KEY) {
+  if (!runtimeConfig.GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY ist nicht konfiguriert.');
   }
-  if (process.env.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
+  if (runtimeConfig.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
     throw new Error(
       'Gemini gesperrt: Setze ZERO_GEMINI_FREE_TIER_ONLY=true erst nachdem im Google-Cloud-Projekt die Abrechnung deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.'
     );
   }
   if (!sharedClient) {
     sharedClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: runtimeConfig.GEMINI_API_KEY,
       apiVersion: 'v1beta',
       httpOptions: {
         apiVersion: 'v1beta',

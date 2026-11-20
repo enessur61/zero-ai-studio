@@ -39,6 +39,7 @@
     "components/**/*.tsx",
     "lib/**/*.ts",
     "server/**/*.ts",
-    "types/**/*.ts"
+    "types/**/*.ts",
+    "compute-server.ts"
   ]
 }

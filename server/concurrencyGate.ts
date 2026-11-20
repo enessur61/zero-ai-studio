@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from 'pg';
+import type { PostgresClient, PostgresDatabase } from './persistence.ts';
 import type { RequestHandler } from 'express';
 
 export type ConcurrencyGate = {
@@ -50,7 +50,7 @@ export function createConcurrencyGate(maxConcurrent: number, retryAfterSeconds =
  * PostgreSQL releases the lock automatically if the process/connection dies.
  */
 export function createPostgresConcurrencyGate(
-  database: Pool,
+  database: PostgresDatabase,
   maxConcurrent: number,
   retryAfterSeconds = 5
 ): ConcurrencyGate {
@@ -64,7 +64,7 @@ export function createPostgresConcurrencyGate(
   let active = 0;
   const middleware: RequestHandler = (req, res, next) => {
     void (async () => {
-      let client: PoolClient | null = null;
+      let client: PostgresClient | null = null;
       let lockId: number | null = null;
       try {
         const acquiredClient = await database.connect();

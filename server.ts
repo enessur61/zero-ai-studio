@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import { runtimeConfig } from './server/runtimeConfig.ts';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
@@ -66,13 +66,13 @@ import type {
   StudioProject,
 } from './src/types/zero.ts';
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(runtimeConfig.PORT) || 3000;
 const app = express();
 app.disable('x-powered-by');
 
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
 // Node processes. The local gate is only for development without PostgreSQL.
-export const zipOperationGate = process.env.DATABASE_URL
+export const zipOperationGate = runtimeConfig.DATABASE_URL
   ? createPostgresConcurrencyGate(getPostgresPool(), 2, 5)
   : createConcurrencyGate(2, 5);
 
@@ -80,14 +80,14 @@ export const zipOperationGate = process.env.DATABASE_URL
 // makes req.ip reflect the client address for login rate limiting.
 app.set('trust proxy', 1);
 
-const IS_PRODUCTION = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
-const ZERO_ADMIN_PASSWORD = process.env.ZERO_ADMIN_PASSWORD ?? '';
-const ZERO_SESSION_SECRET = process.env.ZERO_SESSION_SECRET ?? '';
+const IS_PRODUCTION = runtimeConfig.NODE_ENV !== 'development' && runtimeConfig.NODE_ENV !== 'test';
+const ZERO_ADMIN_PASSWORD = runtimeConfig.ZERO_ADMIN_PASSWORD ?? '';
+const ZERO_SESSION_SECRET = runtimeConfig.ZERO_SESSION_SECRET ?? '';
 const AUTH_COOKIE_NAME = 'zero_session';
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
-const postgresAuthStore = process.env.DATABASE_URL ? createPostgresAuthStore(getPostgresPool()) : null;
+const postgresAuthStore = runtimeConfig.DATABASE_URL ? createPostgresAuthStore(getPostgresPool()) : null;
 
 function authStore() {
   if (!postgresAuthStore) throw new Error('PostgreSQL ist für die gemeinsame Produktionsanmeldung erforderlich.');
@@ -136,7 +136,7 @@ async function reserveZeroBudgetModelAllowed(
   });
   if (!allowedAudit) throw new Error('Gemini-Freigabe konnte nicht reserviert werden.');
 
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     const quota = db.budgetGuard.freeQuotaUsage[modelId];
     if (!quota) throw new Error(`Kein Kontingentdatensatz für "${modelId}".`);
     const reservation = await authStore().reserveGeminiQuota({
@@ -174,7 +174,7 @@ async function markGeminiQuotaExhausted(
   const quota = db.budgetGuard.freeQuotaUsage[modelId];
   if (!quota) return;
   quota.exhausted = true;
-  if (process.env.DATABASE_URL) {
+  if (runtimeConfig.DATABASE_URL) {
     await authStore().markGeminiQuotaExhausted(modelId, quota.lastResetDate ?? '');
   }
 }
@@ -305,13 +305,26 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       maxVideoDurationSec: 60,
       readiness: { database: 'ready', authentication: 'ready' },
     });
-  } catch {
+  } catch (error) {
+    const dbError = error instanceof Error ? error : new Error(String(error));
+    console.error('[ZERO HEALTH] PostgreSQL readiness failed:', {
+      name: dbError.name,
+      code: 'code' in dbError ? dbError.code : undefined,
+      message: dbError.message,
+    });
     return res.status(503).json({
       ok: false,
       app: 'ZERO AI STUDIO',
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
       readiness: { database: 'unavailable', authentication: 'ready' },
+      diagnostics: {
+        databaseUrlConfigured: Boolean(runtimeConfig.DATABASE_URL),
+        errorName: dbError.name,
+        errorCode: typeof dbError === 'object' && 'code' in dbError && typeof dbError.code === 'string'
+          ? dbError.code
+          : null,
+      },
       message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
     });
   }
@@ -322,8 +335,8 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 // Protected by the /api session middleware. Never returns or logs the API key.
 app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const apiKeyConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
-  const freeTierGuardEnabled = process.env.ZERO_GEMINI_FREE_TIER_ONLY === 'true';
+  const apiKeyConfigured = Boolean(runtimeConfig.GEMINI_API_KEY?.trim());
+  const freeTierGuardEnabled = runtimeConfig.ZERO_GEMINI_FREE_TIER_ONLY === 'true';
   const modelId = 'gemini-3.8-flash';
 
   if (!apiKeyConfigured || !freeTierGuardEnabled) {
@@ -408,8 +421,8 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
   if (!configured) {
     return res.json({
       ok: false,
-      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
-      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      accountIdConfigured: Boolean(runtimeConfig.CLOUDFLARE_ACCOUNT_ID?.trim()),
+      apiTokenConfigured: Boolean(runtimeConfig.CLOUDFLARE_API_TOKEN?.trim()),
       cloudflareConnection: 'NOT_TESTED',
       modelResponse: 'NOT_TESTED',
       modelId,
@@ -468,7 +481,7 @@ app.post('/api/system/quota/confirm-provider-reset', asyncRoute(async (req, res)
       costEur: 0,
     });
     await saveDb(db);
-    if (process.env.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
+    if (runtimeConfig.DATABASE_URL) await authStore().clearGeminiQuota(modelId);
     return res.json({ ok: true, modelId, quota, providerVerifiedByZero: false });
   } catch (err) {
     return res.status(400).json({
@@ -549,7 +562,7 @@ app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async 
 
 // === VERSIONED ZIP BACKUP & RESTORE SYSTEM ===
 app.get('/api/system/zip-backups/reconciliation', asyncRoute(async (_req, res) => {
-  if (!process.env.DATABASE_URL) {
+  if (!runtimeConfig.DATABASE_URL) {
     return res.status(409).json({
       error: 'Backup-Reconciliation ist nur für den PostgreSQL-Persistenzmodus verfügbar.',
     });
@@ -1158,8 +1171,8 @@ app.post('/api/brain/clear', asyncRoute(async (_req, res) => {
 
 // === ZERO WEB INTELLIGENCE ===
 function getZeroWebSearchWorker(): { baseUrl: URL; headers: Record<string, string> } | null {
-  const rawUrl = process.env.ZERO_WEB_SEARCH_URL?.trim();
-  const token = process.env.ZERO_WEB_SEARCH_TOKEN?.trim();
+  const rawUrl = runtimeConfig.ZERO_WEB_SEARCH_URL?.trim();
+  const token = runtimeConfig.ZERO_WEB_SEARCH_TOKEN?.trim();
   if (!rawUrl || !token) return null;
   try {
     const baseUrl = new URL(rawUrl);
@@ -1183,8 +1196,8 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     if (!query) return res.status(400).json({ error: 'Suchanfrage fehlt.' });
     if (query.length > 250) return res.status(400).json({ error: 'Die Suchanfrage darf maximal 250 Zeichen lang sein.' });
 
-    const hasSearchUrl = Boolean(process.env.ZERO_WEB_SEARCH_URL?.trim());
-    const hasSearchToken = Boolean(process.env.ZERO_WEB_SEARCH_TOKEN?.trim());
+    const hasSearchUrl = Boolean(runtimeConfig.ZERO_WEB_SEARCH_URL?.trim());
+    const hasSearchToken = Boolean(runtimeConfig.ZERO_WEB_SEARCH_TOKEN?.trim());
     if (hasSearchUrl !== hasSearchToken) {
       return res.status(503).json({
         error: 'Die private ZERO-Websuche ist unvollständig konfiguriert. ZERO_WEB_SEARCH_URL und ZERO_WEB_SEARCH_TOKEN müssen gemeinsam gesetzt sein.',
@@ -1454,8 +1467,8 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
 }));
 
 function getPiperTtsWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
-  const configuredUrl = process.env.ZERO_TTS_WORKER_URL?.trim();
-  const token = process.env.ZERO_TTS_WORKER_TOKEN?.trim();
+  const configuredUrl = runtimeConfig.ZERO_TTS_WORKER_URL?.trim();
+  const token = runtimeConfig.ZERO_TTS_WORKER_TOKEN?.trim();
   if (!configuredUrl || !token) return null;
   try {
     const baseUrl = new URL(configuredUrl);
@@ -1829,8 +1842,8 @@ Grenzen: bpm 55-160, rootMidi 33-57, scaleIntervals 5-8 Ganzzahlen von 0 bis 11,
 // Only an explicitly configured HTTPS endpoint is contacted; no paid provider fallback is used.
 app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
-  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  const configuredUrl = runtimeConfig.ZERO_VIDEO_ENGINE_URL?.trim();
+  const token = runtimeConfig.ZERO_VIDEO_ENGINE_TOKEN?.trim();
   if (!configuredUrl || !token) {
     return res.json({
       configured: Boolean(configuredUrl),
@@ -1913,8 +1926,8 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
 // Authenticated server-side proxy for the self-hosted Wan worker.
 // The browser never receives the worker URL or its bearer token.
 function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> } | null {
-  const configuredUrl = process.env.ZERO_VIDEO_ENGINE_URL?.trim();
-  const token = process.env.ZERO_VIDEO_ENGINE_TOKEN?.trim();
+  const configuredUrl = runtimeConfig.ZERO_VIDEO_ENGINE_URL?.trim();
+  const token = runtimeConfig.ZERO_VIDEO_ENGINE_TOKEN?.trim();
   if (!configuredUrl || !token) return null;
   try {
     const baseUrl = new URL(configuredUrl);
@@ -2683,7 +2696,7 @@ app.post('/api/memory', asyncRoute(async (req, res) => {
 
   let embedding: number[] | undefined;
   let embeddingNotice: string | undefined;
-  if (process.env.GEMINI_API_KEY) {
+  if (runtimeConfig.GEMINI_API_KEY) {
     const result = await runMemoryEmbedding({
       budgetGuard: db.budgetGuard,
       action: 'MEMORY_EMBED',
@@ -2730,7 +2743,7 @@ app.post('/api/memory/search', asyncRoute(async (req, res) => {
 
   let queryVec: number[] | null = null;
   let embeddingNotice: string | undefined;
-  if (process.env.GEMINI_API_KEY) {
+  if (runtimeConfig.GEMINI_API_KEY) {
     const result = await runMemoryEmbedding({
       budgetGuard: db.budgetGuard,
       action: 'MEMORY_SEARCH',
@@ -2906,7 +2919,7 @@ app.use('/api', (_req, res) => {
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  if (runtimeConfig.NODE_ENV !== 'production') {
     const vite = await import('vite');
     const viteServer = await vite.createServer({
       server: { middlewareMode: true },

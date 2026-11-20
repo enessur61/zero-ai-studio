@@ -76,12 +76,19 @@ jobs:
           }
           console.log('No prohibited local database or credential files are tracked.');
           NODE
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
         with:
           go-version: '1.24.2'
       - name: Scan repository content and git history for leaked secrets
-        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
-      - run: npm ci --no-audit --no-fund
+        shell: bash
+        run: |
+          if ! go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner --report-format json --report-path /tmp/gitleaks-report.json .; then
+            echo "Gitleaks reported a finding (secret values remain redacted):"
+            cat /tmp/gitleaks-report.json
+            exit 1
+          fi
+      - run: bun install --frozen-lockfile
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
         run: |
@@ -96,8 +103,8 @@ jobs:
           if (!blocked) throw new Error('Gemini API was not blocked without explicit free-only billing confirmation');
           console.log('Gemini API correctly blocked until billing-disabled confirmation.');
           NODE
-      - run: npm run lint
-      - run: npm test
+      - run: bun run lint
+      - run: bun run test
       - name: Test persistent GPU worker job storage
         run: python3 gpu-worker/test_job_store.py
       - name: Validate Piper and GPU worker Python syntax
@@ -107,7 +114,7 @@ jobs:
           DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
           ZERO_POSTGRES_TESTS: 'true'
         run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
-      - run: npm run build
+      - run: bun run build
       - name: Production server smoke test
         shell: bash
         run: |

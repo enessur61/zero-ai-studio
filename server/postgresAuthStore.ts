@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { PostgresDatabase } from './persistence.ts';
 
 export interface LoginAttemptResult {
   allowed: boolean;
@@ -10,7 +10,7 @@ export interface LoginAttemptResult {
  * Shared authentication state. All mutations are SQL-atomic so independent
  * Node processes observe the same sessions and per-address login budget.
  */
-export function createPostgresAuthStore(database: Pool) {
+export function createPostgresAuthStore(database: PostgresDatabase) {
   let schemaReady: Promise<void> | null = null;
 
   async function ensureSchema(): Promise<void> {

@@ -1,3 +1,4 @@
+import { runtimeConfig } from './runtimeConfig.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 
@@ -8,7 +9,7 @@ export class CloudflareWorkersAiError extends Error {
   }
 }
 
-export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = runtimeConfig): boolean {
   return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
@@ -19,8 +20,8 @@ export async function generateCloudflareText(params: {
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; modelId: string }> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const accountId = runtimeConfig.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = runtimeConfig.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
     throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
   }
@@ -107,8 +108,8 @@ export async function generateCloudflareImage(params: {
   steps?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const accountId = runtimeConfig.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = runtimeConfig.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
     throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
   }
@@ -187,8 +188,8 @@ export async function transcribeCloudflareAudio(params: {
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const accountId = runtimeConfig.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = runtimeConfig.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
     throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
   }
@@ -277,8 +278,8 @@ export async function analyzeCloudflareImage(params: {
   question: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ answer: string; modelId: string }> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const accountId = runtimeConfig.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const token = runtimeConfig.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
     throw new CloudflareWorkersAiError('Cloudflare Workers AI ist nicht konfiguriert (Account-ID oder API-Token fehlt).');
   }
