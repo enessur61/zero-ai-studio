@@ -27,6 +27,7 @@ export function ProjectsCharactersView({
   const [deletingProjId, setDeletingProjId] = useState<string | null>(null);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [projectDeleteNotice, setProjectDeleteNotice] = useState<string | null>(null);
   const [projectSearch, setProjectSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState<'Alle' | 'Aktiv' | 'Entwurf' | 'Abgeschlossen'>('Alle');
   const filteredProjects = useMemo(() => projects.filter((p) => {
@@ -140,6 +141,10 @@ export function ProjectsCharactersView({
         </div>
       </div>
 
+      {tab === 'projects' && projectDeleteNotice && (
+        <p role="status" className="text-xs text-amber-300">{projectDeleteNotice}</p>
+      )}
+
       {tab === 'projects' ? (
         <div className="space-y-5">
           <div className="space-y-3">
@@ -238,9 +243,22 @@ export function ProjectsCharactersView({
                         onClick={async () => {
                           setDeletingProjId(p.id);
                           try {
-                            await apiRequest(`/api/projects/${p.id}`, { method: 'DELETE' });
-                            await deleteProjectSceneVideos(p.id).catch(() => undefined);
+                            const deletion = await apiRequest<{ workerCleanup?: { pending?: number } }>(`/api/projects/${p.id}`, { method: 'DELETE' });
+                            let localCleanupFailed = false;
+                            try {
+                              await deleteProjectSceneVideos(p.id);
+                            } catch {
+                              localCleanupFailed = true;
+                            }
                             onProjectDeleted(p.id);
+                            const notices: string[] = [];
+                            if ((deletion.workerCleanup?.pending ?? 0) > 0) {
+                              notices.push(`${deletion.workerCleanup!.pending} laufende Wan-Aufträge werden nach Abschluss automatisch samt Worker-Dateien bereinigt.`);
+                            }
+                            if (localCleanupFailed) {
+                              notices.push('Lokale Clip-Kopien konnten auf diesem Gerät nicht vollständig gelöscht werden.');
+                            }
+                            setProjectDeleteNotice(notices.length ? notices.join(' ') : null);
                           } finally {
                             setDeletingProjId(null);
                           }

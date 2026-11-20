@@ -28,6 +28,13 @@ interface ProjectVideoRow extends QueryResultRow {
   payload?: Buffer;
 }
 
+export class ProjectVideoProjectNotFoundError extends Error {
+  constructor() {
+    super('Project no longer exists.');
+    this.name = 'ProjectVideoProjectNotFoundError';
+  }
+}
+
 export class ProjectVideoLimitError extends Error {
   constructor(message: string) {
     super(message);
@@ -77,7 +84,29 @@ async function ensureSchema(database: Pool): Promise<void> {
   `);
 }
 
-export function createProjectVideoAssetStore(database: Pool) {
+export interface ProjectVideoStoreLimits {
+  maxProjectVideoBytes?: number;
+  maxProjectStorageBytes?: number;
+  maxProjectVideoCount?: number;
+}
+
+export function createProjectVideoAssetStore(
+  database: Pool,
+  configuredLimits: ProjectVideoStoreLimits = {},
+) {
+  const limits = {
+    maxProjectVideoBytes: configuredLimits.maxProjectVideoBytes ?? MAX_PROJECT_VIDEO_BYTES,
+    maxProjectStorageBytes: configuredLimits.maxProjectStorageBytes ?? MAX_PROJECT_VIDEO_STORAGE_BYTES,
+    maxProjectVideoCount: configuredLimits.maxProjectVideoCount ?? MAX_PROJECT_VIDEO_COUNT,
+  };
+  if (
+    !Number.isSafeInteger(limits.maxProjectVideoBytes) || limits.maxProjectVideoBytes < 1024 ||
+    limits.maxProjectVideoBytes > MAX_PROJECT_VIDEO_BYTES ||
+    !Number.isSafeInteger(limits.maxProjectStorageBytes) || limits.maxProjectStorageBytes < limits.maxProjectVideoBytes ||
+    limits.maxProjectStorageBytes > MAX_PROJECT_VIDEO_STORAGE_BYTES ||
+    !Number.isSafeInteger(limits.maxProjectVideoCount) || limits.maxProjectVideoCount < 1 ||
+    limits.maxProjectVideoCount > MAX_PROJECT_VIDEO_COUNT
+  ) throw new Error('Invalid project video storage limits.');
   let schemaReady: Promise<void> | null = null;
   const ready = async () => {
     if (!schemaReady) schemaReady = ensureSchema(database).catch((error) => {
@@ -94,13 +123,14 @@ export function createProjectVideoAssetStore(database: Pool) {
     jobId?: string | null;
     contentType: 'video/mp4' | 'video/webm';
     payload: Buffer;
+    isProjectActive?: () => Promise<boolean>;
   }): Promise<ProjectVideoAsset> {
     if (!/^[a-f0-9]{64}$/.test(input.principalHash)) throw new Error('Authenticated principal is required.');
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.projectId) || !/^[A-Za-z0-9_-]{1,128}$/.test(input.sceneId)) {
       throw new Error('Invalid project or scene identifier.');
     }
     if (input.jobId && !/^[0-9a-f-]{36}$/i.test(input.jobId)) throw new Error('Invalid Wan job identifier.');
-    if (!isValidProjectVideoPayload(input.payload, input.contentType)) {
+    if (!isValidProjectVideoPayload(input.payload, input.contentType) || input.payload.length > limits.maxProjectVideoBytes) {
       throw new Error('Invalid or oversized project video payload.');
     }
     await ready();
@@ -111,6 +141,11 @@ export function createProjectVideoAssetStore(database: Pool) {
       inTransaction = true;
       await client.query("SET LOCAL statement_timeout = '120s'");
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`zero-project-video:${input.principalHash}:${input.projectId}`]);
+      // Re-check the authoritative PostgreSQL project state while holding the
+      // same lock as deletion. This closes the stale-read upload/delete race.
+      if (input.isProjectActive && !(await input.isProjectActive())) {
+        throw new ProjectVideoProjectNotFoundError();
+      }
 
       if (input.jobId) {
         const existing = await client.query<ProjectVideoRow>(
@@ -128,7 +163,7 @@ export function createProjectVideoAssetStore(database: Pool) {
              WHERE principal_hash = $1 AND project_id = $2 AND asset_id <> $3`,
             [input.principalHash, input.projectId, row.asset_id],
           );
-          if (Number(usage.rows[0]?.bytes ?? 0) + input.payload.length > MAX_PROJECT_VIDEO_STORAGE_BYTES) {
+          if (Number(usage.rows[0]?.bytes ?? 0) + input.payload.length > limits.maxProjectStorageBytes) {
             throw new ProjectVideoLimitError('Dieses Projekt hat das Speicherlimit von 500 MB erreicht. Bitte ältere Clips manuell löschen.');
           }
           const digest = createHash('sha256').update(input.payload).digest('hex');
@@ -153,10 +188,10 @@ export function createProjectVideoAssetStore(database: Pool) {
       );
       const usedBytes = Number(usage.rows[0]?.bytes ?? 0);
       const count = Number(usage.rows[0]?.count ?? 0);
-      if (count >= MAX_PROJECT_VIDEO_COUNT) {
+      if (count >= limits.maxProjectVideoCount) {
         throw new ProjectVideoLimitError('Dieses Projekt hat das Limit von 50 gespeicherten Clips erreicht. Bitte Clips manuell löschen.');
       }
-      if (usedBytes + input.payload.length > MAX_PROJECT_VIDEO_STORAGE_BYTES) {
+      if (usedBytes + input.payload.length > limits.maxProjectStorageBytes) {
         throw new ProjectVideoLimitError('Dieses Projekt hat das Speicherlimit von 500 MB erreicht. Bitte ältere Clips manuell löschen.');
       }
 
@@ -187,7 +222,7 @@ export function createProjectVideoAssetStore(database: Pool) {
       `SELECT * FROM zero_project_video_assets
        WHERE project_id = $1 AND principal_hash = $2
        ORDER BY created_at DESC LIMIT $3`,
-      [projectId, principalHash, MAX_PROJECT_VIDEO_COUNT],
+      [projectId, principalHash, limits.maxProjectVideoCount],
     );
     return result.rows.map(toAsset);
   }
@@ -235,20 +270,56 @@ export function createProjectVideoAssetStore(database: Pool) {
 
   async function remove(assetId: string, projectId: string, principalHash: string): Promise<boolean> {
     await ready();
-    const result = await database.query(
-      'DELETE FROM zero_project_video_assets WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3',
-      [assetId, projectId, principalHash],
-    );
-    return result.rowCount === 1;
+    const client = await database.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+      await client.query("SET LOCAL statement_timeout = '120s'");
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `zero-project-video:${principalHash}:${projectId}`,
+      ]);
+      const result = await client.query(
+        'DELETE FROM zero_project_video_assets WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3',
+        [assetId, projectId, principalHash],
+      );
+      await client.query('COMMIT');
+      inTransaction = false;
+      return result.rowCount === 1;
+    } catch (error) {
+      if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async function removeProject(projectId: string, principalHash: string): Promise<number> {
+    if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw new Error('Invalid project identifier.');
     await ready();
-    const result = await database.query(
-      'DELETE FROM zero_project_video_assets WHERE project_id = $1 AND principal_hash = $2',
-      [projectId, principalHash],
-    );
-    return result.rowCount ?? 0;
+    const client = await database.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+      await client.query("SET LOCAL statement_timeout = '120s'");
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `zero-project-video:${principalHash}:${projectId}`,
+      ]);
+      const result = await client.query(
+        'DELETE FROM zero_project_video_assets WHERE project_id = $1 AND principal_hash = $2',
+        [projectId, principalHash],
+      );
+      await client.query('COMMIT');
+      inTransaction = false;
+      return result.rowCount ?? 0;
+    } catch (error) {
+      if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   return { put, list, get, getLatestForScene, remove, removeProject };

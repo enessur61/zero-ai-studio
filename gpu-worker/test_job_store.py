@@ -165,6 +165,64 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             listed = store.list_by_principal("a" * 64, "project-1")
             self.assertEqual([job["id"] for job in listed], ["newer", "older"])
 
+    def test_project_job_deletion_is_principal_scoped_and_removes_completed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            completed_file = Path(directory) / "completed.mp4"
+            other_file = Path(directory) / "other.mp4"
+            completed_file.write_bytes(b"video")
+            other_file.write_bytes(b"video")
+            store.create_or_get({
+                "id": "completed", "status": "succeeded", "filename": "completed.mp4",
+                "principal_hash": "a" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            store.create_or_get({
+                "id": "other-principal", "status": "succeeded", "filename": "other.mp4",
+                "principal_hash": "e" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            removed = store.mark_project_jobs_for_deletion("a" * 64, "project-1")
+            self.assertEqual([job["id"] for job in removed], ["completed"])
+            self.assertNotIn("completed", store.load_all())
+            self.assertTrue(other_file.is_file(), "another principal's worker file must remain untouched")
+
+    def test_active_project_jobs_are_marked_for_deferred_cleanup_and_removed_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            video = Path(directory) / "running.mp4"
+            video.write_bytes(b"video")
+            store.create_or_get({
+                "id": "running", "status": "running", "filename": "running.mp4",
+                "principal_hash": "a" * 64, "idempotency_key_hash": "b" * 64,
+                "request_fingerprint": "c" * 64, "project_id": "project-1",
+            })
+            marked = store.mark_project_jobs_for_deletion("a" * 64, "project-1")
+            self.assertEqual(len(marked), 1)
+            self.assertEqual(marked[0]["status"], "deleting")
+            restarted = PersistentJobStore(directory).load_all()
+            self.assertEqual(restarted, {})
+            self.assertFalse(video.exists())
+
+    def test_project_filter_is_applied_before_job_history_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            for index in range(55):
+                store.create_or_get({
+                    "id": f"other-{index}", "status": "failed", "principal_hash": "a" * 64,
+                    "idempotency_key_hash": f"{index + 1:064x}", "request_fingerprint": "f" * 64,
+                    "project_id": "other-project",
+                })
+            store.create_or_get({
+                "id": "target-project-job", "status": "succeeded", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "f" * 64, "request_fingerprint": "f" * 64,
+                "project_id": "target-project",
+            })
+            self.assertEqual(
+                [job["id"] for job in store.list_by_principal("a" * 64, "target-project")],
+                ["target-project-job"],
+            )
+
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)

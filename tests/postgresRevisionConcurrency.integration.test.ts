@@ -18,7 +18,8 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
-import { createProjectVideoAssetStore } from '../server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
+import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
@@ -53,12 +54,20 @@ try {
   await storeA.ensureSchema();
   await storeB.ensureSchema();
 
-  // Principal-bound durable video assets use PostgreSQL binary storage and
-  // remain independent from the worker's bounded SQLite job-history retention.
+  // Principal-bound durable video assets use versioned PostgreSQL schema and
+  // binary storage. Exercise >8 MB payloads across independent DB pools.
+  await ensureZeroCostResourceSchema(poolA);
+  await ensureZeroCostResourceSchema(poolB);
+  const migrationVersions = await poolA.query('SELECT version FROM zero_schema_migrations ORDER BY version');
+  assert.deepEqual(migrationVersions.rows.map((row) => Number(row.version)), [1, 2, 3],
+    'project video archive schema is applied through the versioned migration chain');
+
   const projectVideoStore = createProjectVideoAssetStore(poolA);
+  const projectVideoStoreB = createProjectVideoAssetStore(poolB);
   const videoPrincipal = 'd'.repeat(64);
+  const otherVideoPrincipal = 'e'.repeat(64);
   const videoJobId = randomUUID();
-  const mp4Payload = Buffer.alloc(2048);
+  const mp4Payload = Buffer.alloc(8 * 1024 * 1024 + 1, 0x5a);
   mp4Payload.write('ftyp', 4, 'ascii');
   const archivedVideo = await projectVideoStore.put({
     projectId: 'project-video-integration',
@@ -69,17 +78,32 @@ try {
     payload: mp4Payload,
   });
   assert.equal(archivedVideo.sizeBytes, mp4Payload.length);
-  assert.equal((await projectVideoStore.list('project-video-integration', videoPrincipal)).length, 1);
-  assert.equal((await projectVideoStore.list('project-video-integration', 'e'.repeat(64))).length, 0);
-  const archivedVideoBytes = await projectVideoStore.get(
+  assert.match(archivedVideo.sha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(
+    () => projectVideoStore.put({
+      projectId: 'project-video-integration', sceneId: 'scene-video-integration',
+      principalHash: videoPrincipal, contentType: 'video/mp4', payload: mp4Payload.subarray(0, 2048),
+      isProjectActive: async () => false,
+    }),
+    (error) => error instanceof ProjectVideoProjectNotFoundError,
+    'an upload that waited behind project deletion must re-check authoritative project state',
+  );
+  assert.equal((await projectVideoStoreB.list('project-video-integration', videoPrincipal)).length, 1);
+  assert.equal((await projectVideoStoreB.list('project-video-integration', otherVideoPrincipal)).length, 0);
+  assert.equal(await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), null);
+  assert.equal(await projectVideoStoreB.remove(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), false);
+  assert.equal(await projectVideoStoreB.removeProject('project-video-integration', otherVideoPrincipal), 0);
+
+  const archivedVideoBytes = await projectVideoStoreB.get(
     archivedVideo.id, 'project-video-integration', videoPrincipal
   );
-  assert.deepEqual(archivedVideoBytes?.payload, mp4Payload);
+  assert.deepEqual(archivedVideoBytes?.payload, mp4Payload,
+    'large binary clip bytes survive cross-pool PostgreSQL readback');
   assert.equal(
-    (await projectVideoStore.getLatestForScene('project-video-integration', 'scene-video-integration', videoPrincipal))?.id,
+    (await projectVideoStoreB.getLatestForScene('project-video-integration', 'scene-video-integration', videoPrincipal))?.id,
     archivedVideo.id,
   );
-  const idempotentArchive = await projectVideoStore.put({
+  const idempotentArchive = await projectVideoStoreB.put({
     projectId: 'project-video-integration',
     sceneId: 'scene-video-integration',
     principalHash: videoPrincipal,
@@ -94,12 +118,49 @@ try {
     sceneId: 'scene-project-cleanup',
     principalHash: videoPrincipal,
     contentType: 'video/mp4',
-    payload: mp4Payload,
+    payload: mp4Payload.subarray(0, 2048),
   });
   assert.ok(projectCleanupVideo.id);
-  assert.equal(await projectVideoStore.remove(archivedVideo.id, 'project-video-integration', videoPrincipal), true);
+  assert.equal(await projectVideoStoreB.remove(archivedVideo.id, 'project-video-integration', videoPrincipal), true);
   assert.equal(await projectVideoStore.removeProject('project-video-integration', videoPrincipal), 1,
     'project deletion removes remaining archived clip bytes');
+  assert.equal(await projectVideoStoreB.removeProject('project-video-integration', videoPrincipal), 0,
+    'project cleanup is safe to retry after an uncertain response');
+
+  // Limits are checked under the same cross-instance project advisory lock,
+  // so concurrent uploads cannot exceed count or byte budgets.
+  const limitedA = createProjectVideoAssetStore(poolA, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 4096, maxProjectVideoCount: 2,
+  });
+  const limitedB = createProjectVideoAssetStore(poolB, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 4096, maxProjectVideoCount: 2,
+  });
+  const limitedPayload = Buffer.alloc(2048);
+  limitedPayload.write('ftyp', 4, 'ascii');
+  const limitedWrites = await Promise.allSettled([
+    limitedA.put({ projectId: 'project-video-limits', sceneId: 'scene-a', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+    limitedB.put({ projectId: 'project-video-limits', sceneId: 'scene-b', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+    limitedA.put({ projectId: 'project-video-limits', sceneId: 'scene-c', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+  ]);
+  assert.equal(limitedWrites.filter((item) => item.status === 'fulfilled').length, 2,
+    'concurrent uploads cannot exceed the project clip count/byte limits');
+  assert.equal(limitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
+  assert.equal((await limitedB.list('project-video-limits', videoPrincipal)).length, 2);
+
+  const byteLimitedA = createProjectVideoAssetStore(poolA, {
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedB = createProjectVideoAssetStore(poolB, {
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedWrites = await Promise.allSettled([
+    byteLimitedA.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-a', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+    byteLimitedB.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-b', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+  ]);
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'fulfilled').length, 1,
+    'concurrent uploads cannot exceed the byte budget even when the clip-count limit is not reached');
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
+  assert.equal((await byteLimitedA.list('project-video-byte-limit', videoPrincipal)).length, 1);
 
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);

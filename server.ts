@@ -9,9 +9,9 @@ import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createProjectVideoAssetStore, ProjectVideoLimitError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
 import path from 'node:path';
-import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
+import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
@@ -69,6 +69,7 @@ import type {
   ProjectAsset,
   StudioProject,
 } from './src/types/zero.ts';
+import type { ZeroDatabase } from './server/store.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
@@ -78,6 +79,25 @@ let projectVideoAssetStore: ReturnType<typeof createProjectVideoAssetStore> | nu
 function getProjectVideoAssetStore() {
   if (!projectVideoAssetStore) projectVideoAssetStore = createProjectVideoAssetStore(getPostgresPool());
   return projectVideoAssetStore;
+}
+
+async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () => Promise<T>): Promise<T> {
+  const client = await getPostgresPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`zero-project-lifecycle:${createZeroPrincipalHash()}:${projectId}`],
+    );
+    const result = await callback();
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
@@ -1969,6 +1989,12 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
+  const result = await withZeroProjectLifecycleLock(projectId, async () => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === projectId);
+  if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
+  if (!project.scenes.some((item) => item.id === sceneId)) return { status: 404, body: { error: 'Szene nicht gefunden.' } };
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -1992,24 +2018,26 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       job?: Record<string, unknown>; replayed?: boolean; detail?: unknown;
     };
     if (!response.ok) {
-      if (response.status === 409) return res.status(409).json({ error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' });
-      return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
+      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' } };
+      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status } };
     }
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
         !['queued', 'running', 'succeeded', 'failed'].includes(String(job.status))) {
-      return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
+      return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
     }
-    return res.status(payload.replayed === true ? 200 : 202).json({
+    return { status: payload.replayed === true ? 200 : 202, body: {
       job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
       maxFinalDurationSec: 60,
       costFallback: false,
-    });
+    } };
   } catch {
-    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+    return { status: 503, body: { error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' } };
   } finally {
     clearTimeout(timeout);
   }
+  });
+  return res.status(result.status).json(result.body);
 }));
 
 app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
@@ -2643,11 +2671,16 @@ app.put(
         jobId,
         contentType: contentType as 'video/mp4' | 'video/webm',
         payload: req.body,
+        isProjectActive: async () => {
+          const latest = await readPersistentState<ZeroDatabase>();
+          return Boolean(latest?.payload.projects.some((item) => item.id === req.params.id));
+        },
       });
       project.updatedAt = new Date().toISOString();
       await saveDb(db);
       return res.json({ ok: true, serverPersisted: true, asset });
     } catch (error) {
+      if (error instanceof ProjectVideoProjectNotFoundError) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
       if (error instanceof ProjectVideoLimitError) return res.status(413).json({ error: error.message });
       if (error instanceof Error && /Invalid|Wan job/.test(error.message)) return res.status(400).json({ error: error.message });
       throw error;
@@ -2704,16 +2737,41 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
+  const result = await withZeroProjectLifecycleLock(req.params.id, async () => {
   const db = await loadDb();
-  if (db.projects.length <= 1) {
-    return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
+  const projectExists = db.projects.some((project) => project.id === req.params.id);
+  if (projectExists) {
+    if (db.projects.length <= 1) {
+      return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
+    }
+    db.projects = db.projects.filter((project) => project.id !== req.params.id);
+    await saveDb(db);
   }
-  db.projects = db.projects.filter((p) => p.id !== req.params.id);
-  await saveDb(db);
-  try {
-    await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
-  } catch {
-    // Expiring project clips are still cleaned by retention; never fail project deletion on storage outage.
+  // Retry-safe cleanup spans both PostgreSQL project clips and the durable GPU worker.
+  await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
+  const worker = getWanWorkerConfig();
+  let workerCleanup: { deleted?: number; pending?: number } = {};
+  if (worker) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const workerUrl = new URL('/jobs', worker.baseUrl);
+      workerUrl.searchParams.set('project_id', req.params.id);
+      const response = await fetch(workerUrl, {
+        method: 'DELETE',
+        headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
+        signal: controller.signal,
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        return { status: 503, body: { error: 'Wan-Aufträge und Worker-Dateien konnten noch nicht vollständig bereinigt werden. Projektlöschung erneut versuchen.' } };
+      }
+      workerCleanup = await response.json().catch(() => ({})) as { deleted?: number; pending?: number };
+    } catch {
+      return { status: 503, body: { error: 'Wan-Worker für die Projektbereinigung nicht erreichbar. Projektlöschung erneut versuchen.' } };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
   const projects = db.projects.map((project) => ({
     ...project,
@@ -2721,7 +2779,9 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
     assets: sanitizeProjectAssets(project.assets),
     snapshots: sanitizeProjectSnapshots(project.snapshots),
   }));
-  res.json({ ok: true, projects });
+  return { status: 200, body: { ok: true, projects, workerCleanup } };
+  });
+  return res.status(result.status).json(result.body);
 }));
 
 // === ZERO CHARACTER ENGINE ===
