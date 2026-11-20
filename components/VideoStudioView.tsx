@@ -289,7 +289,6 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
           }
           if (wanClipUrl?.startsWith('blob:')) objectUrlRegistry.releaseSceneReference(wanClipUrl, currentProject.id, asset.sceneId);
           replaceWanClipPreview(null);
-          setWanClipUrl(null);
           setWanClipScene('');
         }
         setScenes((previous) => previous.map((item) =>
@@ -334,7 +333,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
       }
     });
     return () => { active = false; };
-  }, [selectedProjectId, currentProject]);
+  }, [selectedProjectId, currentProject, objectUrlRegistry]);
 
   // Persist timeline edits with optimistic project-version checks; never persist temporary Blob URLs.
   useEffect(() => {
@@ -359,7 +358,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
     return () => window.clearTimeout(timer);
   }, [scenes, scenesOwnerProjectId, currentProject?.id, currentProject?.version, onProjectUpdated]);
 
-  useEffect(() => () => { objectUrlRegistry.releaseAll(); }, []);
+  useEffect(() => () => { objectUrlRegistry.releaseAll(); }, [objectUrlRegistry]);
 
   useEffect(() => {
     let active = true;
@@ -542,7 +541,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
     setWanBusy(true);
     setWanProgress('Sende Szene idempotent an den Wan-GPU-Worker...');
     setError(null);
-    setWanClipUrl(null);
+    replaceWanClipPreview(null);
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
