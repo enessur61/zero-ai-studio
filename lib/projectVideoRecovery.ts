@@ -144,6 +144,7 @@ export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions):
   const onMediaError = () => {
     const failure = classifyProjectVideoMediaError(options.getMediaErrorCode?.());
     options.onMediaFailure?.(failure);
+    if (failure === 'aborted') return;
     if (failure === 'network') {
       interrupted = true;
       void check();
