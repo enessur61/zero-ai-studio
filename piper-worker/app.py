@@ -58,7 +58,7 @@ def sha256(path:Path)->str:
  return d.hexdigest()
 
 def validate_asset(key:str,path:Path):
- if key=="model": validate_model_file(path)
+ if key=="model": validate_model_file(path, expected_size=EXPECTED_SIZES[key], expected_sha256=SHA256[key])
  elif key=="config": validate_voice_config(path)
  else: raise RuntimeError("Unknown Piper voice asset")
 
