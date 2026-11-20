@@ -11,7 +11,8 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --requirement requirements.txt \
     && python -c "import onnxruntime as ort; from piper import PiperVoice; assert 'CPUExecutionProvider' in ort.get_available_providers(); print('Piper CPU runtime:', ort.get_available_providers())"
-COPY --chown=10001:10001 app.py .
+COPY --chown=10001:10001 app.py voice_assets.py .
+COPY --chown=10001:10001 voice/MODEL_CARD.md ./voice/MODEL_CARD.md
 USER 10001:10001
 EXPOSE 8000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
