@@ -370,14 +370,6 @@ jobs:
               !restoredProject.snapshots[0].state) {
             throw new Error('Project snapshot restore did not restore content and preserve a safety snapshot');
           }
-          const deleteProjectResponse = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
-          if (!deleteProjectResponse.ok) throw new Error('Project deletion did not complete its durable clip cleanup: ' + deleteProjectResponse.status);
-          const retryProjectDelete = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
-          if (!retryProjectDelete.ok) throw new Error('Idempotent project deletion retry failed: ' + retryProjectDelete.status);
-          const deletedProjectClip = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
-          if (deletedProjectClip.status !== 404) throw new Error('Project deletion left a scene clip readable');
-          const deletedProjectHistory = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos', { headers: { cookie } });
-          if (deletedProjectHistory.status !== 404) throw new Error('Project deletion left clip history accessible');
           const removedLegacyModel = await authFetch('/api/models/gemini-3.7-flash/test', { method: 'POST' });
           if (removedLegacyModel.status !== 404) {
             throw new Error('Deprecated Gemini alias is still exposed by the API');
@@ -539,6 +531,14 @@ jobs:
               !Array.isArray(reconciliation.orphanedBlobIds) || !Array.isArray(reconciliation.missingBlobIds)) {
             throw new Error('PostgreSQL backup reconciliation found inconsistent metadata/blob state: ' + JSON.stringify(reconciliation));
           }
+          const deleteProjectResponse = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
+          if (!deleteProjectResponse.ok) throw new Error('Project deletion did not complete its durable clip cleanup: ' + deleteProjectResponse.status);
+          const retryProjectDelete = await authFetch('/api/projects/' + durationProject.id, { method: 'DELETE' });
+          if (!retryProjectDelete.ok) throw new Error('Idempotent project deletion retry failed: ' + retryProjectDelete.status);
+          const deletedProjectClip = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          if (deletedProjectClip.status !== 404) throw new Error('Project deletion left a scene clip readable');
+          const deletedProjectHistory = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos', { headers: { cookie } });
+          if (deletedProjectHistory.status !== 404) throw new Error('Project deletion left clip history accessible');
           console.log('Verified PostgreSQL state, JSON backups, ZIP backup download/restore and read-only reconciliation.');
 
           // Controlled read-only burst across both production-mode processes.
