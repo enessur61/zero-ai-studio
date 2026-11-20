@@ -25,12 +25,13 @@ export function FilmDirectorView({
   onOpenVideoStudio,
 }: FilmDirectorViewProps) {
   const [idea, setIdea] = useState(
-    'Ein verlassener Berliner U-Bahn-Schacht sendet jede Nacht um 03:00 Uhr eine verschlüsselte Morse-Melodie.'
+    'PROJECT ZERO Staffel 1, Folge 1: DER FEHLENDE TAG. Elias wacht nachts auf und erhält von seiner eigenen Telefonnummer die Nachricht: Du hast mich gestern getötet. Sein eigenes Handy ruft ihn an. Eine Videobotschaft sagt: Du hast es wieder vergessen. Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Ende: Dreh dich nicht um. Acht festgelegte Einstellungen, keine neuen Handlungselemente.'
   );
-  const [genre, setGenre] = useState('Neo-Noir Mystery Thriller');
-  const [targetDurationSec, setTargetDurationSec] = useState(58);
+  const [genre, setGenre] = useState('Psychologischer Mystery-Thriller / Neo-Noir');
+  const [episodeOnePreset, setEpisodeOnePreset] = useState(true);
+  const [targetDurationSec, setTargetDurationSec] = useState(60);
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '');
-  const [generateImages, setGenerateImages] = useState(false);
+  const [generateImages, setGenerateImages] = useState(true);
   const [directing, setDirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +58,7 @@ export function FilmDirectorView({
           targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
           characterId,
           generateImages,
+          ...(episodeOnePreset ? { episodePreset: 'der-fehlende-tag' } : {}),
         }),
       });
       onProjectCreated(data.project);
@@ -149,6 +151,16 @@ export function FilmDirectorView({
             />
           </div>
 
+          <label className="flex items-center gap-2 text-xs text-slate-300 min-h-[40px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={episodeOnePreset}
+              onChange={(event) => setEpisodeOnePreset(event.target.checked)}
+              className="rounded bg-[#090B10] border-white/20"
+            />
+            Festes Drehbuch: PROJECT ZERO – DER FEHLENDE TAG (8 Einstellungen, exakt 60 Sekunden)
+          </label>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-slate-400 block mb-1">Genre</label>
@@ -200,7 +212,7 @@ export function FilmDirectorView({
               onChange={(event) => setGenerateImages(event.target.checked)}
               className="rounded bg-[#090B10] border-white/20"
             />
-            Szenenbilder optional mit FLUX.1 Schnell generieren (Cloudflare Free; benötigt aktiviertes FLUX-Modell)
+            Szenenbilder mit FLUX.1 Schnell versuchen (kostenloses Tageskontingent; nur bei erfolgreichem Live-Test)
           </label>
 
           {error && (
