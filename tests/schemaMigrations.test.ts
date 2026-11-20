@@ -53,7 +53,8 @@ function poolFor(client: FakeMigrationClient): Pool {
 
 const migration = ZERO_SCHEMA_MIGRATIONS[0];
 const principalMigration = ZERO_SCHEMA_MIGRATIONS[1];
-assert.ok(migration && principalMigration, 'both additive migrations are registered');
+const rejectionMigration = ZERO_SCHEMA_MIGRATIONS[2];
+assert.ok(migration && principalMigration && rejectionMigration, 'all three additive migrations are registered');
 assert.match(getZeroSchemaMigrationChecksum(migration), /^[a-f0-9]{64}$/);
 assert.match(migration.sql, /request_fingerprint CHAR\(64\)/);
 assert.match(migration.sql, /principal_hash/);
@@ -64,20 +65,23 @@ assert.match(principalMigration.sql, /zero_cost_principal_resource_usage/);
 assert.match(principalMigration.sql, /principal_hash CHAR\(64\)/);
 assert.match(principalMigration.sql, /FROM zero_cost_operations/);
 assert.match(principalMigration.sql, /status IN \('RESERVED', 'UNKNOWN'\)/);
+assert.match(rejectionMigration.sql, /'REJECTED'/);
+assert.match(rejectionMigration.sql, /DROP CONSTRAINT IF EXISTS zero_cost_operations_status_check/);
 
 const client = new FakeMigrationClient();
 await runZeroSchemaMigrations(poolFor(client));
-assert.equal(client.rows.length, 2, 'first run records both migrations');
+assert.equal(client.rows.length, 3, 'first run records all three migrations');
 assert.ok(client.statements.some((sql) => sql.includes('pg_advisory_xact_lock')), 'migration uses the shared advisory lock');
 assert.ok(client.statements.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS zero_cost_resource_rate_events')), 'migration creates the rolling rate-event table');
 assert.ok(client.statements.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS zero_cost_principal_resource_usage')), 'migration creates principal daily usage');
 const firstMigrationStatementCount = client.statements.length;
 
 await runZeroSchemaMigrations(poolFor(client));
-assert.equal(client.rows.length, 2, 'second run does not duplicate either migration');
+assert.equal(client.rows.length, 3, 'second run does not duplicate any migration');
 assert.ok(client.statements.length > firstMigrationStatementCount, 'second run still verifies migration state');
 assert.equal(client.statements.filter((sql) => sql === migration.sql).length, 1, 'first applied migration SQL is not replayed');
 assert.equal(client.statements.filter((sql) => sql === principalMigration.sql).length, 1, 'principal migration SQL is not replayed');
+assert.equal(client.statements.filter((sql) => sql === rejectionMigration.sql).length, 1, 'provider rejection migration SQL is not replayed');
 
 const mismatch = new FakeMigrationClient();
 mismatch.rows.push({ version: migration.version, name: migration.name, checksum: '0'.repeat(64) });
