@@ -14,7 +14,7 @@ import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError 
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
+import { runWithZeroPrincipal, ZeroIdempotencyKeyRequiredError } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -205,7 +205,8 @@ app.use('/api', (req, res, next) => {
   if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
     return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
   }
-  const requestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+  // Do not synthesize a new key: a retry must carry the same caller-owned key.
+  const requestIdempotencyKey = suppliedIdempotencyKey ?? '';
 
   if (!IS_PRODUCTION) {
     // Development has a distinct server-owned identity; no client principal is trusted.
@@ -2941,6 +2942,9 @@ app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[ZERO API] Unhandled route error:', error);
   if (res.headersSent) return;
+  if (error instanceof ZeroIdempotencyKeyRequiredError) {
+    return res.status(400).json({ error: error.message, code: error.code });
+  }
   if (error instanceof PersistentStateConflictError) {
     return res.status(409).json({
       error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
