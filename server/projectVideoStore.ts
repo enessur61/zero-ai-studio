@@ -335,7 +335,7 @@ export function createProjectVideoAssetStore(
     const client = await database.connect();
     let inTransaction = false;
     try {
-      await client.query('BEGIN READ ONLY');
+      await client.query('BEGIN');
       inTransaction = true;
       await client.query("SET LOCAL statement_timeout = '120s'");
       // Keep a shared row lock for the lifetime of the stream. This prevents
