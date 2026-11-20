@@ -1,4 +1,4 @@
-import { runtimeConfig } from './server/runtimeConfig.ts';
+import { runtimeConfig } from './runtimeConfig.ts';
 import { Pool } from 'pg';
 
 let pool: Pool | null = null;
