@@ -256,19 +256,9 @@ app.use('/api', createApiAuthMiddleware({
       res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
       return;
     }
-    const requestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
-    const principal = IS_PRODUCTION ? 'zero-admin' : 'zero-development';
-    res.locals.zeroPrincipal = principal;
-    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
-    runWithZeroPrincipal(principal, requestIdempotencyKey, next);
+    res.locals.zeroRequestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+    next();
   },
-}));
-
-app.use('/api', createApiAuthMiddleware({
-  isProduction: IS_PRODUCTION,
-  adminPassword: ZERO_ADMIN_PASSWORD,
-  sessionSecret: ZERO_SESSION_SECRET,
-  hasValidSession,
 }));
 
 app.use('/api', (req, res, next) => {
