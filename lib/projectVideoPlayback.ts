@@ -52,6 +52,15 @@ export function readProjectVideoPlaybackSnapshot(
   }
 }
 
+export function persistProjectVideoPlaybackOnUnmount(storage: ProjectVideoSnapshotStorage, snapshot: ProjectVideoPlaybackSnapshot | null, currentTime: number, lastKnownPosition: number, preferLastKnownPosition: boolean, shouldPlay: boolean, now = Date.now()): void {
+  if (!snapshot) return;
+  const position = preferLastKnownPosition || !Number.isFinite(currentTime) ? lastKnownPosition : currentTime;
+  saveProjectVideoPlaybackSnapshot(storage, {
+    projectId: snapshot.projectId, assetId: snapshot.assetId, sceneId: snapshot.sceneId,
+    currentTime: Math.max(0, position), shouldPlay,
+  }, now);
+}
+
 export function clearProjectVideoPlaybackSnapshot(storage: ProjectVideoSnapshotStorage): void {
   storage.removeItem(PROJECT_VIDEO_PLAYBACK_SNAPSHOT_KEY);
 }
