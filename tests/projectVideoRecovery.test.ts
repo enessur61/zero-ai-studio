@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { once } from 'node:events';
 import {
+  classifyProjectVideoMediaError,
   probeProjectVideoAccess,
   watchProjectVideoRecovery,
   type ProjectVideoRecoveryState,
@@ -10,6 +11,7 @@ import {
 const app = express();
 let authenticated = true;
 let clipRequests = 0;
+let mediaErrorCode = 2;
 app.get('/api/auth/status', (_req, res) => res.json({ required: true, authenticated }));
 app.get('/clip', (req, res) => {
   clipRequests += 1;
@@ -51,6 +53,7 @@ try {
     url,
     fetcher: testFetch,
     mediaTarget: mediaEvents,
+    getMediaErrorCode: () => mediaErrorCode,
     onState: (state) => states.push(state),
     onResume: () => { resumes += 1; },
     windowTarget: windowEvents,
@@ -83,6 +86,16 @@ try {
   windowEvents.dispatchEvent(new Event('pageshow'));
   await waitFor(() => states.at(-1) === 'ready' && resumes === 3, 're-login did not restore access and resume media');
   assert.equal(resumes, 3, 'successful re-login must signal one recovery');
+  assert.equal(classifyProjectVideoMediaError(2), 'network');
+  assert.equal(classifyProjectVideoMediaError(3), 'decode');
+  assert.equal(classifyProjectVideoMediaError(4), 'unsupported');
+  assert.equal(classifyProjectVideoMediaError(1), 'aborted');
+  mediaErrorCode = 3;
+  const requestsBeforeDecoderFailure = clipRequests;
+  mediaEvents.dispatchEvent(new Event('error'));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(states.at(-1), 'error');
+  assert.equal(clipRequests, requestsBeforeDecoderFailure, 'decoder errors must not trigger network retries');
 
   stop();
   const requestsAfterStop = clipRequests;
@@ -152,6 +165,51 @@ try {
   await waitFor(() => authCalls >= 2, 'an online event received during a pending probe must schedule a follow-up check');
   await waitFor(() => overlapResumes === 1, 'overlapping lifecycle events must recover exactly once');
   stopOverlap();
+
+  let timeoutAborted = false;
+  const timeoutStates: ProjectVideoRecoveryState[] = [];
+  const stopTimeout = watchProjectVideoRecovery({
+    url,
+    fetcher: (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        timeoutAborted = true;
+        reject(new DOMException('aborted', 'AbortError'));
+      }, { once: true });
+    }),
+    onState: (state) => timeoutStates.push(state),
+    onResume: () => undefined,
+    windowTarget: new EventTarget(),
+    documentTarget: new EventTarget(),
+    isVisible: () => true,
+    probeTimeoutMs: 250,
+    maxRetries: 0,
+  });
+  await waitFor(() => timeoutStates.includes('error'), 'stalled probe did not time out');
+  assert.equal(timeoutAborted, true, 'probe timeout aborts the active request');
+  stopTimeout();
+
+  let retryCalls = 0;
+  const retryStates: ProjectVideoRecoveryState[] = [];
+  const stopRetries = watchProjectVideoRecovery({
+    url,
+    fetcher: async () => {
+      retryCalls += 1;
+      return new Response('unavailable', { status: 503 });
+    },
+    onState: (state) => retryStates.push(state),
+    onResume: () => undefined,
+    windowTarget: new EventTarget(),
+    documentTarget: new EventTarget(),
+    isVisible: () => true,
+    probeTimeoutMs: 1000,
+    maxRetries: 2,
+    retryBaseDelayMs: 50,
+  });
+  await waitFor(() => retryCalls === 3, 'expected initial probe and two bounded retries');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(retryCalls, 3, 'recovery retry budget is enforced');
+  assert.equal(retryStates.at(-1), 'error');
+  stopRetries();
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
