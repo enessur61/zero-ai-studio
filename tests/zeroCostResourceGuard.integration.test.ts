@@ -123,6 +123,14 @@ try {
   const failed = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-0002' }, env);
   await finishZeroCostResourceOperationWithPool(poolA, failed.operation.operationId, failed.leaseToken!, failed.operation.leaseGeneration!, 'FAILED');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [failed.operation.operationId])).rows[0].status, 'FAILED');
+  const beforeRejected = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'image'");
+  const rejected = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-rejected-01' }, env);
+  await finishZeroCostResourceOperationWithPool(poolA, rejected.operation.operationId, rejected.leaseToken!, rejected.operation.leaseGeneration!, 'REJECTED');
+  const rejectedStatus = await poolA.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [rejected.operation.operationId]);
+  assert.equal(rejectedStatus.rows[0].status, 'REJECTED', 'pre-acceptance rejection has its own terminal state');
+  const afterRejected = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'image'");
+  assert.equal(Number(afterRejected.rows[0].reserved_units), Number(beforeRejected.rows[0].reserved_units), 'pre-acceptance rejection releases the reservation');
+  assert.equal(Number(afterRejected.rows[0].consumed_units), Number(beforeRejected.rows[0].consumed_units), 'pre-acceptance rejection does not consume quota');
   const unknown = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'audio', idempotencyKey: 'idem-key-0003' }, env);
   await finishZeroCostResourceOperationWithPool(poolA, unknown.operation.operationId, unknown.leaseToken!, unknown.operation.leaseGeneration!, 'UNKNOWN');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [unknown.operation.operationId])).rows[0].status, 'UNKNOWN');
@@ -181,6 +189,10 @@ try {
   assert.equal(knownFailureStatus.rows[0].status, 'FAILED', 'definitive provider rejection is recorded as FAILED rather than UNKNOWN');
   const afterKnownFailureBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(afterKnownFailureBudget, beforeKnownFailureBudget + 1, 'definitive failed provider request remains counted in the global request budget');
+  const acceptedFailureUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'video'");
+  assert.ok(Number(acceptedFailureUsage.rows[0].consumed_units) >= 1,
+    'accepted execution failure is charged as consumed resource units and cannot be refunded');
+
 
   const unknownResultKey = 'unknown-result-classification-0001';
   let unknownResultAttempts = 0;
