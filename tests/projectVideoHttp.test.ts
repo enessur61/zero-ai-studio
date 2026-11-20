@@ -75,7 +75,7 @@ try {
   assert.ok(stableEtag);
   const firstBytes = Buffer.from(await initialPart.arrayBuffer());
   const resumedPart = await fetch(`${baseUrl}/clip?download=1`, {
-    headers: { Range: 'bytes=65536-${bytes.length - 1}', 'If-Range': stableEtag },
+    headers: { Range: `bytes=65536-${bytes.length - 1}`, 'If-Range': stableEtag },
   });
   assert.equal(resumedPart.status, 206);
   assert.equal(resumedPart.headers.get('content-range'), `bytes 65536-${bytes.length - 1}/${bytes.length}`);
