@@ -39,7 +39,7 @@ export function classifyGeminiResourceError(error: unknown): 'REJECTED' | 'UNKNO
   if (kind === 'quota-exhausted' || kind === 'rate-limited' || kind === 'auth' || kind === 'not-found') return 'REJECTED';
   const message = error instanceof Error ? error.message : String(error);
   const clientStatus = message.match(/\b(?:HTTP\s*)?(4\d{2})\b/i);
-  if (clientStatus) return 'FAILED';
+  if (clientStatus) return 'REJECTED';
   return 'UNKNOWN';
 }
 
