@@ -124,6 +124,8 @@ try {
   const stalledResponse = await fetch('http://127.0.0.1:' + stalledAddress.port + '/stalled');
   const stalledReader = stalledResponse.body?.getReader();
   assert.ok(stalledReader);
+  const initialStalledChunk = await stalledReader.read();
+  assert.ok(initialStalledChunk.value, 'stalled fixture sends an initial chunk before becoming idle');
   await assert.rejects(() => stalledReader.read(), 'idle timeout terminates stalled response');
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(timedOutAssetClosed, true, 'idle timeout releases the stream lease');
