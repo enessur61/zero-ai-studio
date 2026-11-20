@@ -19,6 +19,20 @@ const secret = (value: { expose(): string } | undefined): string | undefined =>
 // hosting environment. Only values explicitly passed through typed service
 // inputs below may enable external integrations.
 clearRuntimeConfig([
+  // libpq/node-postgres defaults must not supply credentials or destinations
+  // when a scoped Prisma connection URL is incomplete.
+  "PGHOST",
+  "PGPORT",
+  "PGDATABASE",
+  "PGUSER",
+  "PGPASSWORD",
+  "PGSSLMODE",
+  "PGSERVICE",
+  "PGSERVICEFILE",
+  "PGPASSFILE",
+  "PGOPTIONS",
+  "PGTARGETSESSIONATTRS",
+  "PGCHANNELBINDING",
   "GEMINI_API_KEY",
   "ZERO_GEMINI_FREE_TIER_ONLY",
   "CLOUDFLARE_ACCOUNT_ID",
