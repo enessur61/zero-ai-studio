@@ -68,6 +68,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     }
     return watchProjectVideoRecovery({
       url: wanClipUrl,
+      mediaTarget: archivedVideoRef.current ?? undefined,
       onState: setVideoRecoveryStatus,
       onResume: () => {
         const video = archivedVideoRef.current;
