@@ -33,6 +33,9 @@ clearRuntimeConfig([
   "PGOPTIONS",
   "PGTARGETSESSIONATTRS",
   "PGCHANNELBINDING",
+  // Authentication secrets must also be sourced only from this preview branch.
+  "ZERO_ADMIN_PASSWORD",
+  "ZERO_SESSION_SECRET",
   "GEMINI_API_KEY",
   "ZERO_GEMINI_FREE_TIER_ONLY",
   "CLOUDFLARE_ACCOUNT_ID",
