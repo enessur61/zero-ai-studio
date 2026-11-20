@@ -284,7 +284,7 @@ jobs:
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
           }
-          const mp4Bytes = Buffer.alloc(2048, 0);
+          const mp4Bytes = Buffer.alloc(8 * 1024 * 1024 + 1, 0);
           mp4Bytes.write('ftyp', 4, 'ascii');
           const sceneVideoPath = '/api/projects/' + durationProject.id + '/scenes/' + durationProject.scenes[0].id + '/video';
           const mediaWrite = await fetch(base + sceneVideoPath, {

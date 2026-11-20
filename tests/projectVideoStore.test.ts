@@ -9,6 +9,9 @@ import {
 const mp4 = Buffer.alloc(2048);
 mp4.write('ftyp', 4, 'ascii');
 assert.equal(isValidProjectVideoPayload(mp4, 'video/mp4'), true);
+const legacyLimitMp4 = Buffer.alloc(8 * 1024 * 1024 + 1);
+legacyLimitMp4.write('ftyp', 4, 'ascii');
+assert.equal(isValidProjectVideoPayload(legacyLimitMp4, 'video/mp4'), true, 'MP4 clips larger than the former 8 MB limit are accepted');
 assert.equal(isValidProjectVideoPayload(mp4, 'video/webm'), false);
 
 const webm = Buffer.alloc(2048);
