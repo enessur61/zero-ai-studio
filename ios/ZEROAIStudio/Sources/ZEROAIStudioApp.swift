@@ -185,7 +185,7 @@ struct ZEROWebView: UIViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.cancel)
@@ -211,8 +211,16 @@ struct ZEROWebView: UIViewRepresentable {
             requestMediaCapturePermissionFor origin: WKSecurityOrigin,
             initiatedByFrame frame: WKFrameInfo,
             type: WKMediaCaptureType,
-            decisionHandler: @escaping (WKPermissionDecision) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
         ) {
+            guard let appURL = Self.appURL,
+                  origin.protocol == appURL.scheme,
+                  origin.host == appURL.host,
+                  origin.port == (appURL.port ?? 443) else {
+                decisionHandler(.deny)
+                return
+            }
+
             decisionHandler(.prompt)
         }
     }
