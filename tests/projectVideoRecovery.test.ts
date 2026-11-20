@@ -30,16 +30,19 @@ const base = `http://127.0.0.1:${address.port}`;
 const url = `${base}/clip`;
 
 try {
-  assert.equal(await probeProjectVideoAccess(url), 'ready');
+  assert.equal(await probeProjectVideoAccess(url, testFetch), 'ready');
   assert.ok(clipRequests > 0, 'probe must validate access with a one-byte HTTP range');
 
   const windowEvents = new EventTarget();
   const documentEvents = new EventTarget();
+  const mediaEvents = new EventTarget();
   let visible = true;
   const states: ProjectVideoRecoveryState[] = [];
   let resumes = 0;
   const stop = watchProjectVideoRecovery({
     url,
+    fetcher: testFetch,
+    mediaTarget: mediaEvents,
     onState: (state) => states.push(state),
     onResume: () => { resumes += 1; },
     windowTarget: windowEvents,
@@ -61,8 +64,14 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(resumes, 1, 'returning from background must revalidate and signal media resume');
 
+  windowEvents.dispatchEvent(new Event('offline'));
+  assert.equal(states.at(-1), 'offline', 'the browser offline event must be surfaced immediately');
+  windowEvents.dispatchEvent(new Event('online'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(resumes, 2, 'network restoration must revalidate and resume once');
+
   authenticated = false;
-  windowEvents.dispatchEvent(new Event('focus'));
+  mediaEvents.dispatchEvent(new Event('error'));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(states.at(-1), 'session-expired', 'expired login must be surfaced without replaying private media');
 
@@ -70,7 +79,7 @@ try {
   windowEvents.dispatchEvent(new Event('pageshow'));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(states.at(-1), 'ready', 'a renewed login must restore access');
-  assert.equal(resumes, 2, 'successful re-login must signal one recovery');
+  assert.equal(resumes, 3, 'successful re-login must signal one recovery');
 
   stop();
   const requestsAfterStop = clipRequests;
