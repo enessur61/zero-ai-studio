@@ -1,3 +1,4 @@
+import { assertCloudflareWorkersAiAllowed, isCloudflareWorkersAiAllowed } from './cloudflareBudgetGate.ts';
 import { isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
 import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
@@ -52,7 +53,7 @@ function guardedCloudflareFetcher(
 }
 
 export function isCloudflareWorkersAiConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
+  return isCloudflareWorkersAiAllowed(env) && Boolean(env.CLOUDFLARE_ACCOUNT_ID?.trim() && env.CLOUDFLARE_API_TOKEN?.trim());
 }
 
 export async function generateCloudflareText(params: {
@@ -62,6 +63,7 @@ export async function generateCloudflareText(params: {
   enableThinking?: boolean;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -151,6 +153,7 @@ export async function generateCloudflareImage(params: {
   steps?: number;
   fetchImpl?: typeof fetch;
 }): Promise<{ imageDataUrl: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -232,6 +235,7 @@ export async function transcribeCloudflareAudio(params: {
   segments: Array<{ start: number; end: number; text: string }>;
   modelId: string;
 }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
@@ -323,6 +327,7 @@ export async function analyzeCloudflareImage(params: {
   question: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ answer: string; modelId: string }> {
+  assertCloudflareWorkersAiAllowed();
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!accountId || !token) {
