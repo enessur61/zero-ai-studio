@@ -229,7 +229,9 @@ try {
     assert.ok(queuedItems.some((item) => item.id === concurrentVideo.id));
     assert.equal(await blockedDelete, true, 'deletion proceeds after the last stream releases its lock');
   } finally {
-    await Promise.all(concurrentIterators.map((iterator) => iterator.return?.().catch?.(() => undefined)));
+    await Promise.all(concurrentIterators.map(async (iterator) => {
+      try { await iterator.return?.(); } catch { /* cleanup continues for the remaining readers */ }
+    }));
     await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
   }
 
