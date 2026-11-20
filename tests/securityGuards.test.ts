@@ -23,6 +23,7 @@ const prismaModule = read('../module.mjs');
 const persistence = read('../server/persistence.ts');
 const gemini = read('../server/geminiClient.ts');
 const cloudflare = read('../server/cloudflareWorkersAi.ts');
+const server = read('../server.ts');
 const providerKeys = ['GEMINI_API_KEY', 'ZERO_GEMINI_FREE_TIER_ONLY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'ZERO_WEB_SEARCH_URL', 'ZERO_WEB_SEARCH_TOKEN', 'ZERO_TTS_WORKER_URL', 'ZERO_TTS_WORKER_TOKEN', 'ZERO_VIDEO_ENGINE_URL', 'ZERO_VIDEO_ENGINE_TOKEN'];
 const clearIndex = compute.indexOf('clearRuntimeConfig([');
 const configureIndex = compute.indexOf('configureRuntimeConfig({');
@@ -32,6 +33,11 @@ assert.ok(prismaModule.includes('ZERO_ADMIN_PASSWORD: envSecret("ZERO_ADMIN_PASS
 assert.ok(prismaModule.includes('ZERO_SESSION_SECRET: envSecret("ZERO_SESSION_SECRET")'));
 assert.doesNotMatch(prismaModule, /GEMINI_API_KEY|CLOUDFLARE_API_TOKEN|ZERO_WEB_SEARCH_TOKEN|ZERO_TTS_WORKER_TOKEN|ZERO_VIDEO_ENGINE_TOKEN/);
 assert.ok(persistence.includes('validatePostgresConnectionString(runtimeConfig.DATABASE_URL)'), 'Pool creation must validate the explicit DATABASE_URL.');
+assert.ok(persistence.includes('connectionString: databaseUrl') && persistence.includes('url: databaseUrl'), 'Both PostgreSQL drivers must receive the same validated explicit URL.');
+assert.doesNotMatch(persistence, /new Pool\\(\\s*\\)/, 'PostgreSQL must never create a pool from implicit PG* environment defaults.');
+assert.ok(server.includes("if (IS_PRODUCTION && !runtimeConfig.DATABASE_URL)"), 'Production server startup must stop when DATABASE_URL is missing.');
+assert.ok(server.includes('isAuthConfigurationValid(ZERO_ADMIN_PASSWORD, ZERO_SESSION_SECRET)'), 'Production auth readiness must require both secrets.');
+assert.ok(server.includes('requireSessionSecret(ZERO_SESSION_SECRET)'), 'Session HMAC operations must fail closed without a valid secret.');
 assert.ok(gemini.includes("ZERO_GEMINI_FREE_TIER_ONLY !== 'true'"), 'Gemini must reject calls without the explicit free-tier gate.');
 assert.ok(cloudflare.includes('ZERO startet keinen kostenpflichtigen Fallback'), 'Cloudflare quota errors must not trigger paid fallback.');
 
