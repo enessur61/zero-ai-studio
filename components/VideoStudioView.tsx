@@ -874,7 +874,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
                     <p className="text-xs font-medium text-white truncate">{scene?.title || job.sceneId || 'Wan-Auftrag'}</p>
                     <p className="text-[10px] text-slate-400">{statusLabel} · {job.createdAt ? new Date(job.createdAt).toLocaleString('de-DE') : 'Zeitpunkt unbekannt'} · {job.id}</p>
                     {job.status === 'failed' && job.error && <p className="text-[10px] text-rose-300">{job.error}</p>}
-                    {job.status === 'cancelled' && job.cancelReason && <p className="text-[10px] text-slate-400">{job.cancelReason}</p>}
+                    {(job.status === 'cancelled' || job.status === 'cancel_requested') && job.cancelReason && <p className="text-[10px] text-slate-400">{job.cancelReason}</p>}
                   </div>
                   {(job.status === 'queued' || job.status === 'running') && (
                     <button type="button" disabled={cancellingWanJobId === job.id} onClick={() => void cancelWanJob(job.id).catch((cancelError) => setVideoHistoryError(cancelError instanceof Error ? cancelError.message : 'Wan-Abbruch fehlgeschlagen.'))} className="min-h-[36px] px-3 rounded-lg bg-rose-500/10 text-rose-300 text-[11px] disabled:opacity-50">
