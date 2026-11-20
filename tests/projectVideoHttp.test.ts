@@ -13,6 +13,7 @@ const asset = {
   sizeBytes: bytes.length,
   sha256: 'a'.repeat(64),
   createdAt: new Date(0).toISOString(),
+  close: async () => undefined,
   chunks: (async function* () {
     for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
       yield bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
@@ -42,7 +43,7 @@ app.get('/clip', (req, res) => {
           yield bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
         }
       } finally {
-        aborted = true;
+        if (req.query.watchAbort === '1') aborted = true;
       }
     })(),
   };
@@ -70,7 +71,7 @@ try {
   assert.match(download.headers.get('content-disposition') ?? '', /^attachment;/);
   assert.equal((await download.arrayBuffer()).byteLength, 16);
 
-  const interrupted = await fetch(`${baseUrl}/clip`, { headers: { Range: 'bytes=0-65535' } });
+  const interrupted = await fetch(`${baseUrl}/clip?watchAbort=1`, { headers: { Range: 'bytes=0-65535' } });
   assert.equal(interrupted.status, 206);
   const reader = interrupted.body?.getReader();
   assert.ok(reader);

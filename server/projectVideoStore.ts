@@ -329,7 +329,7 @@ export function createProjectVideoAssetStore(
     principalHash: string,
     rangeStart = 0,
     rangeEnd?: number,
-  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer> }) | null> {
+  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
     await ready();
     const client = await database.connect();
@@ -358,6 +358,16 @@ export function createProjectVideoAssetStore(
       const asset = toAsset(row);
       const start = Math.max(0, Math.min(asset.sizeBytes - 1, Math.floor(rangeStart)));
       const end = Math.max(start, Math.min(asset.sizeBytes - 1, Math.floor(rangeEnd ?? (asset.sizeBytes - 1))));
+      let released = false;
+      const close = async () => {
+        if (released) return;
+        released = true;
+        if (inTransaction) {
+          await client.query('COMMIT').catch(() => undefined);
+          inTransaction = false;
+        }
+        client.release();
+      };
       const chunks = (async function* (): AsyncGenerator<Buffer> {
         try {
           const chunkBytes = 256 * 1024;
@@ -374,14 +384,10 @@ export function createProjectVideoAssetStore(
             yield chunk;
           }
         } finally {
-          if (inTransaction) {
-            await client.query('COMMIT').catch(() => undefined);
-            inTransaction = false;
-          }
-          client.release();
+          await close();
         }
       })();
-      return { ...asset, chunks };
+      return { ...asset, chunks, close };
     } catch (error) {
       if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
       client.release();

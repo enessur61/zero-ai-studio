@@ -4,6 +4,7 @@ import type { ProjectVideoAsset } from './projectVideoStore.ts';
 
 export interface OpenProjectVideoStream extends ProjectVideoAsset {
   chunks: AsyncIterable<Buffer>;
+  close: () => Promise<void>;
 }
 
 export type ProjectVideoRange =
@@ -61,6 +62,7 @@ export function sendProjectVideoStream(
     `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`,
   );
   if (range.kind === 'invalid') {
+    void asset.close();
     res.setHeader('Content-Range', `bytes */${asset.sizeBytes}`);
     return res.status(416).end();
   }
