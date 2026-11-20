@@ -4,7 +4,6 @@ import type { Pool, PoolClient, QueryResultRow } from 'pg';
 export const MAX_PROJECT_VIDEO_BYTES = 100 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_STORAGE_BYTES = 500 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_COUNT = 50;
-export const PROJECT_VIDEO_RETENTION_DAYS = 90;
 
 export interface ProjectVideoAsset {
   id: string;
@@ -15,7 +14,6 @@ export interface ProjectVideoAsset {
   sizeBytes: number;
   sha256: string;
   createdAt: string;
-  expiresAt: string;
 }
 
 interface ProjectVideoRow extends QueryResultRow {
@@ -27,7 +25,6 @@ interface ProjectVideoRow extends QueryResultRow {
   size_bytes: string;
   sha256: string;
   created_at: Date | string;
-  expires_at: Date | string;
   payload?: Buffer;
 }
 
@@ -55,7 +52,6 @@ function toAsset(row: ProjectVideoRow): ProjectVideoAsset {
     sizeBytes: Number(row.size_bytes),
     sha256: row.sha256,
     createdAt: new Date(row.created_at).toISOString(),
-    expiresAt: new Date(row.expires_at).toISOString(),
   };
 }
 
@@ -72,7 +68,6 @@ async function ensureSchema(database: Pool): Promise<void> {
       sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
       payload BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '${PROJECT_VIDEO_RETENTION_DAYS} days'),
       UNIQUE (principal_hash, job_id)
     )
   `);
@@ -80,17 +75,6 @@ async function ensureSchema(database: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS zero_project_video_assets_project_idx
     ON zero_project_video_assets (principal_hash, project_id, created_at DESC)
   `);
-  await database.query(`
-    CREATE INDEX IF NOT EXISTS zero_project_video_assets_expiry_idx
-    ON zero_project_video_assets (expires_at)
-  `);
-}
-
-async function pruneExpiredWithClient(client: PoolClient, principalHash: string): Promise<void> {
-  await client.query(
-    'DELETE FROM zero_project_video_assets WHERE principal_hash = $1 AND expires_at <= NOW()',
-    [principalHash],
-  );
 }
 
 export function createProjectVideoAssetStore(database: Pool) {
@@ -126,7 +110,6 @@ export function createProjectVideoAssetStore(database: Pool) {
       await client.query('BEGIN');
       inTransaction = true;
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`zero-project-video:${input.principalHash}:${input.projectId}`]);
-      await pruneExpiredWithClient(client, input.principalHash);
 
       if (input.jobId) {
         const existing = await client.query<ProjectVideoRow>(
@@ -141,7 +124,7 @@ export function createProjectVideoAssetStore(database: Pool) {
           const usage = await client.query<{ bytes: string }>(
             `SELECT COALESCE(SUM(size_bytes), 0)::text AS bytes
              FROM zero_project_video_assets
-             WHERE principal_hash = $1 AND project_id = $2 AND expires_at > NOW() AND asset_id <> $3`,
+             WHERE principal_hash = $1 AND project_id = $2 AND asset_id <> $3`,
             [input.principalHash, input.projectId, row.asset_id],
           );
           if (Number(usage.rows[0]?.bytes ?? 0) + input.payload.length > MAX_PROJECT_VIDEO_STORAGE_BYTES) {
@@ -151,7 +134,7 @@ export function createProjectVideoAssetStore(database: Pool) {
           const updated = await client.query<ProjectVideoRow>(
             `UPDATE zero_project_video_assets
              SET content_type = $2, size_bytes = $3, sha256 = $4, payload = $5,
-                 created_at = NOW(), expires_at = NOW() + INTERVAL '${PROJECT_VIDEO_RETENTION_DAYS} days'
+                 created_at = NOW()
              WHERE asset_id = $1 RETURNING *`,
             [row.asset_id, input.contentType, input.payload.length, digest, input.payload],
           );
@@ -164,7 +147,7 @@ export function createProjectVideoAssetStore(database: Pool) {
       const usage = await client.query<{ bytes: string; count: string }>(
         `SELECT COALESCE(SUM(size_bytes), 0)::text AS bytes, COUNT(*)::text AS count
          FROM zero_project_video_assets
-         WHERE principal_hash = $1 AND project_id = $2 AND expires_at > NOW()`,
+         WHERE principal_hash = $1 AND project_id = $2`,
         [input.principalHash, input.projectId],
       );
       const usedBytes = Number(usage.rows[0]?.bytes ?? 0);
@@ -199,13 +182,9 @@ export function createProjectVideoAssetStore(database: Pool) {
 
   async function list(projectId: string, principalHash: string): Promise<ProjectVideoAsset[]> {
     await ready();
-    await database.query(
-      'DELETE FROM zero_project_video_assets WHERE principal_hash = $1 AND expires_at <= NOW()',
-      [principalHash],
-    );
     const result = await database.query<ProjectVideoRow>(
       `SELECT * FROM zero_project_video_assets
-       WHERE project_id = $1 AND principal_hash = $2 AND expires_at > NOW()
+       WHERE project_id = $1 AND principal_hash = $2
        ORDER BY created_at DESC LIMIT $3`,
       [projectId, principalHash, MAX_PROJECT_VIDEO_COUNT],
     );
@@ -216,7 +195,7 @@ export function createProjectVideoAssetStore(database: Pool) {
     await ready();
     const result = await database.query<ProjectVideoRow>(
       `SELECT * FROM zero_project_video_assets
-       WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3 AND expires_at > NOW()`,
+       WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3`,
       [assetId, projectId, principalHash],
     );
     const row = result.rows[0];
@@ -227,7 +206,7 @@ export function createProjectVideoAssetStore(database: Pool) {
     await ready();
     const result = await database.query<ProjectVideoRow>(
       `SELECT * FROM zero_project_video_assets
-       WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3 AND expires_at > NOW()
+       WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3
        ORDER BY created_at DESC LIMIT 1`,
       [projectId, sceneId, principalHash],
     );

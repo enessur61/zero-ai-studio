@@ -89,21 +89,6 @@ try {
   });
   assert.equal(idempotentArchive.id, archivedVideo.id, 'retrying the same Wan job must not duplicate the project clip');
 
-  const expiringVideo = await projectVideoStore.put({
-    projectId: 'project-video-integration',
-    sceneId: 'scene-expiring',
-    principalHash: videoPrincipal,
-    jobId: randomUUID(),
-    contentType: 'video/mp4',
-    payload: mp4Payload,
-  });
-  await poolA.query(
-    'UPDATE zero_project_video_assets SET expires_at = NOW() - INTERVAL \'1 second\' WHERE asset_id = $1',
-    [expiringVideo.id],
-  );
-  assert.equal((await projectVideoStore.list('project-video-integration', videoPrincipal)).length, 1,
-    'expired assets are purged while unexpired history remains visible');
-
   const projectCleanupVideo = await projectVideoStore.put({
     projectId: 'project-video-integration',
     sceneId: 'scene-project-cleanup',

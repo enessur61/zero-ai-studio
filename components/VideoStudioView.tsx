@@ -13,7 +13,6 @@ interface ProjectVideoHistoryItem {
   contentType: string;
   sizeBytes: number;
   createdAt: string;
-  expiresAt: string;
 }
 
 interface VideoStudioViewProps {
@@ -532,7 +531,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold text-white">ZERO Clip-Historie</h3>
-                <p className="text-[11px] text-slate-400">Dauerhaft in PostgreSQL gespeichert · 90 Tage Aufbewahrung · max. 100 MB pro Clip / 500 MB pro Projekt</p>
+                <p className="text-[11px] text-slate-400">Dauerhaft in PostgreSQL gespeichert · keine automatische Löschung · max. 100 MB pro Clip / 500 MB pro Projekt</p>
               </div>
               <span className="text-xs font-mono text-slate-300">{videoHistory.length}/50</span>
             </div>
@@ -547,7 +546,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-white truncate">{scene?.title || asset.sceneId}</p>
                     <p className="text-[10px] text-slate-400">
-                      {(asset.sizeBytes / (1024 * 1024)).toFixed(1)} MB · {new Date(asset.createdAt).toLocaleString('de-DE')} · gültig bis {new Date(asset.expiresAt).toLocaleDateString('de-DE')}
+                      {(asset.sizeBytes / (1024 * 1024)).toFixed(1)} MB · {new Date(asset.createdAt).toLocaleString('de-DE')}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">

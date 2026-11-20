@@ -4,7 +4,6 @@ import {
   MAX_PROJECT_VIDEO_BYTES,
   MAX_PROJECT_VIDEO_COUNT,
   MAX_PROJECT_VIDEO_STORAGE_BYTES,
-  PROJECT_VIDEO_RETENTION_DAYS,
 } from '../server/projectVideoStore.ts';
 
 const mp4 = Buffer.alloc(2048);
@@ -25,6 +24,5 @@ assert.equal(isValidProjectVideoPayload('not-a-buffer', 'video/mp4'), false);
 assert.equal(MAX_PROJECT_VIDEO_BYTES, 100 * 1024 * 1024);
 assert.equal(MAX_PROJECT_VIDEO_STORAGE_BYTES, 500 * 1024 * 1024);
 assert.equal(MAX_PROJECT_VIDEO_COUNT, 50);
-assert.equal(PROJECT_VIDEO_RETENTION_DAYS, 90);
 
 console.log('ZERO project video payload and retention policy tests passed.');

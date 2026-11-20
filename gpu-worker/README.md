@@ -46,8 +46,8 @@ When a completed Wan clip is recovered in ZERO Video Studio, the app can copy th
 - Maximum clip size: 100 MiB.
 - Maximum archived clips per project: 50.
 - Maximum total archived video per project: 500 MiB.
-- Retention: 90 days from the most recent successful archive write.
-- Expired clips are removed when the project's clip history is listed or a new clip is stored.
+- Retention: archived project clips remain until the user explicitly deletes them or deletes the owning project.
+- No time-based auto-deletion is applied to archived project clips; hard per-project count and byte quotas prevent unbounded growth.
 - Users can explicitly download or delete individual clips; deleting a project removes its archived clips.
 - PostgreSQL must be configured for durable production use. If the database is unavailable, ZERO may keep a local IndexedDB cache, but it must not report that the clip is durably archived.
 
