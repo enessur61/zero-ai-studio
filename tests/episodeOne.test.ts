@@ -31,6 +31,7 @@ assert.equal(EPISODE_ONE.scenes[7].subtitleText, 'PROJECT ZERO · FORTSETZUNG FO
 
 const server = await readFile('server.ts', 'utf8');
 assert.match(server, /req\.body\?\.episodePreset === 'der-fehlende-tag'/);
+assert.match(server, /const generateImages = episodeOne \? false : Boolean\(req\.body\?\.generateImages\)/);
 assert.match(server, /parsed\.scenes\.length !== \(episodeOne \? 8 : 4\)/);
 assert.match(server, /episodeOne && parsed\.scenes\.reduce/);
 assert.match(server, /if \(!episodeOne\) \{/);
