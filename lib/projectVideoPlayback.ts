@@ -55,3 +55,18 @@ export function readProjectVideoPlaybackSnapshot(
 export function clearProjectVideoPlaybackSnapshot(storage: ProjectVideoSnapshotStorage): void {
   storage.removeItem(PROJECT_VIDEO_PLAYBACK_SNAPSHOT_KEY);
 }
+
+export function shouldOpenVideoStudioForPlaybackSnapshot(
+  snapshot: ProjectVideoPlaybackSnapshot | null,
+): boolean {
+  return snapshot !== null;
+}
+
+export function findProjectVideoPlaybackAsset<T extends { id: string; sceneId: string }>(
+  snapshot: ProjectVideoPlaybackSnapshot,
+  projectId: string | undefined,
+  assets: readonly T[],
+): T | null {
+  if (!projectId || projectId !== snapshot.projectId) return null;
+  return assets.find((asset) => asset.id === snapshot.assetId && asset.sceneId === snapshot.sceneId) ?? null;
+}
