@@ -11,6 +11,7 @@ on:
       - 'components/SettingsView.tsx'
       - 'server.ts'
       - 'tests/zeroCostResourceGuard*.test.ts'
+      - 'tests/videoStudioAuthUnmount.integration.test.mjs'
       - '.github/workflows/zero-resource-guard-integration.yml'
       - 'package.json'
       - 'package-lock.json'

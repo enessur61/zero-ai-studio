@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
+import { readProjectVideoPlaybackSnapshot, shouldOpenVideoStudioForPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
   BackupConfigState,
@@ -94,7 +95,13 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavigationTab>('home');
+  const [activeTab, setActiveTab] = useState<NavigationTab>(() => {
+    try {
+      return shouldOpenVideoStudioForPlaybackSnapshot(readProjectVideoPlaybackSnapshot(window.sessionStorage)) ? 'video' : 'home';
+    } catch {
+      return 'home';
+    }
+  });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -129,6 +136,16 @@ export default function App() {
   const [videoSoundtrack, setVideoSoundtrack] = useState<{ url: string; title: string } | null>(
     null
   );
+
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setAuthRequired(true);
+      setLoading(false);
+      setAuthStatusLoading(false);
+    };
+    window.addEventListener('zero:session-expired', onSessionExpired);
+    return () => window.removeEventListener('zero:session-expired', onSessionExpired);
+  }, []);
 
   useEffect(() => {
     const userAgent = window.navigator.userAgent;

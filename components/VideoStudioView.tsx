@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { watchProjectVideoRecovery, type ProjectVideoRecoveryState } from '../lib/projectVideoRecovery.ts';
+import { clearProjectVideoPlaybackSnapshot, findProjectVideoPlaybackAsset, readProjectVideoPlaybackSnapshot, saveProjectVideoPlaybackSnapshot, persistProjectVideoPlaybackOnUnmount, type ProjectVideoPlaybackSnapshot, type ProjectVideoSnapshotStorage } from '../lib/projectVideoPlayback.ts';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -24,6 +26,11 @@ interface ProjectVideoHistoryItem {
   createdAt: string;
 }
 
+function getPlaybackSnapshotStorage(): ProjectVideoSnapshotStorage | null {
+  try { return typeof window === 'undefined' ? null : window.sessionStorage; }
+  catch { return null; }
+}
+
 interface VideoStudioViewProps {
   projects: StudioProject[];
   activeProjectId?: string;
@@ -31,9 +38,13 @@ interface VideoStudioViewProps {
 }
 
 export function VideoStudioView({ projects, activeProjectId, soundtrack }: VideoStudioViewProps) {
-  const [selectedProjectId, setSelectedProjectId] = useState(
-    activeProjectId || projects[0]?.id || ''
-  );
+  const playbackStorage = getPlaybackSnapshotStorage();
+  const initialPlaybackSnapshotRef = useRef<ProjectVideoPlaybackSnapshot | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState(() => {
+    const snapshot = playbackStorage ? readProjectVideoPlaybackSnapshot(playbackStorage) : null;
+    initialPlaybackSnapshotRef.current = snapshot;
+    return snapshot?.projectId || activeProjectId || projects[0]?.id || '';
+  });
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
@@ -49,11 +60,133 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanBusy, setWanBusy] = useState(false);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
+  const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
+  const shouldResumeArchivedVideoRef = useRef(false);
+  const recoveringArchivedVideoRef = useRef(false);
+  const sessionExpiredDuringPlaybackRef = useRef(false);
+  const [playbackResumeBlocked, setPlaybackResumeBlocked] = useState(false);
+  const playbackSnapshotRef = useRef<ProjectVideoPlaybackSnapshot | null>(initialPlaybackSnapshotRef.current);
+  const pendingPlaybackRestoreRef = useRef<ProjectVideoPlaybackSnapshot | null>(initialPlaybackSnapshotRef.current);
+  const archivedPlaybackPositionRef = useRef(initialPlaybackSnapshotRef.current?.currentTime ?? 0);
+  const restorePositionOnMetadataRef = useRef<number | null>(initialPlaybackSnapshotRef.current?.currentTime ?? null);
+  const [videoRecoveryStatus, setVideoRecoveryStatus] = useState<ProjectVideoRecoveryState>('ready');
   const [wanClipScene, setWanClipScene] = useState('');
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
+  const [videoHistoryLoaded, setVideoHistoryLoaded] = useState(false);
   const [wanJobHistory, setWanJobHistory] = useState<WanJobHistoryItem[]>([]);
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
+
+  const persistArchivedPlayback = (preferLastKnownPosition = false) => {
+    const video = archivedVideoRef.current;
+    const snapshot = playbackSnapshotRef.current;
+    if (!video || !snapshot || !playbackStorage) return;
+    const currentTime = preferLastKnownPosition
+      ? archivedPlaybackPositionRef.current
+      : Number.isFinite(video.currentTime) ? video.currentTime : archivedPlaybackPositionRef.current;
+    archivedPlaybackPositionRef.current = Math.max(0, currentTime);
+    saveProjectVideoPlaybackSnapshot(playbackStorage, {
+      projectId: snapshot.projectId,
+      assetId: snapshot.assetId,
+      sceneId: snapshot.sceneId,
+      currentTime: archivedPlaybackPositionRef.current,
+      shouldPlay: shouldResumeArchivedVideoRef.current,
+    });
+  };
+
+  const handleArchivedVideoMetadata = () => {
+    const video = archivedVideoRef.current;
+    const position = restorePositionOnMetadataRef.current;
+    if (!video || position === null) return;
+    const safePosition = Number.isFinite(video.duration) && video.duration > 0
+      ? Math.min(position, Math.max(0, video.duration - 0.05))
+      : position;
+    video.currentTime = safePosition;
+    archivedPlaybackPositionRef.current = safePosition;
+    restorePositionOnMetadataRef.current = null;
+    if (shouldResumeArchivedVideoRef.current && !video.ended) {
+      recoveringArchivedVideoRef.current = true;
+      setPlaybackResumeBlocked(false);
+      void video.play().catch(() => {
+        setPlaybackResumeBlocked(true);
+        setWanProgress('Safari hat die automatische Wiedergabe blockiert. Tippe im Videoplayer auf Play, um an der gespeicherten Stelle fortzufahren.');
+      }).finally(() => { recoveringArchivedVideoRef.current = false; });
+    } else {
+      recoveringArchivedVideoRef.current = false;
+    }
+  };
+
+  // Save the last known position before Safari suspends the media element or an
+  // authentication gate unmounts this view. The marker contains no credentials.
+  useEffect(() => {
+    if (!wanClipUrl?.startsWith('/api/projects/')) {
+      setVideoRecoveryStatus('ready');
+      return;
+    }
+    const video = archivedVideoRef.current;
+    const savePosition = (preferLastKnownPosition = false) => persistArchivedPlayback(preferLastKnownPosition);
+    const onPlay = () => {
+      sessionExpiredDuringPlaybackRef.current = false;
+      setPlaybackResumeBlocked(false);
+      shouldResumeArchivedVideoRef.current = true;
+      savePosition();
+    };
+    const onPause = () => {
+      if (!sessionExpiredDuringPlaybackRef.current && !recoveringArchivedVideoRef.current && document.visibilityState !== 'hidden') {
+        shouldResumeArchivedVideoRef.current = false;
+      }
+      savePosition(document.visibilityState === 'hidden' || sessionExpiredDuringPlaybackRef.current);
+    };
+    const onTimeUpdate = () => savePosition();
+    const onSeeking = () => savePosition();
+    video?.addEventListener('play', onPlay);
+    video?.addEventListener('pause', onPause);
+    video?.addEventListener('timeupdate', onTimeUpdate);
+    video?.addEventListener('seeking', onSeeking);
+    const onPageHide = () => savePosition(true);
+    window.addEventListener('pagehide', onPageHide);
+    const stopRecovery = watchProjectVideoRecovery({
+      url: wanClipUrl,
+      mediaTarget: video ?? undefined,
+      getMediaErrorCode: () => video?.error?.code ?? null,
+      onState: (state) => {
+        setVideoRecoveryStatus(state);
+        if (state === 'session-expired') {
+          sessionExpiredDuringPlaybackRef.current = true;
+          savePosition(true);
+          window.dispatchEvent(new Event('zero:session-expired'));
+        }
+      },
+      onMediaFailure: (failure) => {
+        savePosition(true);
+        if (failure === 'decode') setWanProgress('Safari konnte den Videostream nicht decodieren. ZERO startet keine endlosen Netzwerk-Wiederholungen.');
+        if (failure === 'unsupported') setWanProgress('Dieses Videoformat wird von diesem Safari-Decoder nicht unterstützt.');
+      },
+      onResume: () => {
+        if (!video) return;
+        const position = archivedPlaybackPositionRef.current;
+        restorePositionOnMetadataRef.current = position;
+        recoveringArchivedVideoRef.current = true;
+        video.load();
+      },
+    });
+    return () => {
+      // Auth-gate unmount may follow Safari resetting currentTime. Keep the
+      // last known position on that path instead of persisting the media reset.
+      if (playbackStorage) {
+        persistProjectVideoPlaybackOnUnmount(playbackStorage, playbackSnapshotRef.current,
+          video?.currentTime ?? Number.NaN, archivedPlaybackPositionRef.current,
+          sessionExpiredDuringPlaybackRef.current, shouldResumeArchivedVideoRef.current);
+      } else savePosition(sessionExpiredDuringPlaybackRef.current);
+      stopRecovery();
+      video?.removeEventListener('play', onPlay);
+      video?.removeEventListener('pause', onPause);
+      video?.removeEventListener('timeupdate', onTimeUpdate);
+      video?.removeEventListener('seeking', onSeeking);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [wanClipUrl]);
+
 
   async function refreshVideoHistory(projectId: string) {
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/videos`, {
@@ -62,6 +195,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     if (!response.ok) throw new Error('ZERO Clip-Historie konnte nicht geladen werden.');
     const payload = await response.json() as { assets?: ProjectVideoHistoryItem[] };
     setVideoHistory(Array.isArray(payload.assets) ? payload.assets : []);
+    setVideoHistoryLoaded(true);
   }
 
   async function refreshWanJobHistory(projectId: string) {
@@ -78,9 +212,29 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     // Keep the archived clip server-backed: Safari/iOS can request byte ranges
     // directly and does not need a second full-size Blob in browser memory.
     const clipUrl = `/api/projects/${encodeURIComponent(currentProject.id)}/videos/${encodeURIComponent(asset.id)}`;
+    const pending = pendingPlaybackRestoreRef.current;
+    sessionExpiredDuringPlaybackRef.current = false;
+    setPlaybackResumeBlocked(false);
+    if (pending?.projectId === currentProject.id && pending.assetId === asset.id) {
+      archivedPlaybackPositionRef.current = pending.currentTime;
+      shouldResumeArchivedVideoRef.current = pending.shouldPlay;
+      restorePositionOnMetadataRef.current = pending.currentTime;
+    } else {
+      archivedPlaybackPositionRef.current = 0;
+      shouldResumeArchivedVideoRef.current = false;
+      restorePositionOnMetadataRef.current = null;
+    }
+    const snapshot: ProjectVideoPlaybackSnapshot = {
+      projectId: currentProject.id, assetId: asset.id, sceneId: asset.sceneId,
+      currentTime: archivedPlaybackPositionRef.current,
+      shouldPlay: shouldResumeArchivedVideoRef.current, savedAt: Date.now(),
+    };
+    playbackSnapshotRef.current = snapshot;
+    if (playbackStorage) saveProjectVideoPlaybackSnapshot(playbackStorage, snapshot);
     setWanClipUrl(clipUrl);
     const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
     setWanClipScene(scene?.title ?? 'Gespeicherter Clip');
+    pendingPlaybackRestoreRef.current = null;
     setScenes((previous) => previous.map((item) =>
       item.id === asset.sceneId ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
     ));
@@ -105,7 +259,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         await deleteSceneVideoClip(currentProject.id, asset.sceneId).catch(() => undefined);
         const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
         if (scene && wanClipScene === scene.title) {
-          if (wanClipUrl) URL.revokeObjectURL(wanClipUrl);
+          if (playbackSnapshotRef.current?.assetId === asset.id) {
+            if (playbackStorage) clearProjectVideoPlaybackSnapshot(playbackStorage);
+            playbackSnapshotRef.current = null;
+            pendingPlaybackRestoreRef.current = null;
+          }
+          if (wanClipUrl?.startsWith('blob:')) URL.revokeObjectURL(wanClipUrl);
           setWanClipUrl(null);
           setWanClipScene('');
         }
@@ -155,6 +314,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     let active = true;
     const projectId = currentProject?.id;
     setVideoHistory([]);
+    setVideoHistoryLoaded(false);
     setWanJobHistory([]);
     setVideoHistoryError('');
     if (!projectId) return () => { active = false; };
@@ -163,12 +323,36 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     }).then(async (response) => {
       if (!response.ok) throw new Error('ZERO Clip-Historie konnte nicht geladen werden.');
       const payload = await response.json() as { assets?: ProjectVideoHistoryItem[] };
-      if (active) setVideoHistory(Array.isArray(payload.assets) ? payload.assets : []);
+      if (active) {
+        setVideoHistory(Array.isArray(payload.assets) ? payload.assets : []);
+        setVideoHistoryLoaded(true);
+      }
     }).catch((historyError) => {
       if (active) setVideoHistoryError(historyError instanceof Error ? historyError.message : 'Clip-Historie nicht verfügbar.');
     });
     return () => { active = false; };
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    const snapshot = pendingPlaybackRestoreRef.current;
+    if (!snapshot || !videoHistoryLoaded) return;
+    if (currentProject?.id !== snapshot.projectId) {
+      if (projects.length) {
+        if (playbackStorage) clearProjectVideoPlaybackSnapshot(playbackStorage);
+        pendingPlaybackRestoreRef.current = null;
+        playbackSnapshotRef.current = null;
+      }
+      return;
+    }
+    const asset = findProjectVideoPlaybackAsset(snapshot, currentProject?.id, videoHistory);
+    if (!asset) {
+      if (playbackStorage) clearProjectVideoPlaybackSnapshot(playbackStorage);
+      pendingPlaybackRestoreRef.current = null;
+      playbackSnapshotRef.current = null;
+      return;
+    }
+    void restoreArchivedVideo(asset);
+  }, [currentProject?.id, videoHistoryLoaded, videoHistory]);
 
   useEffect(() => {
     if (soundtrack?.url) {
@@ -556,8 +740,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
             {wanClipUrl && (
               <div className="space-y-2">
                 <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
-                <video src={wanClipUrl} controls playsInline className="w-full rounded-xl bg-black" />
+                <video ref={archivedVideoRef} src={wanClipUrl} onLoadedMetadata={handleArchivedVideoMetadata} controls playsInline preload="metadata" className="w-full rounded-xl bg-black" />
+                {playbackResumeBlocked && <p role="status" className="text-xs text-amber-300">Safari hat die automatische Wiedergabe nicht erlaubt. Tippe im Videoplayer auf Play; die gespeicherte Position bleibt erhalten.</p>}
+                {videoRecoveryStatus === 'offline' && <p role="status" className="text-xs text-amber-300">Verbindung unterbrochen. ZERO setzt die Prüfung fort, sobald Safari wieder online ist.</p>}
+                {videoRecoveryStatus === 'session-expired' && <p role="status" className="text-xs text-amber-300">Sitzung abgelaufen. Bitte erneut anmelden; danach wird die Wiedergabe beim Zurückkehren erneut geprüft. Downloads bitte anschließend erneut antippen.</p>}
+                {videoRecoveryStatus === 'missing' && <p role="status" className="text-xs text-rose-300">Dieser Clip ist nicht mehr verfügbar oder wurde gelöscht.</p>}
+                {videoRecoveryStatus === 'error' && <p role="status" className="text-xs text-amber-300">Clip-Verbindung konnte nicht geprüft werden. Tippe auf Wiedergabe, um es erneut zu versuchen.</p>}
                 <a href={wanClipUrl} download="zero-wan-shot.mp4" className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white"><Download className="w-4 h-4" />Wan-MP4 herunterladen</a>
+                <p className="text-[10px] text-slate-500">Safari-Download unterbrochen? Erneut antippen. ZERO liefert bytegenaue HTTP-Range-Bereiche mit ETag-Prüfung; die Fortsetzung steuert Safari. Nach erneuter Anmeldung den Download erneut starten.</p>
               </div>
             )}
           </div>

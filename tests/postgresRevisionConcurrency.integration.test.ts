@@ -17,6 +17,7 @@ import {
 } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
+import { POSTGRES_POOL_MAX } from '../server/persistence.ts';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
 import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
@@ -43,8 +44,8 @@ const schema = `zero_revision_test_${randomUUID().replaceAll('-', '')}`;
 const adminPool = new Pool({ connectionString, max: 1 });
 const poolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const poolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
-const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
-const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
+const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
+const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
 
 try {
   await adminPool.query(`CREATE SCHEMA "${schema}"`);
@@ -176,6 +177,84 @@ try {
       'PostgreSQL streaming must never materialize a database chunk larger than 256 KiB');
   } finally {
     await new Promise<void>((resolve, reject) => videoHttpServer.close((error) => error ? reject(error) : resolve()));
+  }
+
+  // Slow/parallel video streams intentionally retain a shared row lock and
+  // one pool connection each for a byte-consistent response. Verify the
+  // configured stream pool can serve concurrent readers, exposes bounded
+  // queueing rather than opening unbounded connections, and blocks deletion
+  // until all readers close their transactions.
+  const concurrentVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-parallel',
+    principalHash: videoPrincipal,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
+  const appStateStoreDuringStreams = createPostgresStateStore(gatePoolA);
+  await appStateStoreDuringStreams.ensureSchema();
+  await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
+  assert.equal(POSTGRES_POOL_MAX, 5, 'test imports exact production PostgreSQL pool maximum');
+  const concurrentStreams = await Promise.all(Array.from({ length: 2 }, () =>
+    concurrentStreamStore.openRead(concurrentVideo.id, 'project-video-integration', videoPrincipal)
+  ));
+  assert.ok(concurrentStreams.every(Boolean), 'both admitted stream readers acquire a row snapshot');
+  assert.equal(gatePoolA.totalCount, 2, 'only two of five production connections are reserved by video streams');
+  const concurrentIterators = concurrentStreams.map((stream) =>
+    stream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]()
+  );
+  let deleteCompleted = false;
+  let thirdStreamCompleted = false;
+  let thirdStreamPromise: Promise<Awaited<ReturnType<typeof concurrentStreamStore.openRead>>> | null = null;
+  let deleteGuardStream: Awaited<ReturnType<typeof concurrentStreamStore.openRead>> = null;
+  let deleteGuardIterator: AsyncIterator<Buffer> | null = null;
+  try {
+    const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
+    assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
+    assert.ok(firstChunks.every((entry) => entry.value!.length <= 256 * 1024),
+      'slow streams still read no more than 256 KiB per DB chunk');
+    const thirdStream = concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((stream) => { thirdStreamCompleted = true; return stream; });
+    thirdStreamPromise = thirdStream;
+    const appOperation = await appStateStoreDuringStreams.read();
+    assert.equal(appOperation, null,
+      'the actual persistent application-state read completes while two video streams are paused');
+    assert.equal(gatePoolA.totalCount, 3, 'two video readers and one app query fit in production max=5');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(thirdStreamCompleted, false, 'third video stream waits before checking out another DB connection');
+
+    await concurrentIterators[0].return?.();
+    const third = await thirdStream;
+    assert.ok(third, 'queued third stream is admitted as soon as one active slot is released');
+    assert.equal(thirdStreamCompleted, true);
+    await concurrentIterators[1].return?.();
+    await third!.close();
+
+    // Independently prove the row lock blocks deletion while a reader is active.
+    deleteGuardStream = await concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    );
+    assert.ok(deleteGuardStream);
+    deleteGuardIterator = deleteGuardStream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]();
+    await deleteGuardIterator.next();
+    const blockedDelete = projectVideoStoreB.remove(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((removed) => { deleteCompleted = true; return removed; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(deleteCompleted, false, 'shared row lock preserves bytes during an active stream');
+    await deleteGuardIterator.return?.();
+    await deleteGuardStream!.close();
+    assert.equal(await blockedDelete, true, 'deletion proceeds after the active stream releases its row lock');
+  } finally {
+    await Promise.all(concurrentIterators.map(async (iterator) => {
+      try { await iterator.return?.(); } catch { /* cleanup continues */ }
+    }));
+    if (deleteGuardIterator) await deleteGuardIterator.return?.().catch(() => undefined);
+    if (deleteGuardStream) await deleteGuardStream.close().catch(() => undefined);
+    if (thirdStreamPromise) await thirdStreamPromise.then((stream) => stream?.close()).catch(() => undefined);
+    await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
   }
 
   const projectCleanupVideo = await projectVideoStore.put({

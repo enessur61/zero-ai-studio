@@ -1,9 +1,53 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Pool, QueryResultRow } from 'pg';
+import type { Pool, PoolClient, QueryResultRow } from 'pg';
 
 export const MAX_PROJECT_VIDEO_BYTES = 100 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_STORAGE_BYTES = 500 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_COUNT = 50;
+export const MAX_CONCURRENT_PROJECT_VIDEO_STREAMS = 2;
+export const MAX_QUEUED_PROJECT_VIDEO_STREAMS = 8;
+export const PROJECT_VIDEO_STREAM_QUEUE_TIMEOUT_MS = 8_000;
+export class ProjectVideoStreamCapacityError extends Error {
+  readonly statusCode = 503;
+  constructor(message = 'ZERO video stream capacity is temporarily busy.') {
+    super(message); this.name = 'ProjectVideoStreamCapacityError';
+  }
+}
+interface StreamWaiter { resolve: (release: () => void) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+interface StreamAdmissionGate { active: number; queue: StreamWaiter[] }
+const streamAdmissionGates = new WeakMap<Pool, StreamAdmissionGate>();
+function acquireProjectVideoStreamSlot(database: Pool): Promise<() => void> {
+  let gate = streamAdmissionGates.get(database);
+  if (!gate) { gate = { active: 0, queue: [] }; streamAdmissionGates.set(database, gate); }
+  const state = gate;
+  const makeRelease = (): (() => void) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = state.queue.shift();
+      if (next) { clearTimeout(next.timer); next.resolve(makeRelease()); }
+      else state.active -= 1;
+    };
+  };
+  if (state.active < MAX_CONCURRENT_PROJECT_VIDEO_STREAMS) {
+    state.active += 1; return Promise.resolve(makeRelease());
+  }
+  if (state.queue.length >= MAX_QUEUED_PROJECT_VIDEO_STREAMS) {
+    return Promise.reject(new ProjectVideoStreamCapacityError());
+  }
+  return new Promise((resolve, reject) => {
+    const waiter: StreamWaiter = {
+      resolve, reject,
+      timer: setTimeout(() => {
+        const index = state.queue.indexOf(waiter);
+        if (index >= 0) state.queue.splice(index, 1);
+        reject(new ProjectVideoStreamCapacityError('ZERO video stream capacity queue timed out. Please retry shortly.'));
+      }, PROJECT_VIDEO_STREAM_QUEUE_TIMEOUT_MS),
+    };
+    state.queue.push(waiter);
+  });
+}
 
 export interface ProjectVideoAsset {
   id: string;
@@ -330,14 +374,14 @@ export function createProjectVideoAssetStore(
   ): Promise<(ProjectVideoAsset & { chunksForRange: (start?: number, end?: number) => AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
     await ready();
-    const client = await database.connect();
+    const releaseAdmission = await acquireProjectVideoStreamSlot(database);
+    let client: PoolClient | null = null;
     let inTransaction = false;
     try {
-      await client.query('BEGIN');
-      inTransaction = true;
+      client = await database.connect();
+      await client.query('BEGIN'); inTransaction = true;
       await client.query("SET LOCAL statement_timeout = '120s'");
-      // Keep a shared row lock for the lifetime of the stream. This prevents
-      // replacement/deletion from changing the bytes between range requests.
+      // Shared row lock preserves byte consistency until the response closes.
       const result = await client.query<ProjectVideoRow>(
         `SELECT asset_id, project_id, scene_id, job_id, content_type,
                 octet_length(payload)::text AS size_bytes, sha256, created_at
@@ -348,21 +392,17 @@ export function createProjectVideoAssetStore(
       );
       const row = result.rows[0];
       if (!row) {
-        await client.query('ROLLBACK');
-        inTransaction = false;
-        client.release();
-        return null;
+        await client.query('ROLLBACK'); inTransaction = false;
+        client.release(); client = null; releaseAdmission(); return null;
       }
       const asset = toAsset(row);
       let released = false;
       const close = async () => {
         if (released) return;
         released = true;
-        if (inTransaction) {
-          await client.query('COMMIT').catch(() => undefined);
-          inTransaction = false;
-        }
-        client.release();
+        try {
+          if (inTransaction) { await client!.query('COMMIT').catch(() => undefined); inTransaction = false; }
+        } finally { client!.release(); releaseAdmission(); }
       };
       const chunksForRange = (rangeStart = 0, rangeEnd = asset.sizeBytes - 1): AsyncIterable<Buffer> => {
         const start = Math.max(0, Math.min(asset.sizeBytes - 1, Math.floor(rangeStart)));
@@ -372,26 +412,21 @@ export function createProjectVideoAssetStore(
             const chunkBytes = 256 * 1024;
             for (let offset = start; offset <= end; offset += chunkBytes) {
               const length = Math.min(chunkBytes, end - offset + 1);
-              const chunkResult = await client.query<{ chunk: Buffer }>(
+              const chunkResult = await client!.query<{ chunk: Buffer }>(
                 'SELECT substring(payload FROM $2 FOR $3) AS chunk FROM zero_project_video_assets WHERE asset_id = $1',
                 [assetId, offset + 1, length],
               );
               const chunk = chunkResult.rows[0]?.chunk;
-              if (!Buffer.isBuffer(chunk) || chunk.length !== length) {
-                throw new Error('Project video stream returned an incomplete database chunk.');
-              }
+              if (!Buffer.isBuffer(chunk) || chunk.length !== length) throw new Error('Project video stream returned an incomplete database chunk.');
               yield chunk;
             }
-          } finally {
-            await close();
-          }
+          } finally { await close(); }
         })();
       };
       return { ...asset, chunksForRange, close };
     } catch (error) {
-      if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
-      client.release();
-      throw error;
+      if (inTransaction && client) await client.query('ROLLBACK').catch(() => undefined);
+      client?.release(); releaseAdmission(); throw error;
     }
   }
 

@@ -40,12 +40,13 @@ export function parseProjectVideoRange(
   return { kind: 'partial', start, end };
 }
 
+export interface ProjectVideoStreamTimeouts { idleTimeoutMs?: number; maxLifetimeMs?: number }
 export function sendProjectVideoStream(
-  req: Request,
-  res: Response,
-  asset: OpenProjectVideoStream,
-  download = false,
+  req: Request, res: Response, asset: OpenProjectVideoStream, download = false,
+  timeouts: ProjectVideoStreamTimeouts = {},
 ): Response {
+  const idleTimeoutMs = timeouts.idleTimeoutMs ?? 30_000;
+  const maxLifetimeMs = timeouts.maxLifetimeMs ?? 600_000;
   const etag = `"${asset.sha256}"`;
   const range = parseProjectVideoRange(
     req.headers.range,
@@ -73,15 +74,21 @@ export function sendProjectVideoStream(
     res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${asset.sizeBytes}`);
   }
   const body = Readable.from(asset.chunksForRange(range.start, range.end), { objectMode: false });
-  res.once('close', () => {
-    if (!res.writableEnded) {
-      body.destroy();
-      void asset.close();
-    }
-  });
+  let closed = false;
+  const cleanup = () => { if (closed) return; closed = true; clearTimeout(lifetimeTimer); res.setTimeout(0); };
+  const terminate = (message: string) => {
+    if (closed) return;
+    cleanup(); body.destroy(new Error(message)); void asset.close();
+    if (!res.destroyed) res.destroy();
+  };
+  const lifetimeTimer = setTimeout(() => terminate('Project video stream exceeded its maximum lifetime.'), maxLifetimeMs);
+  res.setTimeout(idleTimeoutMs, () => terminate('Project video stream was idle for too long.'));
+  res.once('finish', cleanup);
+  res.once('close', () => { cleanup(); if (!res.writableEnded) { body.destroy(); void asset.close(); } });
   body.once('error', (error) => {
+    cleanup(); void asset.close();
     if (!res.headersSent) res.status(500).end();
-    else res.destroy(error);
+    else if (!res.destroyed) res.destroy(error);
   });
   body.pipe(res);
   return res;

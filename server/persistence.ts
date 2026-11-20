@@ -1,5 +1,7 @@
 import { Pool } from 'pg';
 
+export const POSTGRES_POOL_MAX = 5;
+
 let pool: Pool | null = null;
 let stateStore: ReturnType<typeof createPostgresStateStore> | null = null;
 
@@ -326,7 +328,7 @@ export function getPostgresPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      max: 5,
+      max: POSTGRES_POOL_MAX,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 8_000,
       statement_timeout: 15_000,
