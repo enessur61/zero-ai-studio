@@ -178,6 +178,61 @@ try {
     await new Promise<void>((resolve, reject) => videoHttpServer.close((error) => error ? reject(error) : resolve()));
   }
 
+  // Slow/parallel video streams intentionally retain a shared row lock and
+  // one pool connection each for a byte-consistent response. Verify the
+  // configured stream pool can serve concurrent readers, exposes bounded
+  // queueing rather than opening unbounded connections, and blocks deletion
+  // until all readers close their transactions.
+  const concurrentVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-parallel',
+    principalHash: videoPrincipal,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
+  await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
+  const concurrentStreams = await Promise.all(Array.from({ length: 3 }, () =>
+    concurrentStreamStore.openRead(concurrentVideo.id, 'project-video-integration', videoPrincipal)
+  ));
+  assert.ok(concurrentStreams.every(Boolean), 'all parallel stream readers acquire a row snapshot');
+  assert.equal(gatePoolA.totalCount, 3, 'parallel streams use the explicitly bounded three-connection pool');
+  const concurrentIterators = concurrentStreams.map((stream) =>
+    stream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]()
+  );
+  let deleteCompleted = false;
+  let queuedReadCompleted = false;
+  try {
+    const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
+    assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
+    assert.ok(firstChunks.every((entry) => entry.value!.length <= 256 * 1024),
+      'slow parallel streams still read no more than 256 KiB per database chunk');
+
+    const queuedRead = concurrentStreamStore.list('project-video-integration', videoPrincipal)
+      .then((items) => { queuedReadCompleted = true; return items; });
+    for (let attempt = 0; attempt < 50 && gatePoolA.waitingCount === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(gatePoolA.waitingCount, 1,
+      'a fourth query queues behind three deliberately paused streams instead of exceeding the pool limit');
+
+    const blockedDelete = projectVideoStoreB.remove(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((removed) => { deleteCompleted = true; return removed; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(deleteCompleted, false,
+      'the shared row locks prevent deletion from changing bytes during an active stream');
+    assert.equal(queuedReadCompleted, false, 'the saturated pool does not pretend a queued read has completed');
+
+    await Promise.all(concurrentIterators.map((iterator) => iterator.return?.()));
+    const queuedItems = await queuedRead;
+    assert.ok(queuedItems.some((item) => item.id === concurrentVideo.id));
+    assert.equal(await blockedDelete, true, 'deletion proceeds after the last stream releases its lock');
+  } finally {
+    await Promise.all(concurrentIterators.map((iterator) => iterator.return?.().catch?.(() => undefined)));
+    await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
+  }
+
   const projectCleanupVideo = await projectVideoStore.put({
     projectId: 'project-video-integration',
     sceneId: 'scene-project-cleanup',
