@@ -16,11 +16,6 @@ services:
       - "127.0.0.1:3000:3000"
     security_opt:
       - no-new-privileges:true
-    # Piper is optional; ZERO must remain available when the local worker is offline.
-    depends_on:
-      zero-worker:
-        condition: service_started
-
   zero-worker:
     build:
       context: ./piper-worker
@@ -49,10 +44,6 @@ services:
       retries: 3
     volumes:
       - piper-voice-cache:/var/lib/zero-piper
-    depends_on:
-      searxng:
-        condition: service_healthy
-
   searxng:
     image: searxng/searxng:latest
     restart: unless-stopped
