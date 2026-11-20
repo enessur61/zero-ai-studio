@@ -110,6 +110,61 @@ print(json.dumps({"completed": jobs["completed"]["status"], "interrupted": jobs[
             self.assertIn('"completed": "succeeded"', result.stdout)
             self.assertIn('"interrupted": "failed"', result.stdout)
 
+    def test_idempotent_create_returns_same_job_and_rejects_changed_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            first = {
+                "id": "job-one", "status": "queued", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1", "scene_id": "scene-1",
+            }
+            created, replayed, conflict = store.create_or_get(first)
+            self.assertEqual(created["id"], "job-one")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+
+            retry = dict(first, id="job-two")
+            existing, replayed, conflict = store.create_or_get(retry)
+            self.assertEqual(existing["id"], "job-one")
+            self.assertTrue(replayed)
+            self.assertFalse(conflict)
+
+            changed = dict(retry, request_fingerprint="d" * 64)
+            existing, replayed, conflict = store.create_or_get(changed)
+            self.assertEqual(existing["id"], "job-one")
+            self.assertTrue(replayed)
+            self.assertTrue(conflict)
+
+    def test_idempotency_is_scoped_to_principal_and_jobs_are_listed_by_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            base = {
+                "id": "job-a", "status": "succeeded", "principal_hash": "a" * 64,
+                "idempotency_key_hash": "b" * 64, "request_fingerprint": "c" * 64,
+                "project_id": "project-1", "scene_id": "scene-1",
+            }
+            store.create_or_get(base)
+            other_principal = dict(base, id="job-b", principal_hash="e" * 64)
+            created, replayed, conflict = store.create_or_get(other_principal)
+            self.assertEqual(created["id"], "job-b")
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+            self.assertEqual([job["id"] for job in store.list_by_principal("a" * 64, "project-1")], ["job-a"])
+            self.assertEqual(store.list_by_principal("f" * 64), [])
+            self.assertEqual(store.list_by_principal("a" * 64, "other-project"), [])
+
+    def test_job_list_orders_latest_updated_jobs_first_even_with_same_second_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PersistentJobStore(directory)
+            for job_id, key_hash in (("older", "1" * 64), ("newer", "2" * 64)):
+                store.create_or_get({
+                    "id": job_id, "status": "succeeded", "principal_hash": "a" * 64,
+                    "idempotency_key_hash": key_hash, "request_fingerprint": "f" * 64,
+                    "project_id": "project-1", "scene_id": "scene-1",
+                })
+            listed = store.list_by_principal("a" * 64, "project-1")
+            self.assertEqual([job["id"] for job in listed], ["newer", "older"])
+
     def test_delete_removes_persisted_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = PersistentJobStore(directory)

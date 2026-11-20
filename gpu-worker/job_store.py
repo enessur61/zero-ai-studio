@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 _PERSISTENT_FILESYSTEMS = {
     "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs",
     "nfs", "nfs4", "cifs", "ceph", "glusterfs",
@@ -14,12 +13,7 @@ _PERSISTENT_FILESYSTEMS = {
 
 
 def has_persistent_mount(path: str | Path, mountinfo_text: str | None = None) -> bool:
-    """Return true only when path is backed by a non-ephemeral mounted filesystem.
-
-    Docker's writable container layer (overlay) and memory-backed mounts such
-    as tmpfs are deliberately rejected. The longest matching mount point wins,
-    so a nested ephemeral mount cannot inherit a persistent parent volume.
-    """
+    """Return true only when path is backed by a non-ephemeral mounted filesystem."""
     target = Path(path).resolve()
     if mountinfo_text is None:
         try:
@@ -61,7 +55,7 @@ def require_persistent_storage(configured: bool) -> None:
 
 
 class PersistentJobStore:
-    """SQLite-backed job metadata for a single GPU worker with a persistent volume."""
+    """SQLite-backed, principal-scoped job metadata for a single GPU worker."""
 
     def __init__(self, output_dir: str | Path) -> None:
         self.output_dir = Path(output_dir).resolve()
@@ -86,24 +80,99 @@ class PersistentJobStore:
                 )
                 """
             )
+            # Additive migration: existing persisted jobs remain readable.
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(zero_video_jobs)")}
+            for name in ("principal_hash", "idempotency_key_hash", "request_fingerprint"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE zero_video_jobs ADD COLUMN {name} TEXT")
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS zero_video_jobs_idempotency
+                ON zero_video_jobs(principal_hash, idempotency_key_hash)
+                WHERE principal_hash IS NOT NULL AND idempotency_key_hash IS NOT NULL
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS zero_video_jobs_principal_updated ON zero_video_jobs(principal_hash, updated_at DESC)"
+            )
 
     def save(self, job: dict[str, Any]) -> None:
         payload = json.dumps(job, separators=(",", ":"), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO zero_video_jobs (id, payload, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO zero_video_jobs
+                    (id, payload, updated_at, principal_hash, idempotency_key_hash, request_fingerprint)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     payload = excluded.payload,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP,
+                    principal_hash = excluded.principal_hash,
+                    idempotency_key_hash = excluded.idempotency_key_hash,
+                    request_fingerprint = excluded.request_fingerprint
                 """,
-                (str(job["id"]), payload),
+                (
+                    str(job["id"]), payload, job.get("principal_hash"),
+                    job.get("idempotency_key_hash"), job.get("request_fingerprint"),
+                ),
             )
+
+    def create_or_get(self, job: dict[str, Any]) -> tuple[dict[str, Any], bool, bool]:
+        """Atomically create a job or return the existing principal/key match.
+
+        Returns (job, replayed, fingerprint_conflict). The caller must not
+        enqueue work when replayed is true.
+        """
+        principal_hash = str(job["principal_hash"])
+        key_hash = str(job["idempotency_key_hash"])
+        fingerprint = str(job["request_fingerprint"])
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload, request_fingerprint FROM zero_video_jobs
+                WHERE principal_hash = ? AND idempotency_key_hash = ?
+                """,
+                (principal_hash, key_hash),
+            ).fetchone()
+            if row:
+                existing = json.loads(row[0])
+                return existing, True, str(row[1]) != fingerprint
+            connection.execute(
+                """
+                INSERT INTO zero_video_jobs
+                    (id, payload, updated_at, principal_hash, idempotency_key_hash, request_fingerprint)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+                """,
+                (str(job["id"]), json.dumps(job, separators=(",", ":"), ensure_ascii=False),
+                 principal_hash, key_hash, fingerprint),
+            )
+            return dict(job), False, False
 
     def delete(self, job_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM zero_video_jobs WHERE id = ?", (job_id,))
+
+    def list_by_principal(self, principal_hash: str, project_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(int(limit), 50))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM zero_video_jobs
+                WHERE principal_hash = ?
+                ORDER BY updated_at DESC, rowid DESC LIMIT ?
+                """,
+                (principal_hash, bounded_limit),
+            ).fetchall()
+        jobs: list[dict[str, Any]] = []
+        for (payload,) in rows:
+            try:
+                job = json.loads(payload)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(job, dict) and (project_id is None or job.get("project_id") == project_id):
+                jobs.append(job)
+        return jobs
 
     def load_all(self) -> dict[str, dict[str, Any]]:
         with self._connect() as connection:
