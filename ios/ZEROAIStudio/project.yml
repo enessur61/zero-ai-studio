@@ -11,7 +11,6 @@ settings:
     INFOPLIST_KEY_CFBundleDisplayName: "ZERO AI STUDIO"
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
     INFOPLIST_KEY_UIUserInterfaceStyle: Dark
-    ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
     INFOPLIST_KEY_ZERO_APP_URL: "$(ZERO_APP_URL)"
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "ZERO nutzt das Mikrofon für Spracherkennung und Audioaufnahmen."
     INFOPLIST_KEY_NSCameraUsageDescription: "ZERO nutzt die Kamera, wenn du Bilder oder Videos aufnehmen möchtest."
@@ -30,6 +29,19 @@ targets:
     dependencies:
       - package: ZeroCoreML
         product: ZeroCoreML
+    preBuildScripts:
+      - name: Validate required isolated ZERO server URL
+        script: |
+          set -eu
+          if [ -z "${ZERO_APP_URL:-}" ]; then
+            echo "error: ZERO_APP_URL is required; refusing to build an app without an explicit server URL." >&2
+            exit 1
+          fi
+          if [ -z "${ZERO_PREVIEW_ISOLATION_APPROVED:-}" ]; then
+            echo "error: ZERO_PREVIEW_ISOLATION_APPROVED is required after manual Preview isolation verification." >&2
+            exit 1
+          fi
+          python3 "${SRCROOT}/../scripts/validate_preview_url.py" "$ZERO_APP_URL" "$ZERO_PREVIEW_ISOLATION_APPROVED"
     settings:
       base:
         PRODUCT_NAME: "ZERO AI STUDIO"
