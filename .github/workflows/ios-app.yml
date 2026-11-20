@@ -42,6 +42,19 @@ jobs:
           VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
           printf '%s\\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
+      - name: Validate explicitly approved isolated Preview URL
+        shell: bash
+        env:
+          ZERO_PREVIEW_APP_URL: ${{ vars.ZERO_PREVIEW_APP_URL }}
+          ZERO_PREVIEW_ISOLATION_APPROVED: ${{ vars.ZERO_PREVIEW_ISOLATION_APPROVED }}
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s ios/tests -p 'test_*.py'
+          ZERO_APP_URL="$(python3 ios/scripts/validate_preview_url.py "${ZERO_PREVIEW_APP_URL:-}" "${ZERO_PREVIEW_ISOLATION_APPROVED:-}")"
+          {
+            echo "ZERO_APP_URL=$ZERO_APP_URL"
+            echo "ZERO_PREVIEW_ISOLATION_APPROVED=true"
+          } >> "$GITHUB_ENV"
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml
       - name: Build unsigned iOS Simulator app
@@ -52,6 +65,9 @@ jobs:
           -sdk iphonesimulator
           -configuration Debug
           -destination 'generic/platform=iOS Simulator'
+          ZERO_APP_URL="$ZERO_APP_URL"
+          INFOPLIST_KEY_ZERO_APP_URL="$ZERO_APP_URL"
+          ZERO_PREVIEW_ISOLATION_APPROVED="$ZERO_PREVIEW_ISOLATION_APPROVED"
           CODE_SIGNING_ALLOWED=NO
           build
       - name: Build unsigned iPhone device app
@@ -63,9 +79,25 @@ jobs:
           -configuration Release
           -destination 'generic/platform=iOS'
           -derivedDataPath "$RUNNER_TEMP/ZEROAIStudioDerived"
+          ZERO_APP_URL="$ZERO_APP_URL"
+          INFOPLIST_KEY_ZERO_APP_URL="$ZERO_APP_URL"
+          ZERO_PREVIEW_ISOLATION_APPROVED="$ZERO_PREVIEW_ISOLATION_APPROVED"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           build
+      - name: Verify URL embedded in unsigned iPhone app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
+          PLIST_PATH="$APP_PATH/Info.plist"
+          test -d "$APP_PATH"
+          plutil -lint "$PLIST_PATH"
+          EMBEDDED_URL="$(/usr/libexec/PlistBuddy -c 'Print :ZERO_APP_URL' "$PLIST_PATH")"
+          if [[ "$EMBEDDED_URL" != "$ZERO_APP_URL" ]]; then
+            echo "error: Info.plist ZERO_APP_URL does not match the approved build input." >&2
+            exit 1
+          fi
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
