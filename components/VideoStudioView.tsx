@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { watchProjectVideoRecovery, type ProjectVideoRecoveryState } from '../lib/projectVideoRecovery.ts';
-import { clearProjectVideoPlaybackSnapshot, readProjectVideoPlaybackSnapshot, saveProjectVideoPlaybackSnapshot, type ProjectVideoPlaybackSnapshot, type ProjectVideoSnapshotStorage } from '../lib/projectVideoPlayback.ts';
+import { clearProjectVideoPlaybackSnapshot, findProjectVideoPlaybackAsset, readProjectVideoPlaybackSnapshot, saveProjectVideoPlaybackSnapshot, type ProjectVideoPlaybackSnapshot, type ProjectVideoSnapshotStorage } from '../lib/projectVideoPlayback.ts';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -327,7 +327,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       }
       return;
     }
-    const asset = videoHistory.find((item) => item.id === snapshot.assetId && item.sceneId === snapshot.sceneId);
+    const asset = findProjectVideoPlaybackAsset(snapshot, currentProject?.id, videoHistory);
     if (!asset) {
       if (playbackStorage) clearProjectVideoPlaybackSnapshot(playbackStorage);
       pendingPlaybackRestoreRef.current = null;
