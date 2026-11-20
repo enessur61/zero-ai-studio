@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import {
   ensureZeroCostResourceSchema,
   finishZeroCostResourceOperationWithPool,
+  getZeroResourceOperationStatusWithPool,
   heartbeatZeroCostResourceLeaseWithPool,
   reserveZeroCostResourceOperationWithPool,
   withZeroCostResourceOperation,
@@ -98,6 +99,11 @@ try {
 
   // 8–11: idempotency, payload conflict, and cross-pool duplicate protection.
   const first = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, idempotencyKey: 'idem-key-0001' }, env);
+  const recoveredStatus = await getZeroResourceOperationStatusWithPool(poolB, 'integration-principal', first.operation.operationId);
+  assert.equal(recoveredStatus?.status, 'RESERVED', 'principal-bound lookup returns the current operation state');
+  assert.equal(await getZeroResourceOperationStatusWithPool(poolB, 'another-principal', first.operation.operationId), null,
+    'operation status cannot be read by a different principal');
+
   const replay = await reserveZeroCostResourceOperationWithPool(poolB, { ...base, idempotencyKey: 'idem-key-0001' }, env);
   assert.equal(replay.operation.operationId, first.operation.operationId, 'same principal and canonical request return the original operation');
   assert.equal(replay.operation.replayed, true);
