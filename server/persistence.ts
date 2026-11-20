@@ -1,3 +1,4 @@
+import { runtimeConfig } from './server/runtimeConfig.ts';
 import { Pool } from 'pg';
 
 let pool: Pool | null = null;
@@ -320,12 +321,12 @@ export function createPostgresStateStore(database: Pool) {
 }
 
 export function getPostgresPool(): Pool {
-  if (!process.env.DATABASE_URL) {
+  if (!runtimeConfig.DATABASE_URL) {
     throw new Error('DATABASE_URL fehlt. In Produktion ist eine dauerhafte PostgreSQL-Datenbank erforderlich.');
   }
   if (!pool) {
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: runtimeConfig.DATABASE_URL,
       max: 5,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 8_000,
@@ -510,7 +511,7 @@ export async function deleteBackupFile(id: string): Promise<void> {
 }
 
 export async function checkPostgresConnection(): Promise<boolean> {
-  if (!process.env.DATABASE_URL) return false;
+  if (!runtimeConfig.DATABASE_URL) return false;
   await ensurePostgresSchema();
   await getPostgresPool().query('SELECT 1');
   return true;
