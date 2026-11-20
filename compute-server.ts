@@ -19,6 +19,7 @@ configureRuntimeConfig({
   DATABASE_URL: databaseUrl,
   PORT: String(service.port()),
   NODE_ENV: "production",
+  ZERO_USE_BUN_SQL: "true",
   ZERO_ADMIN_PASSWORD: secret(input.ZERO_ADMIN_PASSWORD),
   ZERO_SESSION_SECRET: secret(input.ZERO_SESSION_SECRET),
   GEMINI_API_KEY: secret(input.GEMINI_API_KEY),
@@ -32,6 +33,11 @@ configureRuntimeConfig({
   ZERO_VIDEO_ENGINE_URL: input.ZERO_VIDEO_ENGINE_URL,
   ZERO_VIDEO_ENGINE_TOKEN: secret(input.ZERO_VIDEO_ENGINE_TOKEN),
 });
+
+// Initialize the native Bun SQL adapter before the Express persistence module
+// is imported. Local/Render Node entry points continue using node-postgres.
+const { initializePostgresDriver } = await import("./server/persistence.ts");
+await initializePostgresDriver();
 
 // The deployment workflow probes /api/health and /api/auth/status after this
 // entrypoint starts, validating only this branch-scoped preview environment.
