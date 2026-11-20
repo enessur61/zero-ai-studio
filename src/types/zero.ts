@@ -180,6 +180,8 @@ export interface ProjectSnapshot {
 
 export interface StudioProject {
   id: string;
+  /** Server-assigned; optional only while hydrating legacy persisted projects. */
+  ownerId?: string;
   title: string;
   logline: string;
   genre: string;
