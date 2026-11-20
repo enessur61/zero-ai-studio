@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: prisma-preview-${{ github.ref }}
+  group: prisma-preview-health-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   deploy:
+    timeout-minutes: 5
     if: github.ref == 'refs/heads/prisma-cloud/setup-v3icl3cvq646n2a35puh95r3'
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +35,7 @@ jobs:
           set -euo pipefail
           base="https://s5j2brwlvh3d4mkm2cyrycm5.fra.prisma.build"
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error "$base/api/health" -o /tmp/zero-health.json; then
+            if curl --connect-timeout 5 --max-time 10 --fail --silent --show-error "$base/api/health" -o /tmp/zero-health.json; then
               break
             fi
             if [ "$attempt" -eq 12 ]; then
@@ -53,7 +54,7 @@ jobs:
           assert readiness.get("authentication") == "ready", "Preview authentication is not ready"
           print("Preview HTTP health and isolated PostgreSQL readiness: PASS")
           PY
-          curl --fail --silent --show-error "$base/api/auth/status" -o /tmp/zero-auth-status.json
+          curl --connect-timeout 5 --max-time 10 --fail --silent --show-error "$base/api/auth/status" -o /tmp/zero-auth-status.json
           python3 - <<'PY'
           import json
           with open("/tmp/zero-auth-status.json", encoding="utf-8") as f:
