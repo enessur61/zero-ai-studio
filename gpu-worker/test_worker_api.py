@@ -151,7 +151,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
 
         cancelled = self.client.post(f"/jobs/{job_id}/cancel", headers=self.headers(self.PRINCIPAL_A))
         self.assertEqual(cancelled.status_code, 200, cancelled.text)
-        self.assertEqual(cancelled.json()["job"]["status"], "cancelled")
+        self.assertEqual(cancelled.json()["status"], "cancelled")
         self.assertTrue(cancelled.json()["cancelled"])
         self.assertEqual(self.client.get(f"/jobs/{job_id}", headers=self.headers(self.PRINCIPAL_A)).json()["status"], "cancelled")
         self.assertEqual(self.client.get(f"/jobs/{job_id}/video", headers=self.headers(self.PRINCIPAL_A)).status_code, 409)
@@ -165,7 +165,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
 
         response = self.client.post(f"/jobs/{job_id}/cancel", headers=self.headers(self.PRINCIPAL_A))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["job"]["status"], "cancel_requested")
+        self.assertEqual(response.json()["status"], "cancel_requested")
         self.assertTrue(response.json()["cancel_requested"])
 
         blocked = self.create_http(principal=self.PRINCIPAL_B, key="c" * 64)
