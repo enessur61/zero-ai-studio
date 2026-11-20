@@ -192,6 +192,8 @@ try {
     payload: mp4Payload,
   });
   const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
+  const appStateStoreDuringStreams = createPostgresStateStore(gatePoolA);
+  await appStateStoreDuringStreams.ensureSchema();
   await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
   assert.equal(POSTGRES_POOL_MAX, 5, 'test imports exact production PostgreSQL pool maximum');
   const concurrentStreams = await Promise.all(Array.from({ length: 2 }, () =>
@@ -214,9 +216,9 @@ try {
       concurrentVideo.id, 'project-video-integration', videoPrincipal
     ).then((stream) => { thirdStreamCompleted = true; return stream; });
     thirdStreamPromise = thirdStream;
-    const appOperation = await gatePoolA.query('SELECT 1 AS app_query_while_streams_are_paused');
-    assert.equal(appOperation.rows[0].app_query_while_streams_are_paused, 1,
-      'ordinary app DB work completes while two video streams are paused');
+    const appOperation = await appStateStoreDuringStreams.read();
+    assert.equal(appOperation, null,
+      'the actual persistent application-state read completes while two video streams are paused');
     assert.equal(gatePoolA.totalCount, 3, 'two video readers and one app query fit in production max=5');
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(thirdStreamCompleted, false, 'third video stream waits before checking out another DB connection');
