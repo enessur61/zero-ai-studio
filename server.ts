@@ -9,7 +9,7 @@ import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, isValidProjectVideoPayload, type ProjectVideoAsset } from './server/projectVideoStore.ts';
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
@@ -79,6 +79,91 @@ let projectVideoAssetStore: ReturnType<typeof createProjectVideoAssetStore> | nu
 function getProjectVideoAssetStore() {
   if (!projectVideoAssetStore) projectVideoAssetStore = createProjectVideoAssetStore(getPostgresPool());
   return projectVideoAssetStore;
+}
+
+const PROJECT_VIDEO_STREAM_CHUNK_BYTES = 256 * 1024;
+
+function parseProjectVideoRange(header: string | undefined, size: number): { start: number; end: number } | null | false {
+  if (!header) return null;
+  const match = /^bytes=(\\d*)-(\\d*)$/.exec(header.trim());
+  if (!match || (!match[1] && !match[2]) || header.includes(',')) return false;
+  let start: number;
+  let end: number;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) return false;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+  }
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) return false;
+  return { start, end: Math.min(end, size - 1) };
+}
+
+async function sendProjectVideoAsset(
+  req: express.Request,
+  res: express.Response,
+  asset: ProjectVideoAsset,
+  projectId: string,
+  principalHash: string,
+  options: { attachment?: boolean; head?: boolean } = {},
+): Promise<void> {
+  const etag = `"${asset.sha256}"`;
+  const rangeHeader = req.get('Range') || undefined;
+  const ifRange = req.get('If-Range');
+  const effectiveRange = ifRange && ifRange !== etag ? undefined : rangeHeader;
+  const range = parseProjectVideoRange(effectiveRange, asset.sizeBytes);
+
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Type', asset.contentType);
+  res.setHeader('Content-Disposition', `${options.attachment ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`);
+
+  if (range === false) {
+    res.setHeader('Content-Range', `bytes */${asset.sizeBytes}`);
+    res.status(416).end();
+    return;
+  }
+
+  const start = range?.start ?? 0;
+  const end = range?.end ?? asset.sizeBytes - 1;
+  const contentLength = end - start + 1;
+  if (range) {
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${asset.sizeBytes}`);
+  } else {
+    res.status(200);
+  }
+  res.setHeader('Content-Length', String(contentLength));
+  if (options.head || req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  let offset = start;
+  while (offset <= end && !res.destroyed) {
+    const length = Math.min(PROJECT_VIDEO_STREAM_CHUNK_BYTES, end - offset + 1);
+    const chunk = await getProjectVideoAssetStore().readRange(
+      asset.id, projectId, principalHash, offset, length,
+    );
+    if (!chunk || chunk.payload.length !== length) {
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy(new Error('Project video archive returned an incomplete byte range.'));
+      return;
+    }
+    offset += chunk.payload.length;
+    if (!res.write(chunk.payload)) {
+      await Promise.race([
+        new Promise<void>((resolve) => res.once('drain', resolve)),
+        new Promise<void>((resolve) => res.once('close', resolve)),
+      ]);
+    }
+  }
+  if (!res.destroyed) res.end();
 }
 
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
@@ -2562,22 +2647,23 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
 }));
 
-app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+async function handleSceneVideoRead(req: express.Request, res: express.Response): Promise<void> {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === req.params.id);
-  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  if (!project) { res.status(404).json({ error: 'Projekt nicht gefunden.' }); return; }
   if (!project.scenes.some((item) => item.id === req.params.sceneId)) {
-    return res.status(404).json({ error: 'Szene nicht gefunden.' });
+    res.status(404).json({ error: 'Szene nicht gefunden.' }); return;
   }
-  const asset = await getProjectVideoAssetStore().getLatestForScene(
-    req.params.id, req.params.sceneId, createZeroPrincipalHash()
+  const principalHash = createZeroPrincipalHash();
+  const asset = await getProjectVideoAssetStore().getLatestForSceneMetadata(
+    req.params.id, req.params.sceneId, principalHash
   );
-  if (!asset) return res.status(404).json({ error: 'Für diese Szene ist kein gespeicherter Videoclip vorhanden.' });
-  res.setHeader('Content-Type', asset.contentType);
-  res.setHeader('Content-Length', String(asset.sizeBytes));
-  res.setHeader('ETag', `"${asset.sha256}"`);
-  res.setHeader('Cache-Control', 'private, no-store');
-  return res.send(asset.payload);
+  if (!asset) { res.status(404).json({ error: 'Für diese Szene ist kein gespeicherter Videoclip vorhanden.' }); return; }
+  await sendProjectVideoAsset(req, res, asset, req.params.id, principalHash);
+}
+app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(handleSceneVideoRead));
+app.head('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
+  await handleSceneVideoRead(req, res);
 }));
 
 app.get('/api/projects/:id/videos', asyncRoute(async (req, res) => {
@@ -2589,23 +2675,20 @@ app.get('/api/projects/:id/videos', asyncRoute(async (req, res) => {
   return res.json({ assets, retention: 'manual-delete', maxClipBytes: 100 * 1024 * 1024, maxProjectBytes: 500 * 1024 * 1024, maxProjectClips: 50 });
 }));
 
-app.get('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
-  if (!/^[0-9a-f-]{36}$/i.test(req.params.assetId)) return res.status(404).json({ error: 'Clip nicht gefunden.' });
+async function handleProjectVideoAssetRead(req: express.Request, res: express.Response): Promise<void> {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.assetId)) { res.status(404).json({ error: 'Clip nicht gefunden.' }); return; }
   const db = await loadDb();
   if (!db.projects.some((item) => item.id === req.params.id)) {
-    return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+    res.status(404).json({ error: 'Projekt nicht gefunden.' }); return;
   }
-  const asset = await getProjectVideoAssetStore().get(
-    req.params.assetId, req.params.id, createZeroPrincipalHash()
-  );
-  if (!asset) return res.status(404).json({ error: 'Clip nicht gefunden oder Aufbewahrungsfrist abgelaufen.' });
-  const download = req.query.download === '1';
-  res.setHeader('Content-Type', asset.contentType);
-  res.setHeader('Content-Length', String(asset.sizeBytes));
-  res.setHeader('ETag', `"${asset.sha256}"`);
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`);
-  return res.send(asset.payload);
+  const principalHash = createZeroPrincipalHash();
+  const asset = await getProjectVideoAssetStore().getMetadata(req.params.assetId, req.params.id, principalHash);
+  if (!asset) { res.status(404).json({ error: 'Clip nicht gefunden oder Aufbewahrungsfrist abgelaufen.' }); return; }
+  await sendProjectVideoAsset(req, res, asset, req.params.id, principalHash, { attachment: req.query.download === '1' });
+}
+app.get('/api/projects/:id/videos/:assetId', asyncRoute(handleProjectVideoAssetRead));
+app.head('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
+  await handleProjectVideoAssetRead(req, res);
 }));
 
 app.delete('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
