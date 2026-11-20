@@ -71,6 +71,7 @@ import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.t
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
+import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
@@ -244,15 +245,24 @@ app.use((_req, res, next) => {
 
 const PUBLIC_ZERO_API_PATHS = new Set(['/live', '/health', '/auth/status', '/auth/login', '/auth/logout']);
 
-app.use('/api', (req, res, next) => {
-  if (PUBLIC_ZERO_API_PATHS.has(req.path)) return next();
-  const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
-  if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
-    return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
-  }
-  res.locals.zeroRequestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
-  next();
-});
+app.use('/api', createApiAuthMiddleware({
+  isProduction: IS_PRODUCTION,
+  adminPassword: ZERO_ADMIN_PASSWORD,
+  sessionSecret: ZERO_SESSION_SECRET,
+  hasValidSession,
+  onAuthenticated: (req, res, next) => {
+    const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
+    if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
+      res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
+      return;
+    }
+    const requestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+    const principal = IS_PRODUCTION ? 'zero-admin' : 'zero-development';
+    res.locals.zeroPrincipal = principal;
+    res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
+    runWithZeroPrincipal(principal, requestIdempotencyKey, next);
+  },
+}));
 
 app.use('/api', createApiAuthMiddleware({
   isProduction: IS_PRODUCTION,
