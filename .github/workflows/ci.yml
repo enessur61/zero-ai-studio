@@ -69,7 +69,7 @@ jobs:
         with:
           go-version: '1.24.2'
       - name: Scan repository content and git history for leaked secrets
-        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner --verbose .
+        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
       - run: npm ci --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
