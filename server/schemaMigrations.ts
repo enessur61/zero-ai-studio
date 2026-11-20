@@ -76,17 +76,6 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
     `,
   },
   {
-    version: 3,
-    name: 'distinguish-provider-rejection-from-accepted-failure',
-    sql: `
-      ALTER TABLE zero_cost_operations
-        DROP CONSTRAINT IF EXISTS zero_cost_operations_status_check;
-      ALTER TABLE zero_cost_operations
-        ADD CONSTRAINT zero_cost_operations_status_check
-        CHECK (status IN ('RESERVED', 'SUCCEEDED', 'FAILED', 'UNKNOWN', 'REJECTED'));
-    `,
-  },
-  {
     version: 2,
     name: 'principal-scoped-resource-daily-usage',
     sql: `
@@ -118,6 +107,17 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
       ON CONFLICT (day_utc, principal_hash, resource_type) DO NOTHING;
     `,
   },
+  {
+    version: 3,
+    name: 'distinguish-provider-rejection-from-accepted-failure',
+    sql: `
+      ALTER TABLE zero_cost_operations
+        DROP CONSTRAINT IF EXISTS zero_cost_operations_status_check;
+      ALTER TABLE zero_cost_operations
+        ADD CONSTRAINT zero_cost_operations_status_check
+        CHECK (status IN ('RESERVED', 'SUCCEEDED', 'FAILED', 'UNKNOWN', 'REJECTED'));
+    `,
+  },,
 ];
 
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
