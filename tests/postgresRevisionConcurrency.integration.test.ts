@@ -17,6 +17,7 @@ import {
 } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
+import { POSTGRES_POOL_MAX } from '../server/persistence.ts';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
 import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
@@ -43,8 +44,8 @@ const schema = `zero_revision_test_${randomUUID().replaceAll('-', '')}`;
 const adminPool = new Pool({ connectionString, max: 1 });
 const poolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const poolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
-const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
-const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
+const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
+const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
 
 try {
   await adminPool.query(`CREATE SCHEMA "${schema}"`);
@@ -192,46 +193,49 @@ try {
   });
   const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
   await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
-  const concurrentStreams = await Promise.all(Array.from({ length: 3 }, () =>
+  assert.equal(POSTGRES_POOL_MAX, 5, 'test imports exact production PostgreSQL pool maximum');
+  assert.equal(gatePoolA.options.max, POSTGRES_POOL_MAX, 'integration uses production pool size');
+  const concurrentStreams = await Promise.all(Array.from({ length: 2 }, () =>
     concurrentStreamStore.openRead(concurrentVideo.id, 'project-video-integration', videoPrincipal)
   ));
-  assert.ok(concurrentStreams.every(Boolean), 'all parallel stream readers acquire a row snapshot');
-  assert.equal(gatePoolA.totalCount, 3, 'parallel streams use the explicitly bounded three-connection pool');
+  assert.ok(concurrentStreams.every(Boolean), 'both admitted stream readers acquire a row snapshot');
+  assert.equal(gatePoolA.totalCount, 2, 'only two of five production connections are reserved by video streams');
   const concurrentIterators = concurrentStreams.map((stream) =>
     stream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]()
   );
   let deleteCompleted = false;
-  let queuedReadCompleted = false;
+  let thirdStreamCompleted = false;
+  let queuedThirdStream: Awaited<ReturnType<typeof concurrentStreamStore.openRead>> | null = null;
   try {
     const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
     assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
     assert.ok(firstChunks.every((entry) => entry.value!.length <= 256 * 1024),
-      'slow parallel streams still read no more than 256 KiB per database chunk');
-
-    const queuedRead = concurrentStreamStore.list('project-video-integration', videoPrincipal)
-      .then((items) => { queuedReadCompleted = true; return items; });
-    for (let attempt = 0; attempt < 50 && gatePoolA.waitingCount === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(gatePoolA.waitingCount, 1,
-      'a fourth query queues behind three deliberately paused streams instead of exceeding the pool limit');
-
+      'slow streams still read no more than 256 KiB per DB chunk');
+    const thirdStream = concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((stream) => { thirdStreamCompleted = true; queuedThirdStream = stream; return stream; });
+    const appOperation = await gatePoolA.query('SELECT 1 AS app_query_while_streams_are_paused');
+    assert.equal(appOperation.rows[0].app_query_while_streams_are_paused, 1,
+      'ordinary app DB work completes while two video streams are paused');
+    assert.equal(gatePoolA.totalCount, 3, 'two video readers and one app query fit in production max=5');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(thirdStreamCompleted, false, 'third video stream waits before checking out another DB connection');
     const blockedDelete = projectVideoStoreB.remove(
       concurrentVideo.id, 'project-video-integration', videoPrincipal
     ).then((removed) => { deleteCompleted = true; return removed; });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(deleteCompleted, false,
-      'the shared row locks prevent deletion from changing bytes during an active stream');
-    assert.equal(queuedReadCompleted, false, 'the saturated pool does not pretend a queued read has completed');
-
+    assert.equal(deleteCompleted, false, 'shared row locks preserve bytes while admitted streams remain active');
     await Promise.all(concurrentIterators.map((iterator) => iterator.return?.()));
-    const queuedItems = await queuedRead;
-    assert.ok(queuedItems.some((item) => item.id === concurrentVideo.id));
-    assert.equal(await blockedDelete, true, 'deletion proceeds after the last stream releases its lock');
+    const third = await thirdStream;
+    assert.ok(third, 'queued third stream is admitted after an active stream closes');
+    assert.equal(thirdStreamCompleted, true);
+    await third!.close();
+    assert.equal(await blockedDelete, true, 'deletion proceeds after all stream readers release their locks');
   } finally {
     await Promise.all(concurrentIterators.map(async (iterator) => {
-      try { await iterator.return?.(); } catch { /* cleanup continues for the remaining readers */ }
+      try { await iterator.return?.(); } catch { /* cleanup continues */ }
     }));
+    if (queuedThirdStream) await queuedThirdStream.close().catch(() => undefined);
     await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
   }
 
