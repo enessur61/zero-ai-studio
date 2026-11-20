@@ -265,6 +265,7 @@ export function BrainView({
         }
         if (!finalMessages) throw new Error('ZERO hat den Antwort-Stream unerwartet beendet.');
         setMessages(finalMessages);
+        await chatIdempotency.clear();
         setWebgpuAssistantDraft('');
       }
     } catch (err) {
