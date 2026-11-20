@@ -50,7 +50,7 @@ export function sendProjectVideoStream(
   const range = parseProjectVideoRange(
     req.headers.range,
     asset.sizeBytes,
-    req.headers['if-range'],
+    typeof req.headers['if-range'] === 'string' ? req.headers['if-range'] : undefined,
     etag,
   );
   res.setHeader('Accept-Ranges', 'bytes');
