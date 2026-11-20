@@ -305,7 +305,13 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       maxVideoDurationSec: 60,
       readiness: { database: 'ready', authentication: 'ready' },
     });
-  } catch {
+  } catch (error) {
+    const dbError = error instanceof Error ? error : new Error(String(error));
+    console.error('[ZERO HEALTH] PostgreSQL readiness failed:', {
+      name: dbError.name,
+      code: 'code' in dbError ? dbError.code : undefined,
+      message: dbError.message,
+    });
     return res.status(503).json({
       ok: false,
       app: 'ZERO AI STUDIO',
