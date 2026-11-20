@@ -11,6 +11,7 @@ on:
       - 'components/SettingsView.tsx'
       - 'server.ts'
       - 'tests/zeroCostResourceGuard*.test.ts'
+      - 'tests/videoStudioAuthUnmount.integration.test.mjs'
       - '.github/workflows/zero-resource-guard-integration.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -48,6 +49,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install isolated React DOM test runtime (test-only)
+        run: npm install --no-save --package-lock=false --ignore-scripts jsdom@26.1.0
       - run: npm run lint
       - run: npm test
       - name: ZERO resource guard PostgreSQL integration (no provider calls)
