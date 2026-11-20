@@ -105,7 +105,10 @@ jobs:
             }));
           }
           NODE
-          exit "$scan_status"
+          echo "GITLEAKS_STATUS=$scan_status" >> "$GITHUB_ENV"
+          # Continue with isolated tests even when the historical secret scan fails.
+          # The final gate below still keeps the overall CI result red.
+          exit 0
       - run: npm ci --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
@@ -133,6 +136,16 @@ jobs:
           ZERO_POSTGRES_TESTS: 'true'
         run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
       - run: npm run build
+      - name: Enforce Gitleaks result after completing validation
+        if: always()
+        shell: bash
+        run: |
+          if [ "${GITLEAKS_STATUS:-1}" != "0" ]; then
+            echo "Gitleaks detected a finding. Review the redacted metadata above; CI remains blocked."
+            exit 1
+          fi
+          echo "Gitleaks passed."
+
       - name: Production server smoke test
         shell: bash
         run: |
