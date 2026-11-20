@@ -832,6 +832,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
     const parsed: unknown = JSON.parse(raw);
     assertRestorableDatabase(parsed);
     migrateProjectOwnership(parsed.projects);
+    parsed.continuity = validateContinuityState(parsed.continuity ?? emptyContinuityState());
     restored = parsed;
   } catch (error) {
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
