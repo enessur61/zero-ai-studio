@@ -4,6 +4,7 @@ import {
   PROJECT_VIDEO_PLAYBACK_SNAPSHOT_KEY,
   readProjectVideoPlaybackSnapshot,
   saveProjectVideoPlaybackSnapshot,
+  persistProjectVideoPlaybackOnUnmount,
   findProjectVideoPlaybackAsset,
   shouldOpenVideoStudioForPlaybackSnapshot,
   type ProjectVideoSnapshotStorage,
@@ -39,6 +40,18 @@ assert.equal(findProjectVideoPlaybackAsset(restoredAfterLogin!, 'project-1', his
   'post-login history lookup restores the exact project, clip and scene');
 assert.equal(findProjectVideoPlaybackAsset(restoredAfterLogin!, 'another-project', history), null,
   'a playback marker cannot select a clip from another project');
+
+// Exercise the same unmount persistence helper used when the expired-session
+// auth gate removes VideoStudioView. Safari has already reset currentTime.
+persistProjectVideoPlaybackOnUnmount(storage, restoredAfterLogin, 0, 42.75, true, true, 1002);
+const afterAuthUnmount = readProjectVideoPlaybackSnapshot(storage, 1003);
+assert.equal(afterAuthUnmount?.currentTime, 42.75,
+  'auth-expiry unmount must not overwrite cached position with Safari currentTime=0');
+assert.equal(afterAuthUnmount?.shouldPlay, true, 'auth-expiry unmount preserves previous playback intent');
+const afterReloginRemount = readProjectVideoPlaybackSnapshot(storage, 1004);
+assert.equal(shouldOpenVideoStudioForPlaybackSnapshot(afterReloginRemount), true);
+assert.equal(findProjectVideoPlaybackAsset(afterReloginRemount!, 'project-1', history)?.title, 'Selected clip',
+  'a fresh authenticated Video Studio mount restores the exact archived clip after login');
 assert.equal(readProjectVideoPlaybackSnapshot(storage, 1000 + 24 * 60 * 60 * 1000 + 1), null,
   'stale recovery markers expire after one day');
 assert.equal(storage.getItem(PROJECT_VIDEO_PLAYBACK_SNAPSHOT_KEY), null,
