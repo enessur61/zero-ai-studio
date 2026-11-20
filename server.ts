@@ -71,7 +71,7 @@ import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.t
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
-import { createApiAuthMiddleware } from './server/apiAuth.ts';
+
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
