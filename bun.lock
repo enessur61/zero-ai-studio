@@ -10,6 +10,7 @@
         "@prisma/composer": "0.38.0",
         "@prisma/composer-prisma-cloud": "0.38.0",
         "@prisma/orm-postgres": "8.0.0-rc.23",
+        "arktype": "2.2.10",
         "@tailwindcss/vite": "^4.3.3",
         "@vitejs/plugin-react": "^6.1.1",
         "dotenv": "^17.2.3",
