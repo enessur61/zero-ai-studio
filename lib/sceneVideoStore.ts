@@ -221,7 +221,7 @@ export async function downloadSceneVideoInRanges(
           method: 'GET', credentials: 'same-origin', cache: 'no-store', headers,
         });
         const contentRange = response.headers.get('content-range') || '';
-        const match = /^bytes (\\d+)-(\\d+)\\/(\\d+)$/.exec(contentRange);
+        const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(contentRange);
         if (response.status !== 206 || !match ||
             Number(match[1]) !== start || Number(match[2]) !== end || Number(match[3]) !== totalBytes) {
           throw new Error('ZERO hat einen unvollständigen oder nicht passenden Bytebereich geliefert.');
