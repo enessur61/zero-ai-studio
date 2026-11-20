@@ -1,5 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
+import { ZERO_ADMIN_PRINCIPAL_ID, migrateProjectOwnership } from './projectIdentity.ts';
+import { emptyContinuityState, type ContinuityState } from '../src/types/continuity.ts';
+import { validateContinuityState } from './continuity.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -39,6 +42,7 @@ export interface ZeroDatabase {
   automationRuns: AutomationRun[];
   backups: SystemBackupMeta[];
   backupConfig: BackupConfigState;
+  continuity?: ContinuityState;
   settings: {
     targetDevice: 'iPhone 16 Pro Max';
     maxVideoDurationSec: 60;
@@ -53,7 +57,9 @@ const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const ZIP_BACKUP_DIR = path.resolve(process.cwd(), 'exports', 'zips');
 const DB_PATH = path.join(DATA_DIR, 'zero-studio-db.json');
 
-function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
+const GEMINI_FREE_TIER_PRIVACY_NOTICE = 'Datenschutz: Google kann Inhalte aus dem kostenlosen Gemini-API-Tarif zur Verbesserung seiner Produkte verwenden. Sende keine sensiblen personenbezogenen oder vertraulichen Daten. ZERO kann den externen Abrechnungsstatus nicht selbst prüfen; für 0 € muss die Abrechnung im Google-Projekt deaktiviert und ZERO_GEMINI_FREE_TIER_ONLY=true gesetzt sein. Kein kostenpflichtiger Fallback.';
+
+export function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   let freeTierType: FreeTierClassification;
   let prerequisites = 'Keine zusätzlichen Voraussetzungen — direkt einsatzbereit.';
 
@@ -85,9 +91,15 @@ function enrichModelMetadata(def: ModelDefinition): ModelDefinition {
   ) {
     freeTierType = 'DERZEIT NICHT VERFÜGBAR';
     prerequisites = 'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar. Kein kostenpflichtiger Fallback.';
+  } else if (def.id === 'gemini-web-grounding') {
+    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
+    prerequisites = `Legacy-Zugriff auf Gemini 2.5 Flash-Lite ist für neue API-Projekte nicht garantiert; ein echter Live-Test ist erforderlich. Google Search Grounding mit Gemini 3 und neuer ist im Free-Tier nicht verfügbar. Bevorzugt ZERO_WEB_SEARCH_URL + ZERO_WEB_SEARCH_TOKEN für die private SearXNG-Websuche; optional Cloudflare GLM nur nach bestätigtem Workers-Free-Gate. Kein kostenpflichtiger Fallback. ${GEMINI_FREE_TIER_PRIVACY_NOTICE}`;
+  } else if (def.provider === 'Google GenAI Free Tier') {
+    freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
+    prerequisites = `Server-seitiger GEMINI_API_KEY im Google AI Studio Free Tier und innerhalb des jeweiligen Modellkontingents. ${GEMINI_FREE_TIER_PRIVACY_NOTICE}`;
   } else if (['cloudflare-glm-4.7-flash', 'flux-1-schnell-free', 'cloudflare-whisper-large-v3-turbo', 'cloudflare-moondream-3.1-9b-a2b'].includes(def.id)) {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
-    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN auf dem ZERO-Server. Cloudflare Workers AI Free stellt 10.000 Neurons pro Tag für alle Modelle gemeinsam bereit; kein kostenpflichtiger Fallback.';
+    prerequisites = 'CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN und beide ZERO-CLOUDFLARE-Freigaben nach manueller Prüfung des Workers-Free-Tarifs. Workers Free umfasst 10.000 Neurons pro Tag gemeinsam für alle Modelle; Workers Paid startet bei 5 USD pro Monat; zusätzlich kann Nutzung oberhalb der Freizuteilung kostenpflichtig werden. ZERO bleibt standardmäßig gesperrt und nutzt keinen kostenpflichtigen Fallback.';
   } else {
     freeTierType = 'EINGESCHRÄNKT KOSTENLOS (FREE TIER)';
     prerequisites = 'Server-seitiger GEMINI_API_KEY im kostenlosen Free-Tier Tageskontingent.';
@@ -273,6 +285,7 @@ function createDefaultDatabase(): ZeroDatabase {
     projects: [
       {
         id: projectId,
+        ownerId: ZERO_ADMIN_PRINCIPAL_ID,
         title: 'Schatten über Mitte',
         logline: 'Eine Akustik-Forensikerin entdeckt in einer verregneten Berliner Nacht ein wiederkehrendes Signal in alten Tonbändern.',
         genre: 'Neo-Noir Thriller',
@@ -421,6 +434,7 @@ function createDefaultDatabase(): ZeroDatabase {
     ],
     automationRuns: [],
     backups: [],
+    continuity: emptyContinuityState(),
     backupConfig: {
       currentVersion: '1.1.0',
       autoZipOnChange: false,
@@ -470,7 +484,11 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
+    const previousContinuity = parsed.continuity;
+    parsed.continuity = validateContinuityState(parsed.continuity ?? emptyContinuityState());
+    const migratedContinuityState = !isDeepStrictEqual(previousContinuity, parsed.continuity);
     const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
+    const migratedProjectOwnership = migrateProjectOwnership(parsed.projects);
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
     parsed.models = INITIAL_MODEL_CATALOG.map((def) => {
@@ -623,8 +641,8 @@ export async function loadDb(): Promise<ZeroDatabase> {
       } else if (stored) {
         dbRevisions.set(parsed, stored.revision);
       }
-    } else if (migratedStaticAssetPathCount > 0) {
-      // Persist the one-time migration in local file-backed development too.
+    } else if (migratedStaticAssetPathCount > 0 || migratedProjectOwnership || migratedContinuityState) {
+      // Persist one-time migrations in local file-backed development too.
       await saveDb(parsed);
     }
     return dbCache;
@@ -813,6 +831,8 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   try {
     const parsed: unknown = JSON.parse(raw);
     assertRestorableDatabase(parsed);
+    migrateProjectOwnership(parsed.projects);
+    parsed.continuity = validateContinuityState(parsed.continuity ?? emptyContinuityState());
     restored = parsed;
   } catch (error) {
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);

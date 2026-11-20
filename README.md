@@ -7,6 +7,24 @@ Eigenständige 0 € KI-Produktionsplattform für Web & iPhone 16 Pro Max (insta
 
 ---
 
+## ZERO COST GUARD (gemeinsames Tagesbudget)
+
+Alle serverseitigen Cloudflare-Workers-AI- und Gemini-Free-Tier-Aufrufe müssen vor dem Providerzugriff eine atomare Reservierung im gemeinsamen PostgreSQL-Tagesbudget erhalten. Die Reservierung wird über alle Studios und ZERO-Instanzen geteilt und zusammen mit einem Audit-Ereignis dauerhaft gespeichert. Bei fehlender Datenbank, ungültiger Konfiguration, SQL-Fehlern oder ausgeschöpftem Budget wird fail-closed gestoppt; es gibt keinen lokalen Produktions-Fallback und keinen kostenpflichtigen Provider-Fallback.
+
+Die Kostenfreigabe ist standardmäßig deaktiviert. Nur nach manueller Prüfung des tatsächlichen Anbieter-Tarifs und der Abrechnungsoptionen darf ein Administrator alle erforderlichen Variablen ausdrücklich setzen:
+
+```env
+ZERO_COST_GUARD_ENABLED=false
+ZERO_COST_GUARD_FREE_ONLY_CONFIRMED=false
+ZERO_COST_GUARD_DAILY_REQUEST_LIMIT=0
+ZERO_CLOUDFLARE_AI_ENABLED=false
+ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=false
+```
+
+Für Cloudflare müssen die beiden Cloudflare-Freigaben zusätzlich ausdrücklich bestätigt werden. Für Gemini bleibt `ZERO_GEMINI_FREE_TIER_ONLY` erforderlich. Das interne Budget zählt Provider-Anfragen, nicht Cloudflare-Neurons oder Provider-seitige Token-/Audio-/Bildmengen; es ersetzt deshalb weder die Kontrolle des tatsächlichen Provider-Tarifs noch das jeweilige Provider-Kontingent. Das interne Tagesbudget setzt sich UTC-basiert zurück, Provider-Quota-Sperren werden dadurch nicht automatisch aufgehoben.
+
+Produktionsaufrufe benötigen `DATABASE_URL`. Ohne persistente PostgreSQL-Kontrolle bleibt der Guard gesperrt. Keine dieser Variablen wird automatisch aktiviert oder in einem Deployment gesetzt.
+
 ## 1. Projektstruktur
 
 Die produktive Web-App liegt bewusst im Repository-Root; die iPhone-App und die optionalen Worker sind getrennte Pakete.
@@ -172,10 +190,11 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 ## 4. Datenbank & Persistenz
 
 - **Lokale Entwicklung**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`).
-- **Produktion / Render**: PostgreSQL über `DATABASE_URL`. Die App speichert den vollständigen ZERO-Zustand als JSONB in `zero_app_state`; JSON-System-Backups und verifizierte ZIP-Archive liegen als `BYTEA` in `zero_backup_files`. Damit hängen Produktionsdaten und Backups nicht vom flüchtigen Render-Dateisystem ab.
+- **CI / Pull Requests**: GitHub Actions startet für PostgreSQL-Integrationstests einen isolierten PostgreSQL-16-Dienst. Dieser ersetzt Neon ausschließlich für CI-/PR-Tests; die Produktionsdatenbank bleibt separat über `DATABASE_URL` konfiguriert.
+- **Produktion**: PostgreSQL über `DATABASE_URL`. Die App speichert den vollständigen ZERO-Zustand als JSONB in `zero_app_state`; JSON-System-Backups und verifizierte ZIP-Archive liegen als `BYTEA` in `zero_backup_files`. Damit hängen Produktionsdaten und Backups nicht von einem flüchtigen Anwendungsdateisystem ab.
 - **Initialisierung**: Tabellen werden beim ersten Datenbankzugriff automatisch angelegt. Ist noch kein Zustand vorhanden, wird das Standardprojekt initialisiert und in PostgreSQL gespeichert. Vorhandene Datensätze werden nicht durch die Initialisierung überschrieben.
-- **Produktionsschutz**: Ohne `DATABASE_URL` verweigert ZERO in Produktion den Zugriff auf die JSON-Datei. `ZERO_ALLOW_EPHEMERAL_DB=true` ist ausschließlich für den CI-Smoke-Test vorgesehen und darf nicht in Render gesetzt werden.
-- **Backup-Limit**: Die Datenbank und die darin gespeicherten ZIP-Dateien teilen sich das Speicherlimit des PostgreSQL-Anbieters. Große Medienproduktionen sollten deshalb nicht dauerhaft als Binärdateien in der Datenbank archiviert werden; dafür wäre später ein separater Object-Storage nötig.
+- **Produktionsschutz**: Ohne `DATABASE_URL` verweigert ZERO in Produktion den Zugriff auf die JSON-Datei. `ZERO_ALLOW_EPHEMERAL_DB=true` ist ausschließlich für den CI-Smoke-Test vorgesehen und darf in keiner Produktionsumgebung gesetzt werden.
+- **Backup-Limit**: Die Datenbank und die darin gespeicherten ZIP-Dateien teilen sich das Speicherlimit des PostgreSQL-Servers. Große Medienproduktionen sollten deshalb nicht dauerhaft als Binärdateien in der Datenbank archiviert werden; dafür wäre später ein separater Object-Storage nötig.
 
 ---
 

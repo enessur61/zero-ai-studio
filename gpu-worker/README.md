@@ -39,6 +39,20 @@ All endpoints except `GET /health` require `Authorization: Bearer <token>`.
 
 The worker serializes GPU inference, persists job metadata in SQLite, limits job history, validates UUIDs and prompts, and never attempts a paid fallback. With the required persistent volume mounted, completed job records and MP4 files survive worker restarts. Queued/running jobs are marked failed on restart because their GPU execution cannot safely be resumed. Without a persistent mount, the data remains ephemeral; set `WAN_REQUIRE_PERSISTENT_STORAGE=true` in production so startup fails closed when the configured output path is not mounted.
 
+## ZERO project clip archive
+
+When a completed Wan clip is recovered in ZERO Video Studio, the app can copy the binary MP4/WebM into the existing PostgreSQL database as a principal-bound project asset. This is separate from the worker's SQLite job history and persistent GPU volume, so a clip remains available in the project's history even after the worker prunes an old job record.
+
+- Maximum clip size: 100 MiB.
+- Maximum archived clips per project: 50.
+- Maximum total archived video per project: 500 MiB.
+- Retention: archived project clips remain until the user explicitly deletes them or deletes the owning project.
+- No time-based auto-deletion is applied to archived project clips; hard per-project count and byte quotas prevent unbounded growth.
+- Users can explicitly download or delete individual clips; deleting a project removes its archived clips.
+- PostgreSQL must be configured for durable production use. If the database is unavailable, ZERO may keep a local IndexedDB cache, but it must not report that the clip is durably archived.
+
+The archive uses the existing ZERO PostgreSQL connection; it does not introduce a new paid storage provider. Database capacity and hosting costs still depend on the existing deployment plan.
+
 ## Hardware and cost
 
 The model is open-weight, but GPU compute, electricity, storage, and network hosting are not inherently free. This repository does not claim a permanently free GPU host. Do not deploy it to a paid service unless you intentionally choose to do so.

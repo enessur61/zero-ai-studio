@@ -1,4 +1,7 @@
 import type { ZipBackupVersion } from '../src/types/zero.ts';
+import { migrateProjectOwnership } from './projectIdentity.ts';
+import { emptyContinuityState } from '../src/types/continuity.ts';
+import { validateContinuityState } from './continuity.ts';
 import type { ZeroDatabase } from './store.ts';
 
 type VerifiedZip = {
@@ -53,6 +56,8 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
     try {
       const parsed: unknown = JSON.parse(dbEntry.toString('utf8'));
       dependencies.assertRestorableDatabase(parsed);
+      migrateProjectOwnership(parsed.projects);
+      parsed.continuity = validateContinuityState(parsed.continuity ?? emptyContinuityState());
       parsedRestoredDb = parsed;
     } catch (err) {
       throw new Error(

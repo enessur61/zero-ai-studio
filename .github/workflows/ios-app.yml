@@ -10,7 +10,6 @@ on:
     paths:
       - "ios/**"
       - ".github/workflows/ios-app.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -81,4 +80,4 @@ jobs:
           name: ZEROAIStudio-unsigned-IPA
           path: ${{ runner.temp }}/ZEROAIStudio-unsigned.ipa
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7

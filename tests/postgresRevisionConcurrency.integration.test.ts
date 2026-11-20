@@ -17,7 +17,12 @@ import {
 } from '../server/zipExporter.ts';
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
+import { POSTGRES_POOL_MAX } from '../server/persistence.ts';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
+import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
+import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
+import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -39,8 +44,8 @@ const schema = `zero_revision_test_${randomUUID().replaceAll('-', '')}`;
 const adminPool = new Pool({ connectionString, max: 1 });
 const poolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
 const poolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
-const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
-const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 3 });
+const gatePoolA = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
+const gatePoolB = new Pool({ connectionString, options: `-c search_path=${schema}`, max: POSTGRES_POOL_MAX });
 
 try {
   await adminPool.query(`CREATE SCHEMA "${schema}"`);
@@ -50,6 +55,256 @@ try {
   // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
   await storeA.ensureSchema();
   await storeB.ensureSchema();
+
+  // Principal-bound durable video assets use versioned PostgreSQL schema and
+  // binary storage. Exercise >8 MB payloads across independent DB pools.
+  await ensureZeroCostResourceSchema(poolA);
+  await ensureZeroCostResourceSchema(poolB);
+  const migrationVersions = await poolA.query('SELECT version FROM zero_schema_migrations ORDER BY version');
+  assert.deepEqual(migrationVersions.rows.map((row) => Number(row.version)), [1, 2, 3],
+    'project video archive schema is applied through the versioned migration chain');
+
+  const projectVideoStore = createProjectVideoAssetStore(poolA);
+  const projectVideoStoreB = createProjectVideoAssetStore(poolB);
+  const videoPrincipal = 'd'.repeat(64);
+  const otherVideoPrincipal = 'e'.repeat(64);
+  const videoJobId = randomUUID();
+  const mp4Payload = Buffer.alloc(8 * 1024 * 1024 + 1, 0x5a);
+  mp4Payload.write('ftyp', 4, 'ascii');
+  const archivedVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-integration',
+    principalHash: videoPrincipal,
+    jobId: videoJobId,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  assert.equal(archivedVideo.sizeBytes, mp4Payload.length);
+  assert.match(archivedVideo.sha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(
+    () => projectVideoStore.put({
+      projectId: 'project-video-integration', sceneId: 'scene-video-integration',
+      principalHash: videoPrincipal, contentType: 'video/mp4', payload: mp4Payload.subarray(0, 2048),
+      isProjectActive: async () => false,
+    }),
+    (error) => error instanceof ProjectVideoProjectNotFoundError,
+    'an upload that waited behind project deletion must re-check authoritative project state',
+  );
+  assert.equal((await projectVideoStoreB.list('project-video-integration', videoPrincipal)).length, 1);
+  assert.equal((await projectVideoStoreB.list('project-video-integration', otherVideoPrincipal)).length, 0);
+  assert.equal(await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), null);
+  assert.equal(await projectVideoStoreB.remove(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), false);
+  assert.equal(await projectVideoStoreB.removeProject('project-video-integration', otherVideoPrincipal), 0);
+
+  const archivedVideoBytes = await projectVideoStoreB.get(
+    archivedVideo.id, 'project-video-integration', videoPrincipal
+  );
+  assert.deepEqual(archivedVideoBytes?.payload, mp4Payload,
+    'large binary clip bytes survive cross-pool PostgreSQL readback');
+  assert.equal(
+    (await projectVideoStoreB.getLatestForScene('project-video-integration', 'scene-video-integration', videoPrincipal))?.id,
+    archivedVideo.id,
+  );
+  const idempotentArchive = await projectVideoStoreB.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-integration',
+    principalHash: videoPrincipal,
+    jobId: videoJobId,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  assert.equal(idempotentArchive.id, archivedVideo.id, 'retrying the same Wan job must not duplicate the project clip');
+
+  // Exercise the actual PostgreSQL BYTEA chunk reader through HTTP. The test
+  // principal is bound by each route closure, never supplied by the request.
+  const videoHttpApp = express();
+  let maxVideoChunkBytes = 0;
+  videoHttpApp.get('/owner/:assetId', asyncRoute(async (req, res) => {
+    const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', videoPrincipal);
+    if (!opened) return res.sendStatus(404);
+    const chunksForRange = (start?: number, end?: number) => (async function* () {
+      for await (const chunk of opened.chunksForRange(start, end)) {
+        maxVideoChunkBytes = Math.max(maxVideoChunkBytes, chunk.length);
+        yield chunk;
+      }
+    })();
+    return sendProjectVideoStream(req, res, { ...opened, chunksForRange });
+  }));
+  videoHttpApp.get('/other/:assetId', asyncRoute(async (req, res) => {
+    const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', otherVideoPrincipal);
+    if (!opened) return res.sendStatus(404);
+    return sendProjectVideoStream(req, res, opened);
+  }));
+  const videoHttpServer = videoHttpApp.listen(0);
+  await once(videoHttpServer, 'listening');
+  const videoHttpAddress = videoHttpServer.address();
+  if (!videoHttpAddress || typeof videoHttpAddress === 'string') throw new Error('Project video HTTP test server did not bind.');
+  const videoHttpBase = `http://127.0.0.1:${videoHttpAddress.port}`;
+  try {
+    const firstRange = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: { Range: 'bytes=0-65535' },
+    });
+    assert.equal(firstRange.status, 206);
+    assert.equal(firstRange.headers.get('accept-ranges'), 'bytes');
+    assert.equal(firstRange.headers.get('content-range'), `bytes 0-65535/${mp4Payload.length}`);
+    const reader = firstRange.body?.getReader();
+    assert.ok(reader);
+    const firstChunk = await reader.read();
+    assert.ok(firstChunk.value && firstChunk.value.length > 0);
+    const resumedPrefix = Buffer.from(firstChunk.value.subarray(0, 4096));
+    await reader.cancel();
+
+    const resumed = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: {
+        Range: `bytes=${resumedPrefix.length}-`,
+        'If-Range': firstRange.headers.get('etag') ?? '',
+      },
+    });
+    assert.equal(resumed.status, 206);
+    assert.equal(resumed.headers.get('content-range'), `bytes ${resumedPrefix.length}-${mp4Payload.length - 1}/${mp4Payload.length}`);
+    const resumedBytes = Buffer.from(await resumed.arrayBuffer());
+    assert.deepEqual(Buffer.concat([resumedPrefix, resumedBytes]), mp4Payload,
+      'an interrupted iPhone-style range download can resume byte-exactly');
+
+    const forbidden = await fetch(`${videoHttpBase}/other/${archivedVideo.id}`);
+    assert.equal(forbidden.status, 404, 'another principal must not stream the asset');
+    const invalidRange = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: { Range: `bytes=${mp4Payload.length}-` },
+    });
+    assert.equal(invalidRange.status, 416);
+    assert.equal(invalidRange.headers.get('content-range'), `bytes */${mp4Payload.length}`);
+    assert.ok(maxVideoChunkBytes <= 256 * 1024,
+      'PostgreSQL streaming must never materialize a database chunk larger than 256 KiB');
+  } finally {
+    await new Promise<void>((resolve, reject) => videoHttpServer.close((error) => error ? reject(error) : resolve()));
+  }
+
+  // Slow/parallel video streams intentionally retain a shared row lock and
+  // one pool connection each for a byte-consistent response. Verify the
+  // configured stream pool can serve concurrent readers, exposes bounded
+  // queueing rather than opening unbounded connections, and blocks deletion
+  // until all readers close their transactions.
+  const concurrentVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-video-parallel',
+    principalHash: videoPrincipal,
+    contentType: 'video/mp4',
+    payload: mp4Payload,
+  });
+  const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
+  const appStateStoreDuringStreams = createPostgresStateStore(gatePoolA);
+  await appStateStoreDuringStreams.ensureSchema();
+  await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
+  assert.equal(POSTGRES_POOL_MAX, 5, 'test imports exact production PostgreSQL pool maximum');
+  const concurrentStreams = await Promise.all(Array.from({ length: 2 }, () =>
+    concurrentStreamStore.openRead(concurrentVideo.id, 'project-video-integration', videoPrincipal)
+  ));
+  assert.ok(concurrentStreams.every(Boolean), 'both admitted stream readers acquire a row snapshot');
+  assert.equal(gatePoolA.totalCount, 2, 'only two of five production connections are reserved by video streams');
+  const concurrentIterators = concurrentStreams.map((stream) =>
+    stream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]()
+  );
+  let deleteCompleted = false;
+  let thirdStreamCompleted = false;
+  let thirdStreamPromise: Promise<Awaited<ReturnType<typeof concurrentStreamStore.openRead>>> | null = null;
+  let deleteGuardStream: Awaited<ReturnType<typeof concurrentStreamStore.openRead>> = null;
+  let deleteGuardIterator: AsyncIterator<Buffer> | null = null;
+  try {
+    const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
+    assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
+    assert.ok(firstChunks.every((entry) => entry.value!.length <= 256 * 1024),
+      'slow streams still read no more than 256 KiB per DB chunk');
+    const thirdStream = concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((stream) => { thirdStreamCompleted = true; return stream; });
+    thirdStreamPromise = thirdStream;
+    const appOperation = await appStateStoreDuringStreams.read();
+    assert.equal(appOperation, null,
+      'the actual persistent application-state read completes while two video streams are paused');
+    assert.equal(gatePoolA.totalCount, 3, 'two video readers and one app query fit in production max=5');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(thirdStreamCompleted, false, 'third video stream waits before checking out another DB connection');
+
+    await concurrentIterators[0].return?.();
+    const third = await thirdStream;
+    assert.ok(third, 'queued third stream is admitted as soon as one active slot is released');
+    assert.equal(thirdStreamCompleted, true);
+    await concurrentIterators[1].return?.();
+    await third!.close();
+
+    // Independently prove the row lock blocks deletion while a reader is active.
+    deleteGuardStream = await concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    );
+    assert.ok(deleteGuardStream);
+    deleteGuardIterator = deleteGuardStream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]();
+    await deleteGuardIterator.next();
+    const blockedDelete = projectVideoStoreB.remove(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((removed) => { deleteCompleted = true; return removed; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(deleteCompleted, false, 'shared row lock preserves bytes during an active stream');
+    await deleteGuardIterator.return?.();
+    await deleteGuardStream!.close();
+    assert.equal(await blockedDelete, true, 'deletion proceeds after the active stream releases its row lock');
+  } finally {
+    await Promise.all(concurrentIterators.map(async (iterator) => {
+      try { await iterator.return?.(); } catch { /* cleanup continues */ }
+    }));
+    if (deleteGuardIterator) await deleteGuardIterator.return?.().catch(() => undefined);
+    if (deleteGuardStream) await deleteGuardStream.close().catch(() => undefined);
+    if (thirdStreamPromise) await thirdStreamPromise.then((stream) => stream?.close()).catch(() => undefined);
+    await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
+  }
+
+  const projectCleanupVideo = await projectVideoStore.put({
+    projectId: 'project-video-integration',
+    sceneId: 'scene-project-cleanup',
+    principalHash: videoPrincipal,
+    contentType: 'video/mp4',
+    payload: mp4Payload.subarray(0, 2048),
+  });
+  assert.ok(projectCleanupVideo.id);
+  assert.equal(await projectVideoStoreB.remove(archivedVideo.id, 'project-video-integration', videoPrincipal), true);
+  assert.equal(await projectVideoStore.removeProject('project-video-integration', videoPrincipal), 1,
+    'project deletion removes remaining archived clip bytes');
+  assert.equal(await projectVideoStoreB.removeProject('project-video-integration', videoPrincipal), 0,
+    'project cleanup is safe to retry after an uncertain response');
+
+  // Limits are checked under the same cross-instance project advisory lock,
+  // so concurrent uploads cannot exceed count or byte budgets.
+  const limitedA = createProjectVideoAssetStore(poolA, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 4096, maxProjectVideoCount: 2,
+  });
+  const limitedB = createProjectVideoAssetStore(poolB, {
+    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 4096, maxProjectVideoCount: 2,
+  });
+  const limitedPayload = Buffer.alloc(2048);
+  limitedPayload.write('ftyp', 4, 'ascii');
+  const limitedWrites = await Promise.allSettled([
+    limitedA.put({ projectId: 'project-video-limits', sceneId: 'scene-a', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+    limitedB.put({ projectId: 'project-video-limits', sceneId: 'scene-b', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+    limitedA.put({ projectId: 'project-video-limits', sceneId: 'scene-c', principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: limitedPayload }),
+  ]);
+  assert.equal(limitedWrites.filter((item) => item.status === 'fulfilled').length, 2,
+    'concurrent uploads cannot exceed the project clip count/byte limits');
+  assert.equal(limitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
+  assert.equal((await limitedB.list('project-video-limits', videoPrincipal)).length, 2);
+
+  const byteLimitedA = createProjectVideoAssetStore(poolA, {
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedB = createProjectVideoAssetStore(poolB, {
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+  });
+  const byteLimitedWrites = await Promise.allSettled([
+    byteLimitedA.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-a', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+    byteLimitedB.put({ projectId: 'project-video-byte-limit', sceneId: 'scene-b', principalHash: videoPrincipal, contentType: 'video/mp4', payload: limitedPayload }),
+  ]);
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'fulfilled').length, 1,
+    'concurrent uploads cannot exceed the byte budget even when the clip-count limit is not reached');
+  assert.equal(byteLimitedWrites.filter((item) => item.status === 'rejected' && item.reason instanceof ProjectVideoLimitError).length, 1);
+  assert.equal((await byteLimitedA.list('project-video-byte-limit', videoPrincipal)).length, 1);
 
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
@@ -79,6 +334,76 @@ try {
     loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
   );
   assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
+
+  // The shared ZERO cost ledger is atomic across independent pools and survives
+  // a fresh pool (process-restart simulation). No provider or network is called.
+  const costGuardEnv = {
+    DATABASE_URL: connectionString,
+    NODE_ENV: 'test',
+    ZERO_COST_GUARD_ENABLED: 'true',
+    ZERO_COST_GUARD_FREE_ONLY_CONFIRMED: 'true',
+    ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '5',
+    ZERO_CLOUDFLARE_AI_ENABLED: 'true',
+    ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+    ZERO_GEMINI_FREE_TIER_ONLY: 'true',
+  };
+  const costRequest = {
+    provider: 'cloudflare-workers-ai' as const,
+    modelId: '@cf/zai-org/glm-4.7-flash',
+    studio: 'ZERO CORE',
+    action: 'POSTGRES_CONCURRENCY_TEST',
+  };
+  const costReservations = await Promise.all(Array.from({ length: 10 }, (_, index) =>
+    reserveZeroCostProviderRequestWithPool(index % 2 ? poolA : poolB, index % 2 ? costRequest : {
+      provider: 'google-gemini-free' as const,
+      modelId: 'gemini-2.5-flash-lite',
+      studio: 'ZERO MEMORY',
+      action: 'POSTGRES_CONCURRENCY_TEST',
+    }, costGuardEnv)
+      .then(() => true)
+      .catch((error: unknown) => {
+        assert.match(error instanceof Error ? error.message : String(error), /Tagesbudget ausgeschöpft/);
+        return false;
+      })
+  ));
+  assert.equal(costReservations.filter(Boolean).length, 5, 'global budget must admit exactly five concurrent reservations across pools');
+  const restartPool = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 1 });
+  try {
+    await assert.rejects(
+      () => reserveZeroCostProviderRequestWithPool(restartPool, costRequest, costGuardEnv),
+      /Tagesbudget ausgeschöpft/,
+      'a new pool must observe the persisted exhausted budget after a process restart'
+    );
+  } finally {
+    await restartPool.end();
+  }
+
+  const exhaustedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
+  assert.equal(exhaustedStatus.requestsUsed, 5);
+  assert.equal(exhaustedStatus.remainingRequests, 0);
+  assert.equal(exhaustedStatus.providers.cloudflare, 'GESPERRT', 'exhausted budget must show Cloudflare blocked in dashboard');
+  assert.equal(exhaustedStatus.providers.gemini, 'GESPERRT', 'exhausted budget must show Gemini blocked in dashboard');
+  assert.equal(exhaustedStatus.recentEvents.length > 0, true);
+  await setZeroCostGuardPaused(poolA, true, 5);
+  const pausedStatus = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(pausedStatus.paused, true, 'manual pause must persist across independent pools');
+  assert.equal(pausedStatus.providers.cloudflare, 'GESPERRT');
+  assert.equal(pausedStatus.recentEvents[0]?.action, 'MANUAL_PAUSE');
+  assert.equal(pausedStatus.recentEvents[0]?.decision, 'PAUSED');
+  await assert.rejects(
+    () => reserveZeroCostProviderRequestWithPool(poolB, costRequest, costGuardEnv),
+    /manuell gesperrt/,
+    'manual pause must block reservations before provider execution'
+  );
+  await setZeroCostGuardPaused(poolB, false, 5);
+  const resumedStatus = await getZeroCostGuardStatus(poolA, costGuardEnv);
+  assert.equal(resumedStatus.paused, false, 'manual resume must persist across fresh connections');
+  assert.equal(resumedStatus.remainingRequests, 0, 'manual resume must not refill the exhausted daily budget');
+  assert.equal(resumedStatus.recentEvents[0]?.action, 'MANUAL_RESUME');
+  assert.equal(resumedStatus.recentEvents[0]?.decision, 'RESUMED');
+  await assert.rejects(() => setZeroCostGuardPaused(poolA, true, 0), /Ungültiges Tagesbudget/);
+  const afterInvalidPause = await getZeroCostGuardStatus(poolB, costGuardEnv);
+  assert.equal(afterInvalidPause.paused, false, 'invalid budget configuration must not alter persisted pause state');
 
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
