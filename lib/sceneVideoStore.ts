@@ -186,22 +186,73 @@ async function loadLocally(projectId: string, sceneId: string): Promise<Blob | n
   }
 }
 
+/**
+ * Downloads a clip in bounded byte windows. If a mobile connection drops,
+ * only the current window is retried; completed windows are kept as Blob parts.
+ */
+export async function downloadSceneVideoInRanges(
+  url: string,
+  fetcher: typeof fetch = fetch,
+  chunkBytes = 1024 * 1024,
+): Promise<Blob> {
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 64 * 1024 || chunkBytes > 4 * 1024 * 1024) {
+    throw new Error('Ungültige Download-Blockgröße.');
+  }
+  const head = await fetcher(url, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store' });
+  if (!head.ok) throw new Error(`ZERO-Clip konnte nicht vorbereitet werden (HTTP ${head.status}).`);
+  const totalBytes = Number(head.headers.get('content-length'));
+  const contentType = head.headers.get('content-type') || 'application/octet-stream';
+  const etag = head.headers.get('etag');
+  if (!Number.isSafeInteger(totalBytes) || totalBytes < 1024 || totalBytes > 100 * 1024 * 1024 ||
+      !['video/mp4', 'video/webm'].includes(contentType)) {
+    throw new Error('ZERO hat ungültige Clip-Metadaten für den Download geliefert.');
+  }
+
+  const parts: Blob[] = [];
+  for (let start = 0; start < totalBytes;) {
+    const end = Math.min(totalBytes - 1, start + chunkBytes - 1);
+    let part: Blob | null = null;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3 && !part; attempt += 1) {
+      try {
+        const headers: Record<string, string> = { Range: `bytes=${start}-${end}` };
+        if (etag) headers['If-Range'] = etag;
+        const response = await fetcher(url, {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store', headers,
+        });
+        const contentRange = response.headers.get('content-range') || '';
+        const match = /^bytes (\\d+)-(\\d+)\\/(\\d+)$/.exec(contentRange);
+        if (response.status !== 206 || !match ||
+            Number(match[1]) !== start || Number(match[2]) !== end || Number(match[3]) !== totalBytes) {
+          throw new Error('ZERO hat einen unvollständigen oder nicht passenden Bytebereich geliefert.');
+        }
+        const received = await response.blob();
+        if (received.size !== end - start + 1) throw new Error('ZERO-Downloadblock ist unvollständig.');
+        part = received;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!part) {
+      throw new Error(`ZERO-Download bei Byte ${start} konnte nicht fortgesetzt werden: ${lastError instanceof Error ? lastError.message : 'Verbindungsfehler'}`);
+    }
+    parts.push(part);
+    start = end + 1;
+  }
+  return new Blob(parts, { type: contentType });
+}
+
 /** PostgreSQL is the cross-device source of truth; IndexedDB is only an offline fallback. */
 export async function loadSceneVideoClip(projectId: string, sceneId: string): Promise<Blob | null> {
   if (!projectId || !sceneId) return null;
   try {
-    const response = await fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
-      { credentials: 'same-origin', cache: 'no-store' }
-    );
-    if (response.status === 404 || (response.status >= 400 && response.status < 500)) return null;
-    if (response.ok) {
-      const remote = await response.blob();
-      if (remote.type.startsWith('video/') && remote.size >= 1024) {
-        try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
-        return remote;
-      }
-      return null;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`;
+    const head = await fetch(url, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store' });
+    if (head.status === 404 || (head.status >= 400 && head.status < 500)) return null;
+    if (head.ok) {
+      const remote = await downloadSceneVideoInRanges(url);
+      try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
+      return remote;
     }
   } catch {
     // Fall back to the local cache when the server is temporarily unavailable.
