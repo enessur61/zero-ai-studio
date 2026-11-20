@@ -19,10 +19,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_model_file(path: Path) -> None:
-    if not path.is_file() or path.stat().st_size != MODEL_SIZE_BYTES:
+def validate_model_file(
+    path: Path,
+    expected_size: int = MODEL_SIZE_BYTES,
+    expected_sha256: str = MODEL_SHA256,
+) -> None:
+    if not path.is_file() or path.stat().st_size != expected_size:
         raise RuntimeError("Piper voice model has an unexpected file size")
-    if sha256_file(path) != MODEL_SHA256:
+    if sha256_file(path) != expected_sha256:
         raise RuntimeError("Piper voice model failed the pinned SHA-256 integrity check")
 
 
