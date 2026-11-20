@@ -1,9 +1,6 @@
-import { apiRequest } from './api.ts';
-
 const DB_NAME = 'zero-ai-studio-media';
 const STORE_NAME = 'scene-videos';
 const DB_VERSION = 1;
-const MAX_REMOTE_CLIP_BYTES = 8 * 1024 * 1024;
 
 function openMediaDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -24,17 +21,6 @@ function openMediaDb(): Promise<IDBDatabase> {
 
 function clipKey(projectId: string, sceneId: string): string {
   return `${projectId}:${sceneId}`;
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => typeof reader.result === 'string'
-      ? resolve(reader.result)
-      : reject(new Error('Szenenclip konnte nicht für die Serverspeicherung vorbereitet werden.'));
-    reader.onerror = () => reject(reader.error || new Error('Szenenclip konnte nicht gelesen werden.'));
-    reader.readAsDataURL(blob);
-  });
 }
 
 export interface SceneVideoStorageStatus {
@@ -91,13 +77,11 @@ async function saveLocally(projectId: string, sceneId: string, blob: Blob): Prom
 export async function saveSceneVideoClip(
   projectId: string,
   sceneId: string,
-  blob: Blob
+  blob: Blob,
+  jobId?: string
 ): Promise<SceneVideoStorageStatus> {
   if (!projectId || !sceneId || blob.size < 1024 || !blob.type.startsWith('video/')) {
     throw new Error('Der Szenenclip ist ungültig und wurde nicht gespeichert.');
-  }
-  if (blob.size > MAX_REMOTE_CLIP_BYTES) {
-    throw new Error('Der Szenenclip ist größer als 8 MB und kann nicht in ZERO-Projekten synchronisiert werden. Bitte zuerst exportieren oder komprimieren.');
   }
 
   const storageStatus = await requestSceneVideoStoragePersistence();
@@ -114,12 +98,18 @@ export async function saveSceneVideoClip(
   }
 
   try {
-    const dataUrl = await blobToDataUrl(blob);
-    await apiRequest<{ ok: boolean; serverPersisted: boolean }>(
+    const headers: Record<string, string> = { 'Content-Type': blob.type };
+    if (jobId) headers['X-Zero-Wan-Job-Id'] = jobId;
+    const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
-      { method: 'PUT', body: JSON.stringify({ dataUrl }) }
+      { method: 'PUT', credentials: 'same-origin', headers, body: blob }
     );
-    serverPersisted = true;
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(payload.error || 'ZERO konnte den Clip nicht dauerhaft speichern.');
+    }
+    const payload = await response.json() as { serverPersisted?: boolean };
+    serverPersisted = payload.serverPersisted === true;
   } catch (error) {
     serverError = error;
   }
@@ -160,10 +150,10 @@ export async function loadSceneVideoClip(projectId: string, sceneId: string): Pr
   }
 
   try {
-    const remote = await apiRequest<{ dataUrl: string }>(
-      `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`
+    const response = await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
+      { credentials: 'same-origin', cache: 'no-store' }
     );
-    const response = await fetch(remote.dataUrl);
     if (!response.ok) return null;
     const blob = await response.blob();
     return blob.type.startsWith('video/') && blob.size >= 1024 ? blob : null;
