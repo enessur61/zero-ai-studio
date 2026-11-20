@@ -24,7 +24,8 @@ assert.deepEqual(
   ]
 );
 assert.equal(EPISODE_ONE.scenes[1].subtitleText, 'Du hast mich gestern getötet.');
-assert.equal(EPISODE_ONE.scenes[5].subtitleText, 'Du hast es wieder vergessen.');
+assert.equal(EPISODE_ONE.scenes[4].subtitleText, 'Ich weiß, dass du mich hören kannst.');
+assert.equal(EPISODE_ONE.scenes[5].subtitleText, '');
 assert.equal(EPISODE_ONE.scenes[6].subtitleText, 'Dreh dich nicht um.');
 assert.equal(EPISODE_ONE.scenes[7].subtitleText, 'PROJECT ZERO · FORTSETZUNG FOLGT');
 
