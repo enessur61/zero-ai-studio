@@ -119,7 +119,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         const statusPayload = await statusResponse.json();
         if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
         const job = statusPayload.job;
-        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        if (job.status === 'failed') {
+          await wanIdempotency.clear();
+          throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+        }
         if (job.status === 'succeeded') {
           setWanProgress('MP4 wird auf ZERO übertragen...');
           const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
