@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { classifyGeminiResourceError, classifyGeminiResourceType } from '../server/geminiClient.ts';
-import { createZeroIdempotencyKey, requireZeroPrincipal, runWithZeroPrincipal } from '../server/zeroPrincipalContext.ts';
+import { createZeroIdempotencyKey, requireZeroPrincipal, runWithZeroPrincipal, ZeroIdempotencyKeyRequiredError } from '../server/zeroPrincipalContext.ts';
 import {
   getZeroResourceLimits,
   getZeroResourceRequestFingerprint,
@@ -36,6 +36,8 @@ assert.equal(contextKeys.principal, 'server-owned-test-principal');
 assert.equal(contextKeys.first, contextKeys.same, 'same request header derives a stable operation key');
 assert.notEqual(contextKeys.first, differentContextKey, 'different request headers derive different operation keys');
 assert.throws(() => requireZeroPrincipal(), /Authenticated ZERO principal context is required/);
+assert.throws(() => runWithZeroPrincipal('server-owned-test-principal', '', () => createZeroIdempotencyKey()), ZeroIdempotencyKeyRequiredError,
+  'guarded provider requests cannot synthesize a retry key when the HTTP header is absent');
 
 assert.equal(getZeroResourceLimits(env).text.dailyUnits, 20);
 assert.equal(getZeroResourceLimits(env).image.dailyUnits, 5);
@@ -56,8 +58,8 @@ assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"image/
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"mimeType":"audio/wav"}'), 'audio');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash-tts', '{"text":"hello"}'), 'audio');
 assert.equal(classifyGeminiResourceType('gemini-3.8-flash', '{"text":"hello"}'), 'text');
-assert.equal(classifyGeminiResourceError(new Error('429 RESOURCE_EXHAUSTED')), 'FAILED');
-assert.equal(classifyGeminiResourceError(new Error('HTTP 403 PERMISSION_DENIED')), 'FAILED');
+assert.equal(classifyGeminiResourceError(new Error('429 RESOURCE_EXHAUSTED')), 'REJECTED');
+assert.equal(classifyGeminiResourceError(new Error('HTTP 403 PERMISSION_DENIED')), 'REJECTED');
 assert.equal(classifyGeminiResourceError(new Error('503 UNAVAILABLE')), 'UNKNOWN');
 assert.equal(classifyGeminiResourceError(new Error('socket hang up')), 'UNKNOWN');
 assert.throws(() => validateZeroResourceOperation(base, { ...env, ZERO_COST_RESOURCE_GUARD_ENABLED: 'false' }), rejectsCode('GUARD_DISABLED'));
