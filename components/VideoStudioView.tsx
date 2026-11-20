@@ -3,6 +3,7 @@ import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles }
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { getOrCreatePersistentIdempotencyKey } from '../lib/api.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -96,14 +97,17 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
+      const wanBody = JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio });
+      const wanIdempotency = await getOrCreatePersistentIdempotencyKey('/api/video/engine/jobs', wanBody);
       const created = await fetch('/api/video/engine/jobs', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': wanIdempotency.key },
+        body: wanBody,
       });
       const createdPayload = await created.json();
       if (!created.ok || typeof createdPayload.job?.id !== 'string') {
+        if (created.status >= 400 && created.status < 500) await wanIdempotency.clear();
         throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
       }
       const jobId = createdPayload.job.id as string;
@@ -150,6 +154,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
               : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
           completed = true;
+          await wanIdempotency.clear();
           break;
         }
         setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
