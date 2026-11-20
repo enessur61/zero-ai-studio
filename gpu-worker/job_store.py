@@ -192,7 +192,7 @@ class PersistentJobStore:
                 ).fetchone()
                 try:
                     accepted = int(json.loads(count_row[0]).get("accepted_jobs", 0)) if count_row else 0
-                except (TypeError, ValueError, json.JSONDecodeError):
+                except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
                     accepted = daily_limit
                 return existing, True, str(existing_row[1]) != fingerprint, None, accepted
 
@@ -216,7 +216,7 @@ class PersistentJobStore:
             ).fetchone()
             try:
                 accepted = int(json.loads(count_row[0]).get("accepted_jobs", 0)) if count_row else 0
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
                 accepted = daily_limit
             if accepted >= daily_limit:
                 connection.rollback()
