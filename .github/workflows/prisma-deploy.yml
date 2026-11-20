@@ -1,21 +1,19 @@
 name: prisma-deploy
 
 on:
-  push:
   workflow_dispatch:
 
 concurrency:
-  group: prisma-deploy-${{ github.ref }}
+  group: prisma-preview-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write
-  pull-requests: write
 
 jobs:
   deploy:
-    if: github.ref_type == 'branch'
+    if: github.ref == 'refs/heads/prisma-cloud/setup-v3icl3cvq646n2a35puh95r3'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
