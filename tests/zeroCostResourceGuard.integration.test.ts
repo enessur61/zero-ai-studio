@@ -35,6 +35,7 @@ const env = {
 const base: ZeroResourceOperationInput = {
   provider: 'cloudflare-workers-ai', modelId: '@cf/zai-org/glm-4.7-flash', resourceType: 'text',
   studio: 'INTEGRATION', action: 'TEST', payload: { prompt: 'hello' },
+  principal: 'integration-principal', idempotencyKey: 'base-00000001',
 };
 const code = (expected: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === expected;
 
@@ -73,7 +74,7 @@ try {
   const sharedBudgetAfterResource = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(sharedBudgetAfterResource, sharedBudgetBeforeResource + 1, 'one resource operation increments the same PR #98 global budget exactly once');
   assert.equal(Number((await poolA.query('SELECT COUNT(*)::int AS count FROM zero_cost_audit_events')).rows[0].count), 2, 'both guard paths write to the same audit table');
-  await finishZeroCostResourceOperationWithPool(poolB, sharedResource.operation.operationId, sharedResource.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolB, sharedResource.operation.operationId, sharedResource.leaseToken!, sharedResource.operation.leaseGeneration!, 'SUCCEEDED');
 
   // Both guard APIs compete for one shared global request; only one may win.
   await poolA.query("UPDATE zero_cost_daily_budget SET requests_used = 0, daily_limit = 1, locked = FALSE WHERE scope = 'global'");
@@ -91,37 +92,55 @@ try {
   assert.equal(Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope = 'global'")).rows[0].requests_used), 1);
   const resourceWinner = crossGuard.find((item) => item.kind === 'resource');
   if (resourceWinner?.kind === 'resource') {
-    await finishZeroCostResourceOperationWithPool(poolA, resourceWinner.value.operation.operationId, resourceWinner.value.leaseToken, 'SUCCEEDED');
+    await finishZeroCostResourceOperationWithPool(poolA, resourceWinner.value.operation.operationId, resourceWinner.value.leaseToken!, resourceWinner.value.operation.leaseGeneration!, 'SUCCEEDED');
   }
   await poolA.query("UPDATE zero_cost_daily_budget SET requests_used = 0, daily_limit = 100, locked = FALSE WHERE scope = 'global'");
 
   // 8–11: idempotency, payload conflict, and cross-pool duplicate protection.
   const first = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, idempotencyKey: 'idem-key-0001' }, env);
-  await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, idempotencyKey: 'idem-key-0001' }, env), code('IDEMPOTENT_REPLAY'));
+  const replay = await reserveZeroCostResourceOperationWithPool(poolB, { ...base, idempotencyKey: 'idem-key-0001' }, env);
+  assert.equal(replay.operation.operationId, first.operation.operationId, 'same principal and canonical request return the original operation');
+  assert.equal(replay.operation.replayed, true);
+  assert.equal(replay.leaseToken, null, 'replay never reissues the original lease secret');
   await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, payload: { prompt: 'different' }, idempotencyKey: 'idem-key-0001' }, env), code('IDEMPOTENCY_CONFLICT'));
+  await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, action: 'DIFFERENT_ACTION', idempotencyKey: 'idem-key-0001' }, env), code('IDEMPOTENCY_CONFLICT'));
   const row = await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [first.operation.operationId]);
   assert.equal(row.rows[0].status, 'RESERVED');
 
+  let replayProviderCalled = false;
+  const wrappedReplay = await withZeroCostResourceOperation(
+    { ...base, idempotencyKey: 'idem-key-0001' },
+    async () => { replayProviderCalled = true; return 'must-not-run'; },
+    env, poolB,
+  );
+  assert.equal(replayProviderCalled, false, 'wrapper must not dispatch a provider on replay');
+  assert.equal(typeof wrappedReplay, 'object', 'wrapper returns the existing operation on replay');
+  assert.equal((wrappedReplay as { operation?: { operationId?: string } }).operation?.operationId, first.operation.operationId);
+
   // 9–12: successful, failed and unknown transitions have conservative accounting.
-  await finishZeroCostResourceOperationWithPool(poolA, first.operation.operationId, first.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolA, first.operation.operationId, first.leaseToken!, first.operation.leaseGeneration!, 'SUCCEEDED');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [first.operation.operationId])).rows[0].status, 'SUCCEEDED');
   const failed = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-0002' }, env);
-  await finishZeroCostResourceOperationWithPool(poolA, failed.operation.operationId, failed.leaseToken, 'FAILED');
+  await finishZeroCostResourceOperationWithPool(poolA, failed.operation.operationId, failed.leaseToken!, failed.operation.leaseGeneration!, 'FAILED');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [failed.operation.operationId])).rows[0].status, 'FAILED');
   const unknown = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'audio', idempotencyKey: 'idem-key-0003' }, env);
-  await finishZeroCostResourceOperationWithPool(poolA, unknown.operation.operationId, unknown.leaseToken, 'UNKNOWN');
+  await finishZeroCostResourceOperationWithPool(poolA, unknown.operation.operationId, unknown.leaseToken!, unknown.operation.leaseGeneration!, 'UNKNOWN');
   assert.equal((await poolB.query('SELECT status FROM zero_cost_operations WHERE operation_id = $1', [unknown.operation.operationId])).rows[0].status, 'UNKNOWN');
   assert.equal(Number((await poolB.query("SELECT reserved_units FROM zero_cost_resource_usage WHERE resource_type = 'audio'")).rows[0].reserved_units), 1);
 
   // 13–16: leases, heartbeat, token validation and serialized concurrency.
   const leased = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-0004' }, env);
-  await heartbeatZeroCostResourceLeaseWithPool(poolB, leased.operation.operationId, leased.leaseToken);
-  await assert.rejects(() => heartbeatZeroCostResourceLeaseWithPool(poolB, leased.operation.operationId, 'wrong-token'), code('LEASE_INVALID'));
-  await finishZeroCostResourceOperationWithPool(poolA, leased.operation.operationId, leased.leaseToken, 'SUCCEEDED');
+  const firstGeneration = leased.operation.leaseGeneration!;
+  const nextGeneration = await heartbeatZeroCostResourceLeaseWithPool(poolB, leased.operation.operationId, leased.leaseToken!, firstGeneration);
+  assert.equal(nextGeneration, firstGeneration + 1, 'heartbeat rotates the fencing generation');
+  await assert.rejects(() => heartbeatZeroCostResourceLeaseWithPool(poolB, leased.operation.operationId, leased.leaseToken!, firstGeneration), code('LEASE_INVALID'));
+  await assert.rejects(() => finishZeroCostResourceOperationWithPool(poolA, leased.operation.operationId, leased.leaseToken!, firstGeneration, 'SUCCEEDED'), code('LEASE_INVALID'));
+  await assert.rejects(() => heartbeatZeroCostResourceLeaseWithPool(poolB, leased.operation.operationId, 'wrong-token', nextGeneration), code('LEASE_INVALID'));
+  await finishZeroCostResourceOperationWithPool(poolA, leased.operation.operationId, leased.leaseToken!, nextGeneration, 'SUCCEEDED');
   const oneSlotEnv = { ...env, ZERO_RESOURCE_IMAGE_CONCURRENCY: '1' };
   const held = await reserveZeroCostResourceOperationWithPool(poolA, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-0005' }, oneSlotEnv);
   await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, { ...base, resourceType: 'image', idempotencyKey: 'idem-key-0006' }, oneSlotEnv), code('CONCURRENCY_LIMIT'));
-  await finishZeroCostResourceOperationWithPool(poolA, held.operation.operationId, held.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolA, held.operation.operationId, held.leaseToken!, held.operation.leaseGeneration!, 'SUCCEEDED');
 
   // 17–19: daily resource limit is atomic and rollback does not consume global request budget.
   const beforeBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
@@ -131,8 +150,8 @@ try {
   await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolA, { ...base, idempotencyKey: 'idem-key-0009' }, limitedEnv), code('RESOURCE_DAILY_LIMIT'));
   const afterBlockedBudget = Number((await poolB.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(afterBlockedBudget, beforeBudget + 2, 'failed resource reservation rolls back the shared global budget increment');
-  await finishZeroCostResourceOperationWithPool(poolA, text1.operation.operationId, text1.leaseToken, 'FAILED');
-  await finishZeroCostResourceOperationWithPool(poolB, text2.operation.operationId, text2.leaseToken, 'FAILED');
+  await finishZeroCostResourceOperationWithPool(poolA, text1.operation.operationId, text1.leaseToken!, text1.operation.leaseGeneration!, 'FAILED');
+  await finishZeroCostResourceOperationWithPool(poolB, text2.operation.operationId, text2.leaseToken!, text2.operation.leaseGeneration!, 'FAILED');
 
   // 20: expired in-flight leases are conservatively reconciled to UNKNOWN.
   const expiredNow = new Date(Date.now() - 16 * 60 * 1000);
@@ -187,7 +206,39 @@ try {
   const resumed = await reserveZeroCostResourceOperationWithPool(poolA, {
     ...base, resourceType: 'video', idempotencyKey: 'compat-resumed-resource-0001',
   }, env);
-  await finishZeroCostResourceOperationWithPool(poolA, resumed.operation.operationId, resumed.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolA, resumed.operation.operationId, resumed.leaseToken!, resumed.operation.leaseGeneration!, 'SUCCEEDED');
+
+  // Principal-specific daily usage is isolated while the global resource ceiling still applies.
+  const principalEnv = { ...env, ZERO_RESOURCE_TEXT_DAILY_LIMIT: '10', ZERO_RESOURCE_TEXT_PRINCIPAL_DAILY_LIMIT: '2' };
+  const principalA = await reserveZeroCostResourceOperationWithPool(poolA, {
+    ...base, principal: 'principal-a', units: 2, idempotencyKey: 'quota-a-0001',
+  }, principalEnv);
+  await assert.rejects(() => reserveZeroCostResourceOperationWithPool(poolB, {
+    ...base, principal: 'principal-a', units: 1, idempotencyKey: 'quota-a-0002',
+  }, principalEnv), code('PRINCIPAL_DAILY_LIMIT'));
+  const principalB = await reserveZeroCostResourceOperationWithPool(poolB, {
+    ...base, principal: 'principal-b', units: 2, idempotencyKey: 'quota-b-0001',
+  }, principalEnv);
+  const principalRows = await poolA.query(
+    'SELECT COUNT(*)::int AS count FROM zero_cost_principal_resource_usage WHERE principal_hash = ANY($1::char(64)[])',
+    [[createHash('sha256').update('principal-a').digest('hex'), createHash('sha256').update('principal-b').digest('hex')]],
+  );
+  assert.equal(principalRows.rows[0].count, 2, 'different principals have separate daily usage rows');
+  await finishZeroCostResourceOperationWithPool(poolA, principalA.operation.operationId, principalA.leaseToken!, principalA.operation.leaseGeneration!, 'FAILED');
+  await finishZeroCostResourceOperationWithPool(poolB, principalB.operation.operationId, principalB.leaseToken!, principalB.operation.leaseGeneration!, 'FAILED');
+
+  // Canonical JSON key order produces the same request fingerprint and replay.
+  const canonicalEnv = { ...env, ZERO_RESOURCE_AUDIO_CONCURRENCY: '5' };
+  const canonicalFirst = await reserveZeroCostResourceOperationWithPool(poolA, {
+    ...base, resourceType: 'audio', payload: { prompt: 'canonical', options: { temperature: 0.2, topP: 0.9 } },
+    idempotencyKey: 'canon-00000001',
+  }, canonicalEnv);
+  const canonicalReplay = await reserveZeroCostResourceOperationWithPool(poolB, {
+    ...base, resourceType: 'audio', payload: { options: { topP: 0.9, temperature: 0.2 }, prompt: 'canonical' },
+    idempotencyKey: 'canon-00000001',
+  }, canonicalEnv);
+  assert.equal(canonicalReplay.operation.operationId, canonicalFirst.operation.operationId);
+  await finishZeroCostResourceOperationWithPool(poolA, canonicalFirst.operation.operationId, canonicalFirst.leaseToken!, canonicalFirst.operation.leaseGeneration!, 'FAILED');
 
   // Rolling 60-second rate limit is atomic across independent pools.
   const rateNow = new Date(Date.now() + 120_000);
@@ -200,8 +251,8 @@ try {
   );
   const rateRows = await poolA.query('SELECT COUNT(*)::int AS count FROM zero_cost_resource_rate_events WHERE operation_id = ANY($1::uuid[])', [[rateOne.operation.operationId, rateTwo.operation.operationId]]);
   assert.equal(rateRows.rows[0].count, 2, 'only the two allowed requests are recorded in the rolling minute');
-  await finishZeroCostResourceOperationWithPool(poolA, rateOne.operation.operationId, rateOne.leaseToken, 'SUCCEEDED');
-  await finishZeroCostResourceOperationWithPool(poolB, rateTwo.operation.operationId, rateTwo.leaseToken, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolA, rateOne.operation.operationId, rateOne.leaseToken!, rateOne.operation.leaseGeneration!, 'SUCCEEDED');
+  await finishZeroCostResourceOperationWithPool(poolB, rateTwo.operation.operationId, rateTwo.leaseToken!, rateTwo.operation.leaseGeneration!, 'SUCCEEDED');
 
   console.log('ZERO resource PostgreSQL 16.16 integration passed: exact PostgreSQL 16.16 version, PR #98/#100 shared budget/audit/lock/pause, cross-guard atomicity, resource quotas, idempotency, leases, UNKNOWN handling, cross-pool concurrency and rollback.');
 } finally {
