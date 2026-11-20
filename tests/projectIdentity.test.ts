@@ -66,6 +66,9 @@ app.post('/projects/:id', (req, res) => {
     ownerId: routeProjects.find((project) => project.id === req.params.id)?.ownerId,
   });
 });
+app.delete('/projects/:id', (req, res) => {
+  res.status(200).json({ projectId: res.locals.zeroProjectId });
+});
 const httpServer = app.listen(0, '127.0.0.1');
 await once(httpServer, 'listening');
 const address = httpServer.address();
@@ -93,6 +96,21 @@ try {
     principalId: ZERO_ADMIN_PRINCIPAL_ID,
     ownerId: ZERO_ADMIN_PRINCIPAL_ID,
   });
+  const missingProjectRead = await fetch(baseUrl + '/projects/missing-http', {
+    headers: { cookie: 'zero_session=valid-test-session' },
+  });
+  assert.equal(missingProjectRead.status, 404, 'missing projects remain hidden for reads');
+  const missingProjectDeleteRetry = await fetch(baseUrl + '/projects/missing-http', {
+    method: 'DELETE',
+    headers: { cookie: 'zero_session=valid-test-session' },
+  });
+  assert.equal(missingProjectDeleteRetry.status, 200, 'missing-project DELETE retries may perform principal-scoped idempotent cleanup');
+  const foreignProjectDelete = await fetch(baseUrl + '/projects/foreign-http', {
+    method: 'DELETE',
+    headers: { cookie: 'zero_session=valid-test-session' },
+  });
+  assert.equal(foreignProjectDelete.status, 404, 'an existing foreign-owned project remains inaccessible to DELETE');
+
 } finally {
   await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
 }
