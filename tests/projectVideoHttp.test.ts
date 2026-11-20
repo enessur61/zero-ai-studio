@@ -66,6 +66,23 @@ try {
   assert.equal(invalid.status, 416);
   assert.equal(invalid.headers.get('content-range'), `bytes */${bytes.length}`);
 
+  // Simulate an interrupted native download and the browser's subsequent
+  // validator-backed range retry. The test checks byte continuity without
+  // constructing a Blob or assembling the complete file in application memory.
+  const initialPart = await fetch(`${baseUrl}/clip?download=1`, { headers: { Range: 'bytes=0-65535' } });
+  assert.equal(initialPart.status, 206);
+  const stableEtag = initialPart.headers.get('etag');
+  assert.ok(stableEtag);
+  const firstBytes = Buffer.from(await initialPart.arrayBuffer());
+  const resumedPart = await fetch(`${baseUrl}/clip?download=1`, {
+    headers: { Range: 'bytes=65536-${bytes.length - 1}', 'If-Range': stableEtag },
+  });
+  assert.equal(resumedPart.status, 206);
+  assert.equal(resumedPart.headers.get('content-range'), `bytes 65536-${bytes.length - 1}/${bytes.length}`);
+  assert.equal(resumedPart.headers.get('etag'), stableEtag);
+  const resumedBytes = Buffer.from(await resumedPart.arrayBuffer());
+  assert.deepEqual(Buffer.concat([firstBytes, resumedBytes]), bytes, 'range retry must continue at the exact byte offset for the same immutable asset');
+
   const download = await fetch(`${baseUrl}/clip?download=1`, { headers: { Range: 'bytes=0-15' } });
   assert.equal(download.status, 206);
   assert.match(download.headers.get('content-disposition') ?? '', /^attachment;/);
