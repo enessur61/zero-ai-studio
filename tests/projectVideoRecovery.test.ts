@@ -97,6 +97,61 @@ try {
     return new Response(null, { status: 404 });
   });
   assert.equal(missing, 'missing');
+
+  const invalidRangeProbe = await probeProjectVideoAccess(url, async (input) => {
+    if (String(input) === '/api/auth/status') {
+      return new Response(JSON.stringify({ authenticated: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('two bytes', {
+      status: 206,
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': 'bytes 0-1/4', 'Content-Length': '2' },
+    });
+  });
+  assert.equal(invalidRangeProbe, 'error', 'a probe must reject a malformed or oversized range response');
+
+  const mediaUnauthorized = await probeProjectVideoAccess(url, async (input) => {
+    if (String(input) === '/api/auth/status') {
+      return new Response(JSON.stringify({ authenticated: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(null, { status: 401 });
+  });
+  assert.equal(mediaUnauthorized, 'session-expired', 'a session may expire between the auth probe and media request');
+
+  let releaseFirstAuth!: (response: Response) => void;
+  const firstAuth = new Promise<Response>((resolve) => { releaseFirstAuth = resolve; });
+  let authCalls = 0;
+  let overlapResumes = 0;
+  const overlapFetcher = async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/auth/status') {
+      authCalls += 1;
+      if (authCalls === 1) return firstAuth;
+      return new Response(JSON.stringify({ authenticated: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(new Uint8Array([0]), {
+      status: 206,
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': 'bytes 0-0/4', 'Content-Length': '1' },
+    });
+  };
+  const overlapWindow = new EventTarget();
+  const overlapDocument = new EventTarget();
+  const stopOverlap = watchProjectVideoRecovery({
+    url,
+    fetcher: overlapFetcher,
+    onState: () => undefined,
+    onResume: () => { overlapResumes += 1; },
+    windowTarget: overlapWindow,
+    documentTarget: overlapDocument,
+    isVisible: () => true,
+  });
+  overlapWindow.dispatchEvent(new Event('offline'));
+  overlapWindow.dispatchEvent(new Event('online'));
+  releaseFirstAuth(new Response(JSON.stringify({ authenticated: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  }));
+  await waitFor(() => authCalls >= 2, 'an online event received during a pending probe must schedule a follow-up check');
+  await waitFor(() => overlapResumes === 1, 'overlapping lifecycle events must recover exactly once');
+  stopOverlap();
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
