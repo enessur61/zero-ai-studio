@@ -194,12 +194,14 @@ export async function loadSceneVideoClip(projectId: string, sceneId: string): Pr
       `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
       { credentials: 'same-origin', cache: 'no-store' }
     );
+    if (response.status === 404 || (response.status >= 400 && response.status < 500)) return null;
     if (response.ok) {
       const remote = await response.blob();
       if (remote.type.startsWith('video/') && remote.size >= 1024) {
         try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
         return remote;
       }
+      return null;
     }
   } catch {
     // Fall back to the local cache when the server is temporarily unavailable.
