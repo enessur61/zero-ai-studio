@@ -1,4 +1,4 @@
-import { runtimeConfig } from './server/runtimeConfig.ts';
+import { runtimeConfig } from './runtimeConfig.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import fs from 'node:fs/promises';
