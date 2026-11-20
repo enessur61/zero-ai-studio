@@ -310,6 +310,11 @@ jobs:
           if (suffixVideoRange.status !== 206 || !suffixVideoRangeBytes.equals(mp4Bytes.subarray(-1024))) {
             throw new Error('Scene video suffix range could not resume at the end of the clip');
           }
+          const staleIfRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=0-1023', 'if-range': '"stale-etag"' } });
+          const staleIfRangeBytes = Buffer.from(await staleIfRange.arrayBuffer());
+          if (staleIfRange.status !== 200 || !staleIfRangeBytes.equals(mp4Bytes)) {
+            throw new Error('A stale If-Range validator must safely fall back to the complete current clip');
+          }
           const invalidVideoRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=999999999-' } });
           if (invalidVideoRange.status !== 416 || invalidVideoRange.headers.get('content-range') !== 'bytes */' + mp4Bytes.length) {
             throw new Error('Invalid scene video byte ranges must fail with HTTP 416');

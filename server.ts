@@ -150,9 +150,10 @@ async function sendProjectVideoAsset(
     const chunk = await getProjectVideoAssetStore().readRange(asset.id, projectId, principalHash, offset, length);
     if (!chunk || chunk.payload.length !== length) {
       if (!res.headersSent) res.status(500).end();
-      else res.destroy(new Error('Project video archive returned an incomplete byte range.'));
+      else res.destroy();
       return;
     }
+    if (res.destroyed) return;
     offset += chunk.payload.length;
     if (!res.write(chunk.payload)) {
       await new Promise<void>((resolve) => {
