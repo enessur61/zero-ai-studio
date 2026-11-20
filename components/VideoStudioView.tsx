@@ -6,6 +6,8 @@ import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localV
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
+import { projectService } from '../lib/services/projectService.ts';
+import { VideoObjectUrlRegistry } from '../lib/videoObjectUrlRegistry.ts';
 
 interface WanJobHistoryItem {
   id: string;
@@ -35,9 +37,10 @@ interface VideoStudioViewProps {
   projects: StudioProject[];
   activeProjectId?: string;
   soundtrack?: { url: string; title: string } | null;
+  onProjectUpdated?: (project: StudioProject) => void;
 }
 
-export function VideoStudioView({ projects, activeProjectId, soundtrack }: VideoStudioViewProps) {
+export function VideoStudioView({ projects, activeProjectId, soundtrack, onProjectUpdated }: VideoStudioViewProps) {
   const playbackStorage = getPlaybackSnapshotStorage();
   const initialPlaybackSnapshotRef = useRef<ProjectVideoPlaybackSnapshot | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(() => {
@@ -48,6 +51,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const currentProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   const [scenes, setScenes] = useState<FilmScene[]>(currentProject?.scenes ?? []);
+  const [scenesOwnerProjectId, setScenesOwnerProjectId] = useState(currentProject?.id ?? '');
+  const projectVersionsRef = useRef(new Map<string, number>());
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const objectUrlRegistryRef = useRef<VideoObjectUrlRegistry | null>(null);
+  if (!objectUrlRegistryRef.current) objectUrlRegistryRef.current = new VideoObjectUrlRegistry();
+  const objectUrlRegistry = objectUrlRegistryRef.current;
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('9:16');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeVoiceovers, setIncludeVoiceovers] = useState(true);
@@ -283,19 +292,21 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     let active = true;
     if (!currentProject) {
       setScenes([]);
+      setScenesOwnerProjectId('');
       return () => { active = false; };
     }
     setScenes(currentProject.scenes);
+    setScenesOwnerProjectId(currentProject.id);
     Promise.all(currentProject.scenes.map(async (scene) => {
       try {
         const blob = await loadSceneVideoClip(currentProject.id, scene.id);
-        return blob ? { sceneId: scene.id, url: URL.createObjectURL(blob) } : null;
+        return blob ? { sceneId: scene.id, url: objectUrlRegistry.create(blob, { projectId: currentProject.id, sceneId: scene.id, kind: 'restored' }) } : null;
       } catch {
         return null;
       }
     })).then((restored) => {
       if (!active) {
-        restored.forEach((item) => { if (item) URL.revokeObjectURL(item.url); });
+        restored.forEach((item) => { if (item) objectUrlRegistry.releaseSceneReference(item.url, currentProject.id, item.sceneId); });
         return;
       }
       const urls = new Map(restored.filter((item): item is { sceneId: string; url: string } => Boolean(item))
@@ -309,6 +320,31 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     });
     return () => { active = false; };
   }, [selectedProjectId, currentProject]);
+
+  // Persist timeline edits with optimistic project-version checks; never persist temporary Blob URLs.
+  useEffect(() => {
+    if (!currentProject || scenesOwnerProjectId !== currentProject.id) return;
+    const projectId = currentProject.id;
+    const persistedScenes = scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    const serverScenes = currentProject.scenes.map(({ videoUrl: _temporaryVideoUrl, ...scene }) => scene);
+    if (JSON.stringify(persistedScenes) === JSON.stringify(serverScenes)) return;
+    if (!projectVersionsRef.current.has(projectId)) projectVersionsRef.current.set(projectId, currentProject.version);
+    const timer = window.setTimeout(() => {
+      saveQueueRef.current = saveQueueRef.current.then(async () => {
+        const expectedVersion = projectVersionsRef.current.get(projectId) ?? currentProject.version;
+        try {
+          const updated = await projectService.update(projectId, { scenes: persistedScenes }, expectedVersion);
+          projectVersionsRef.current.set(projectId, updated.version);
+          onProjectUpdated?.(updated);
+        } catch (saveError) {
+          setError(saveError instanceof Error ? saveError.message : 'VideoStudio-Änderungen konnten nicht dauerhaft gespeichert werden.');
+        }
+      });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [scenes, scenesOwnerProjectId, currentProject?.id, currentProject?.version, onProjectUpdated]);
+
+  useEffect(() => () => { objectUrlRegistry.releaseAll(); }, []);
 
   useEffect(() => {
     let active = true;
