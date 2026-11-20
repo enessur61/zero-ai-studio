@@ -182,16 +182,19 @@ try {
   await assert.rejects(() => withZeroCostResourceOperation({ ...base, resourceType: 'video', idempotencyKey: knownFailureKey, env }, async () => {
     knownFailureAttempts += 1;
     throw knownProviderFailure;
-  }, env, poolA, undefined, () => 'FAILED'), (error: unknown) => error === knownProviderFailure);
+  }, env, poolA, undefined, () => 'REJECTED'), (error: unknown) => error === knownProviderFailure);
   assert.equal(knownFailureAttempts, 1, 'definitive provider rejection is not retried');
   const knownFailureHash = createHash('sha256').update(knownFailureKey).digest('hex');
   const knownFailureStatus = await poolA.query('SELECT status FROM zero_cost_operations WHERE idempotency_hash = $1', [knownFailureHash]);
-  assert.equal(knownFailureStatus.rows[0].status, 'FAILED', 'definitive provider rejection is recorded as FAILED rather than UNKNOWN');
+  assert.equal(knownFailureStatus.rows[0].status, 'REJECTED', 'definitive provider rejection is distinct from accepted execution failure');
   const afterKnownFailureBudget = Number((await poolA.query("SELECT requests_used FROM zero_cost_daily_budget WHERE scope='global'")).rows[0].requests_used);
   assert.equal(afterKnownFailureBudget, beforeKnownFailureBudget + 1, 'definitive failed provider request remains counted in the global request budget');
-  const acceptedFailureUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'video'");
-  assert.ok(Number(acceptedFailureUsage.rows[0].consumed_units) >= 1,
-    'accepted execution failure is charged as consumed resource units and cannot be refunded');
+  const rejectedUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'video'");
+  assert.equal(Number(rejectedUsage.rows[0].consumed_units), 0,
+    'provider rejection before acceptance does not consume resource units');
+  const acceptedFailureUsage = await poolA.query("SELECT reserved_units, consumed_units FROM zero_cost_resource_usage WHERE resource_type = 'text'");
+  assert.ok(Number(acceptedFailureUsage.rows[0].consumed_units) >= 2,
+    'accepted execution failures are charged as consumed resource units and cannot be refunded');
 
 
   const unknownResultKey = 'unknown-result-classification-0001';
