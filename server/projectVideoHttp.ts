@@ -46,7 +46,7 @@ export function sendProjectVideoStream(
   timeouts: ProjectVideoStreamTimeouts = {},
 ): Response {
   const idleTimeoutMs = timeouts.idleTimeoutMs ?? 30_000;
-  const maxLifetimeMs = timeouts.maxLifetimeMs ?? 120_000;
+  const maxLifetimeMs = timeouts.maxLifetimeMs ?? 600_000;
   const etag = `"${asset.sha256}"`;
   const range = parseProjectVideoRange(
     req.headers.range,
