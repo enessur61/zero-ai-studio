@@ -1,9 +1,6 @@
-import { apiRequest } from './api.ts';
-
 const DB_NAME = 'zero-ai-studio-media';
 const STORE_NAME = 'scene-videos';
 const DB_VERSION = 1;
-const MAX_REMOTE_CLIP_BYTES = 8 * 1024 * 1024;
 
 function openMediaDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -24,17 +21,6 @@ function openMediaDb(): Promise<IDBDatabase> {
 
 function clipKey(projectId: string, sceneId: string): string {
   return `${projectId}:${sceneId}`;
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => typeof reader.result === 'string'
-      ? resolve(reader.result)
-      : reject(new Error('Szenenclip konnte nicht für die Serverspeicherung vorbereitet werden.'));
-    reader.onerror = () => reject(reader.error || new Error('Szenenclip konnte nicht gelesen werden.'));
-    reader.readAsDataURL(blob);
-  });
 }
 
 export interface SceneVideoStorageStatus {
@@ -91,13 +77,11 @@ async function saveLocally(projectId: string, sceneId: string, blob: Blob): Prom
 export async function saveSceneVideoClip(
   projectId: string,
   sceneId: string,
-  blob: Blob
+  blob: Blob,
+  jobId?: string
 ): Promise<SceneVideoStorageStatus> {
   if (!projectId || !sceneId || blob.size < 1024 || !blob.type.startsWith('video/')) {
     throw new Error('Der Szenenclip ist ungültig und wurde nicht gespeichert.');
-  }
-  if (blob.size > MAX_REMOTE_CLIP_BYTES) {
-    throw new Error('Der Szenenclip ist größer als 8 MB und kann nicht in ZERO-Projekten synchronisiert werden. Bitte zuerst exportieren oder komprimieren.');
   }
 
   const storageStatus = await requestSceneVideoStoragePersistence();
@@ -114,12 +98,18 @@ export async function saveSceneVideoClip(
   }
 
   try {
-    const dataUrl = await blobToDataUrl(blob);
-    await apiRequest<{ ok: boolean; serverPersisted: boolean }>(
+    const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream', 'X-Zero-Video-Type': blob.type };
+    if (jobId) headers['X-Zero-Wan-Job-Id'] = jobId;
+    const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
-      { method: 'PUT', body: JSON.stringify({ dataUrl }) }
+      { method: 'PUT', credentials: 'same-origin', headers, body: blob }
     );
-    serverPersisted = true;
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(payload.error || 'ZERO konnte den Clip nicht dauerhaft speichern.');
+    }
+    const payload = await response.json() as { serverPersisted?: boolean };
+    serverPersisted = payload.serverPersisted === true;
   } catch (error) {
     serverError = error;
   }
@@ -133,6 +123,53 @@ export async function saveSceneVideoClip(
   }
 
   return { ...storageStatus, localSaved, serverPersisted };
+}
+
+export async function cacheSceneVideoClip(projectId: string, sceneId: string, blob: Blob): Promise<void> {
+  if (!projectId || !sceneId || blob.size < 1024 || !blob.type.startsWith('video/')) {
+    throw new Error('Der Szenenclip ist ungültig und wurde nicht lokal zwischengespeichert.');
+  }
+  await saveLocally(projectId, sceneId, blob);
+}
+
+export async function deleteSceneVideoClip(projectId: string, sceneId: string): Promise<void> {
+  if (!projectId || !sceneId) return;
+  const db = await openMediaDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(clipKey(projectId, sceneId));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Lokaler Szenenclip konnte nicht gelöscht werden.'));
+      tx.onabort = () => reject(tx.error || new Error('Löschen des lokalen Szenenclips wurde abgebrochen.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function deleteProjectSceneVideos(projectId: string): Promise<void> {
+  if (!projectId) return;
+  const db = await openMediaDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const objectStore = tx.objectStore(STORE_NAME);
+      const request = objectStore.getAllKeys();
+      request.onsuccess = () => {
+        const prefix = `${projectId}:`;
+        for (const key of request.result) {
+          if (typeof key === 'string' && key.startsWith(prefix)) objectStore.delete(key);
+        }
+      };
+      request.onerror = () => reject(request.error || new Error('Lokale Projektclips konnten nicht gefunden werden.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Lokale Projektclips konnten nicht gelöscht werden.'));
+      tx.onabort = () => reject(tx.error || new Error('Löschen der lokalen Projektclips wurde abgebrochen.'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 async function loadLocally(projectId: string, sceneId: string): Promise<Blob | null> {
@@ -149,24 +186,29 @@ async function loadLocally(projectId: string, sceneId: string): Promise<Blob | n
   }
 }
 
-/** Local IndexedDB is the fast cache; PostgreSQL-backed project assets are the cross-device source of truth. */
+/** PostgreSQL is the cross-device source of truth; IndexedDB is only an offline fallback. */
 export async function loadSceneVideoClip(projectId: string, sceneId: string): Promise<Blob | null> {
   if (!projectId || !sceneId) return null;
   try {
-    const local = await loadLocally(projectId, sceneId);
-    if (local) return local;
+    const response = await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`,
+      { credentials: 'same-origin', cache: 'no-store' }
+    );
+    if (response.status === 404 || (response.status >= 400 && response.status < 500)) return null;
+    if (response.ok) {
+      const remote = await response.blob();
+      if (remote.type.startsWith('video/') && remote.size >= 1024) {
+        try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
+        return remote;
+      }
+      return null;
+    }
   } catch {
-    // Continue with the durable server copy if browser storage is unavailable.
+    // Fall back to the local cache when the server is temporarily unavailable.
   }
 
   try {
-    const remote = await apiRequest<{ dataUrl: string }>(
-      `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`
-    );
-    const response = await fetch(remote.dataUrl);
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    return blob.type.startsWith('video/') && blob.size >= 1024 ? blob : null;
+    return await loadLocally(projectId, sceneId);
   } catch {
     return null;
   }

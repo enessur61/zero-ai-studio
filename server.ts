@@ -9,6 +9,7 @@ import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
@@ -72,6 +73,12 @@ import type {
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 app.disable('x-powered-by');
+
+let projectVideoAssetStore: ReturnType<typeof createProjectVideoAssetStore> | null = null;
+function getProjectVideoAssetStore() {
+  if (!projectVideoAssetStore) projectVideoAssetStore = createProjectVideoAssetStore(getPostgresPool());
+  return projectVideoAssetStore;
+}
 
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
 // Node processes. The local gate is only for development without PostgreSQL.
@@ -2554,69 +2561,105 @@ app.post('/api/projects/:id/snapshots/:snapshotId/restore', asyncRoute(async (re
   return res.json({ ok: true, project: restoredProject, restoredFromVersion: snapshot.version });
 }));
 
-app.put('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
-  const db = await loadDb();
-  const project = db.projects.find((item) => item.id === req.params.id);
-  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
-  const scene = project.scenes.find((item) => item.id === req.params.sceneId);
-  if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
-
-  const dataUrl = typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '';
-  if (!isSafeProjectAssetUrl(dataUrl, 'video') || dataUrl.length > 12 * 1024 * 1024) {
-    return res.status(400).json({ error: 'Ungültiger Szenenclip. Erlaubt sind MP4/WebM bis 8 MB.' });
-  }
-  const assetKey = `zero-scene-video:${scene.id}`;
-  const existing = project.assets.find((asset) => asset.type === 'video' && asset.modelId === assetKey);
-  const storedSceneVideoChars = project.assets
-    .filter((asset) => asset.type === 'video' && asset.modelId.startsWith('zero-scene-video:'))
-    .reduce((total, asset) => total + asset.url.length, 0);
-  const nextSceneVideoChars = storedSceneVideoChars - (existing?.url.length ?? 0) + dataUrl.length;
-  if (nextSceneVideoChars > 24 * 1024 * 1024) {
-    return res.status(413).json({ error: 'Die Szenenclips dieses Projekts überschreiten zusammen das 24-MB-Synchronisationslimit. Bitte ältere Clips entfernen.' });
-  }
-  const now = new Date().toISOString();
-  if (existing) {
-    existing.url = dataUrl;
-    existing.title = `Szenenclip: ${scene.title}`.slice(0, 120);
-    existing.durationSec = Math.min(60, scene.durationSec);
-    existing.createdAt = now;
-  } else {
-    if (project.assets.length >= 200) {
-      return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
-    }
-    project.assets.unshift({
-      id: `asset-${Date.now()}-${randomBytes(4).toString('hex')}`,
-      type: 'video',
-      title: `Szenenclip: ${scene.title}`.slice(0, 120),
-      url: dataUrl,
-      modelId: assetKey,
-      durationSec: Math.min(60, scene.durationSec),
-      createdAt: now,
-    });
-  }
-  project.updatedAt = now;
-  await saveDb(db);
-  return res.json({ ok: true, serverPersisted: true });
-}));
-
 app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
-  const assetKey = `zero-scene-video:${req.params.sceneId}`;
-  const asset = project.assets.find((item) => item.type === 'video' && item.modelId === assetKey);
-  if (!asset || !isSafeProjectAssetUrl(asset.url, 'video')) {
-    return res.status(404).json({ error: 'Für diese Szene ist kein dauerhaft gespeicherter Videoclip vorhanden.' });
+  if (!project.scenes.some((item) => item.id === req.params.sceneId)) {
+    return res.status(404).json({ error: 'Szene nicht gefunden.' });
   }
-  return res.json({ dataUrl: asset.url, serverPersisted: true });
+  const asset = await getProjectVideoAssetStore().getLatestForScene(
+    req.params.id, req.params.sceneId, createZeroPrincipalHash()
+  );
+  if (!asset) return res.status(404).json({ error: 'Für diese Szene ist kein gespeicherter Videoclip vorhanden.' });
+  res.setHeader('Content-Type', asset.contentType);
+  res.setHeader('Content-Length', String(asset.sizeBytes));
+  res.setHeader('ETag', `"${asset.sha256}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  return res.send(asset.payload);
 }));
+
+app.get('/api/projects/:id/videos', asyncRoute(async (req, res) => {
+  const db = await loadDb();
+  if (!db.projects.some((item) => item.id === req.params.id)) {
+    return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  }
+  const assets = await getProjectVideoAssetStore().list(req.params.id, createZeroPrincipalHash());
+  return res.json({ assets, retention: 'manual-delete', maxClipBytes: 100 * 1024 * 1024, maxProjectBytes: 500 * 1024 * 1024, maxProjectClips: 50 });
+}));
+
+app.get('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.assetId)) return res.status(404).json({ error: 'Clip nicht gefunden.' });
+  const db = await loadDb();
+  if (!db.projects.some((item) => item.id === req.params.id)) {
+    return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  }
+  const asset = await getProjectVideoAssetStore().get(
+    req.params.assetId, req.params.id, createZeroPrincipalHash()
+  );
+  if (!asset) return res.status(404).json({ error: 'Clip nicht gefunden oder Aufbewahrungsfrist abgelaufen.' });
+  const download = req.query.download === '1';
+  res.setHeader('Content-Type', asset.contentType);
+  res.setHeader('Content-Length', String(asset.sizeBytes));
+  res.setHeader('ETag', `"${asset.sha256}"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`);
+  return res.send(asset.payload);
+}));
+
+app.delete('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.assetId)) return res.status(404).json({ error: 'Clip nicht gefunden.' });
+  const db = await loadDb();
+  if (!db.projects.some((item) => item.id === req.params.id)) {
+    return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  }
+  const deleted = await getProjectVideoAssetStore().remove(
+    req.params.assetId, req.params.id, createZeroPrincipalHash()
+  );
+  if (!deleted) return res.status(404).json({ error: 'Clip nicht gefunden.' });
+  return res.json({ ok: true });
+}));
+
+app.put(
+  '/api/projects/:id/scenes/:sceneId/video',
+  express.raw({ type: 'application/octet-stream', limit: '100mb' }),
+  asyncRoute(async (req, res) => {
+    const db = await loadDb();
+    const project = db.projects.find((item) => item.id === req.params.id);
+    if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+    if (!project.scenes.some((item) => item.id === req.params.sceneId)) {
+      return res.status(404).json({ error: 'Szene nicht gefunden.' });
+    }
+    const contentType = String(req.get('X-Zero-Video-Type') || '').split(';')[0].trim().toLowerCase();
+    if (!Buffer.isBuffer(req.body) || !isValidProjectVideoPayload(req.body, contentType)) {
+      return res.status(400).json({ error: 'Ungültiger Videoclip. Erlaubt sind MP4/WebM zwischen 1 KB und 100 MB.' });
+    }
+    const jobId = req.get('X-Zero-Wan-Job-Id')?.trim() || null;
+    try {
+      const asset = await getProjectVideoAssetStore().put({
+        projectId: req.params.id,
+        sceneId: req.params.sceneId,
+        principalHash: createZeroPrincipalHash(),
+        jobId,
+        contentType: contentType as 'video/mp4' | 'video/webm',
+        payload: req.body,
+      });
+      project.updatedAt = new Date().toISOString();
+      await saveDb(db);
+      return res.json({ ok: true, serverPersisted: true, asset });
+    } catch (error) {
+      if (error instanceof ProjectVideoLimitError) return res.status(413).json({ error: error.message });
+      if (error instanceof Error && /Invalid|Wan job/.test(error.message)) return res.status(400).json({ error: error.message });
+      throw error;
+    }
+  })
+);
 
 app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   const db = await loadDb();
   const project = db.projects.find((p) => p.id === req.params.id);
   if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
 
-  // Remove unsafe media persisted by older versions before returning the project.
   project.scenes = sanitizeProjectScenes(project.scenes);
   project.assets = sanitizeProjectAssets(project.assets);
   project.snapshots = sanitizeProjectSnapshots(project.snapshots);
@@ -2628,8 +2671,6 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   }
   const url = typeof req.body?.url === 'string' ? req.body.url : '';
   if (!url.trim()) return res.status(400).json({ error: 'Asset-URL fehlt.' });
-  // Base64 data URLs are stored in the persistent project record. Bound them
-  // explicitly to avoid oversized JSONB rows and accidental memory pressure.
   if (url.length > 16 * 1024 * 1024) {
     return res.status(413).json({ error: 'Asset ist zu groß (maximal 16 MB Daten). Bitte kleinere Datei verwenden.' });
   }
@@ -2669,6 +2710,11 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   }
   db.projects = db.projects.filter((p) => p.id !== req.params.id);
   await saveDb(db);
+  try {
+    await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
+  } catch {
+    // Expiring project clips are still cleaned by retention; never fail project deletion on storage outage.
+  }
   const projects = db.projects.map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),

@@ -13,6 +13,7 @@ import {
 } from '../server/zeroCostResourceGuard.ts';
 import { reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import { runZeroSchemaMigrations } from '../server/schemaMigrations.ts';
+import { createProjectVideoAssetStore } from '../server/projectVideoStore.ts';
 
 const connectionString = process.env.DATABASE_URL;
 if (process.env.ZERO_POSTGRES_TESTS !== 'true' || !connectionString) throw new Error('ZERO PostgreSQL resource integration requires ZERO_POSTGRES_TESTS=true and DATABASE_URL.');
@@ -47,6 +48,33 @@ try {
   await ensureZeroCostResourceSchema(poolA);
   await ensureZeroCostResourceSchema(poolB);
   await runZeroSchemaMigrations(poolB);
+
+  // Durable project video archive: binary payloads, per-principal isolation,
+  // stable Wan job upsert, scene recovery, explicit deletion and project cleanup.
+  const projectVideos = createProjectVideoAssetStore(poolA);
+  const videoPrincipal = createHash('sha256').update('project-video-integration-principal').digest('hex');
+  const videoJobId = randomUUID();
+  const mp4 = Buffer.alloc(2048);
+  mp4.write('ftyp', 4, 'ascii');
+  const archived = await projectVideos.put({
+    projectId: 'project-video-test', sceneId: 'scene-video-test',
+    principalHash: videoPrincipal, jobId: videoJobId, contentType: 'video/mp4', payload: mp4,
+  });
+  assert.equal(archived.sizeBytes, 2048);
+  assert.equal(archived.jobId, videoJobId);
+  assert.equal((await projectVideos.list('project-video-test', videoPrincipal)).length, 1);
+  assert.equal((await projectVideos.list('project-video-test', 'f'.repeat(64))).length, 0);
+  const fetchedVideo = await projectVideos.get(archived.id, 'project-video-test', videoPrincipal);
+  assert.deepEqual(fetchedVideo?.payload, mp4);
+  assert.equal((await projectVideos.getLatestForScene('project-video-test', 'scene-video-test', videoPrincipal))?.id, archived.id);
+  const replayedVideo = await projectVideos.put({
+    projectId: 'project-video-test', sceneId: 'scene-video-test',
+    principalHash: videoPrincipal, jobId: videoJobId, contentType: 'video/mp4', payload: mp4,
+  });
+  assert.equal(replayedVideo.id, archived.id, 'replayed Wan job updates the same archived asset');
+  assert.equal(await projectVideos.remove(archived.id, 'project-video-test', videoPrincipal), true);
+  assert.equal(await projectVideos.removeProject('project-video-test', videoPrincipal), 0);
+
   const migration = await poolA.query('SELECT version FROM zero_schema_migrations WHERE version = 1');
   assert.equal(migration.rows.length, 1, 'versioned additive migration is applied exactly once');
   const fingerprintColumn = await poolA.query(`

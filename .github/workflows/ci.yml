@@ -284,27 +284,31 @@ jobs:
               durationProject.snapshots[0].totalDurationSec !== totalDuration) {
             throw new Error('Project duration metadata does not match its clamped timeline');
           }
-          const mediaDataUrl = 'data:video/mp4;base64,' + Buffer.alloc(2048, 0).toString('base64');
+          const mp4Bytes = Buffer.alloc(8 * 1024 * 1024 + 1, 0);
+          mp4Bytes.write('ftyp', 4, 'ascii');
           const sceneVideoPath = '/api/projects/' + durationProject.id + '/scenes/' + durationProject.scenes[0].id + '/video';
-          const mediaWrite = await authFetch(sceneVideoPath, {
-            method: 'PUT', body: JSON.stringify({ dataUrl: mediaDataUrl })
+          const mediaWrite = await fetch(base + sceneVideoPath, {
+            method: 'PUT', headers: { cookie, 'content-type': 'application/octet-stream', 'x-zero-video-type': 'video/mp4' }, body: mp4Bytes
           });
-          if (!mediaWrite.ok || !(await mediaWrite.json()).serverPersisted) throw new Error('Scene clip was not persisted to the project');
-          const mediaReadFromSecondInstance = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
-          const mediaPayload = await mediaReadFromSecondInstance.json();
-          if (!mediaReadFromSecondInstance.ok || mediaPayload.dataUrl !== mediaDataUrl) {
-            throw new Error('Scene media written on instance A was not visible on instance B');
+          const mediaWritePayload = await mediaWrite.json();
+          if (!mediaWrite.ok || !mediaWritePayload.serverPersisted || mediaWritePayload.asset?.sizeBytes !== mp4Bytes.length) {
+            throw new Error('Scene clip was not persisted to the ZERO PostgreSQL video archive: HTTP ' + mediaWrite.status + ' ' + JSON.stringify(mediaWritePayload));
           }
-          const crossInstanceProjects = await fetch(baseB + '/api/projects', { headers: { cookie } });
-          const crossInstanceProjectPayload = await crossInstanceProjects.json();
-          const projectAfterMediaWrite = crossInstanceProjectPayload.projects?.find((project) =>
-            project.id === durationProject.id
-          );
-          if (!crossInstanceProjects.ok ||
-              !projectAfterMediaWrite?.assets?.some((asset) =>
-                asset.modelId === 'zero-scene-video:' + durationProject.scenes[0].id
-              )) {
-            throw new Error('Project/asset reads on instance B returned stale PostgreSQL state');
+          const mediaReadFromSecondInstance = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
+          const mediaBytesFromSecondInstance = Buffer.from(await mediaReadFromSecondInstance.arrayBuffer());
+          if (!mediaReadFromSecondInstance.ok || !mediaBytesFromSecondInstance.equals(mp4Bytes)) {
+            throw new Error('Binary scene media written on instance A was not visible on instance B');
+          }
+          const clipHistoryResponse = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos', { headers: { cookie } });
+          const clipHistory = await clipHistoryResponse.json();
+          const archivedClip = clipHistory.assets?.find((asset) => asset.id === mediaWritePayload.asset.id);
+          if (!clipHistoryResponse.ok || !archivedClip || archivedClip.sizeBytes !== mp4Bytes.length) {
+            throw new Error('Archived clip history was not shared across PostgreSQL-backed instances');
+          }
+          const clipDownload = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos/' + archivedClip.id + '?download=1', { headers: { cookie } });
+          const downloadedClip = Buffer.from(await clipDownload.arrayBuffer());
+          if (!clipDownload.ok || !downloadedClip.equals(mp4Bytes) || !clipDownload.headers.get('content-disposition')?.includes('attachment')) {
+            throw new Error('Archived project clip download failed');
           }
           if (!durationProject.snapshots[0].state ||
               durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
@@ -333,12 +337,12 @@ jobs:
               editedProject.version !== durationProject.version + 1 ||
               editedProject.targetDurationSec > 60 ||
               editedProject.status !== durationProject.status ||
-              editedProject.assets.length !== projectAfterMediaWrite.assets.length ||
+              editedProject.assets.length !== durationProject.assets.length ||
               editedProject.snapshots.length === 0 ||
               editedProject.updatedAt === '2000-01-01T00:00:00.000Z' ||
               editedProject.scenes[0]?.imageUrl !== undefined ||
               editedProject.scenes[0]?.audioDataUrl !== undefined) {
-            throw new Error('Project update accepted client-controlled server fields or unsafe scene media URLs: ' + JSON.stringify({ editedId: editedProject.id, expectedId: durationProject.id, editedVersion: editedProject.version, expectedVersion: durationProject.version + 1, editedAssets: editedProject.assets?.length, expectedAssets: projectAfterMediaWrite.assets?.length, editedStatus: editedProject.status, expectedStatus: durationProject.status }));
+            throw new Error('Project update accepted client-controlled server fields or unsafe scene media URLs: ' + JSON.stringify({ editedId: editedProject.id, expectedId: durationProject.id, editedVersion: editedProject.version, expectedVersion: durationProject.version + 1, editedAssets: editedProject.assets?.length, expectedAssets: durationProject.assets?.length, editedStatus: editedProject.status, expectedStatus: durationProject.status }));
           }
           const unsafeJavascriptAsset = await authFetch('/api/projects/' + durationProject.id + '/assets', {
             method: 'POST', body: JSON.stringify({ type: 'image', url: 'javascript:alert(1)' })
@@ -507,16 +511,18 @@ jobs:
           });
           if (!zipRestore.ok) throw new Error('PostgreSQL ZIP restore failed: ' + await zipRestore.text());
           const mediaAfterZipRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
-          if (!mediaAfterZipRestore.ok || (await mediaAfterZipRestore.json()).dataUrl !== mediaDataUrl) {
-            throw new Error('ZIP restore did not preserve the project scene clip');
+          const mediaBytesAfterZipRestore = Buffer.from(await mediaAfterZipRestore.arrayBuffer());
+          if (!mediaAfterZipRestore.ok || !mediaBytesAfterZipRestore.equals(mp4Bytes)) {
+            throw new Error('ZIP restore did not preserve the durable project scene clip');
           }
           const jsonRestore = await authFetch('/api/system/restore', {
             method: 'POST', body: JSON.stringify({ backupId: jsonBackup.id })
           });
           if (!jsonRestore.ok) throw new Error('PostgreSQL JSON restore failed: ' + await jsonRestore.text());
           const mediaAfterJsonRestore = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
-          if (!mediaAfterJsonRestore.ok || (await mediaAfterJsonRestore.json()).dataUrl !== mediaDataUrl) {
-            throw new Error('JSON backup restore did not preserve the project scene clip');
+          const mediaBytesAfterJsonRestore = Buffer.from(await mediaAfterJsonRestore.arrayBuffer());
+          if (!mediaAfterJsonRestore.ok || !mediaBytesAfterJsonRestore.equals(mp4Bytes)) {
+            throw new Error('JSON backup restore did not preserve the durable project scene clip');
           }
           const reconciliationResponse = await authFetch('/api/system/zip-backups/reconciliation');
           if (!reconciliationResponse.ok) throw new Error('PostgreSQL backup reconciliation endpoint failed: ' + await reconciliationResponse.text());
