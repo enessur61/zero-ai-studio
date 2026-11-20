@@ -456,9 +456,14 @@ export async function loadDb(): Promise<ZeroDatabase> {
   // PostgreSQL is the cross-instance source of truth. Only file-backed local
   // development may reuse the process cache between requests.
   if (dbCache && !runtimeConfig.DATABASE_URL) return dbCache;
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.mkdir(BACKUP_DIR, { recursive: true });
-  await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+  // Prisma Compute's code mount is read-only. With PostgreSQL enabled,
+  // ZERO state, system backups and ZIP archives live in the database, so local
+  // data directories are needed only for file-backed development mode.
+  if (!runtimeConfig.DATABASE_URL) {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.mkdir(BACKUP_DIR, { recursive: true });
+    await fs.mkdir(ZIP_BACKUP_DIR, { recursive: true });
+  }
 
   try {
     if (runtimeConfig.NODE_ENV === 'production' && !runtimeConfig.DATABASE_URL && runtimeConfig.ZERO_ALLOW_EPHEMERAL_DB !== 'true') {
