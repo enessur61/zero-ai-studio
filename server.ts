@@ -2293,7 +2293,7 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
@@ -2318,7 +2318,7 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   const id = req.params.id;
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
   try {
