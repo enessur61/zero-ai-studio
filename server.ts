@@ -202,6 +202,24 @@ app.use((_req, res, next) => {
 app.use('/api', (req, res, next) => {
   if (['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) return next();
   const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
+  const costConsumingPostPaths = new Set([
+    '/system/gemini-connection-test', '/system/cloudflare-connection-test',
+    '/models/test-all', '/brain/chat', '/web/research', '/image/generate',
+    '/image/analyze', '/audio/tts', '/audio/tts/piper', '/audio/transcribe',
+    '/film/direct', '/film/regenerate-scene', '/music/compose',
+    '/memory', '/memory/search', '/automation/run',
+  ]);
+  const isCostConsumingPost = req.method === 'POST' && (
+    costConsumingPostPaths.has(req.path) ||
+    (/^\\/models\\/[^/]+\\/test$/.test(req.path)) ||
+    req.path === '/video/engine/jobs'
+  );
+  if (isCostConsumingPost && !suppliedIdempotencyKey) {
+    return res.status(400).json({
+      error: 'Für kostenverbrauchende ZERO-Anfragen ist ein Idempotency-Key-Header erforderlich.',
+      code: 'IDEMPOTENCY_KEY_REQUIRED',
+    });
+  }
   if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
     return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
   }
