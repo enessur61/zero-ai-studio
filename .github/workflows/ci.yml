@@ -292,7 +292,7 @@ jobs:
           });
           const mediaWritePayload = await mediaWrite.json();
           if (!mediaWrite.ok || !mediaWritePayload.serverPersisted || mediaWritePayload.asset?.sizeBytes !== mp4Bytes.length) {
-            throw new Error('Scene clip was not persisted to the ZERO PostgreSQL video archive');
+            throw new Error('Scene clip was not persisted to the ZERO PostgreSQL video archive: HTTP ' + mediaWrite.status + ' ' + JSON.stringify(mediaWritePayload));
           }
           const mediaReadFromSecondInstance = await fetch(baseB + sceneVideoPath, { headers: { cookie } });
           const mediaBytesFromSecondInstance = Buffer.from(await mediaReadFromSecondInstance.arrayBuffer());
