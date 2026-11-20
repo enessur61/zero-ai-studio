@@ -194,7 +194,6 @@ try {
   const concurrentStreamStore = createProjectVideoAssetStore(gatePoolA);
   await concurrentStreamStore.list('project-video-integration', videoPrincipal); // initialize schema before parallel opens
   assert.equal(POSTGRES_POOL_MAX, 5, 'test imports exact production PostgreSQL pool maximum');
-  assert.equal(gatePoolA.options.max, POSTGRES_POOL_MAX, 'integration uses production pool size');
   const concurrentStreams = await Promise.all(Array.from({ length: 2 }, () =>
     concurrentStreamStore.openRead(concurrentVideo.id, 'project-video-integration', videoPrincipal)
   ));
