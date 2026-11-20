@@ -18,7 +18,7 @@ import {
 import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
-import { createProjectVideoAssetStore, ProjectVideoLimitError } from '../server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
 import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
@@ -79,6 +79,15 @@ try {
   });
   assert.equal(archivedVideo.sizeBytes, mp4Payload.length);
   assert.match(archivedVideo.sha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(
+    () => projectVideoStore.put({
+      projectId: 'project-video-integration', sceneId: 'scene-video-integration',
+      principalHash: videoPrincipal, contentType: 'video/mp4', payload: mp4Payload.subarray(0, 2048),
+      isProjectActive: async () => false,
+    }),
+    (error) => error instanceof ProjectVideoProjectNotFoundError,
+    'an upload that waited behind project deletion must re-check authoritative project state',
+  );
   assert.equal((await projectVideoStoreB.list('project-video-integration', videoPrincipal)).length, 1);
   assert.equal((await projectVideoStoreB.list('project-video-integration', otherVideoPrincipal)).length, 0);
   assert.equal(await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), null);

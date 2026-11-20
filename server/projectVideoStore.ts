@@ -28,6 +28,13 @@ interface ProjectVideoRow extends QueryResultRow {
   payload?: Buffer;
 }
 
+export class ProjectVideoProjectNotFoundError extends Error {
+  constructor() {
+    super('Project no longer exists.');
+    this.name = 'ProjectVideoProjectNotFoundError';
+  }
+}
+
 export class ProjectVideoLimitError extends Error {
   constructor(message: string) {
     super(message);
@@ -116,6 +123,7 @@ export function createProjectVideoAssetStore(
     jobId?: string | null;
     contentType: 'video/mp4' | 'video/webm';
     payload: Buffer;
+    isProjectActive?: () => Promise<boolean>;
   }): Promise<ProjectVideoAsset> {
     if (!/^[a-f0-9]{64}$/.test(input.principalHash)) throw new Error('Authenticated principal is required.');
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.projectId) || !/^[A-Za-z0-9_-]{1,128}$/.test(input.sceneId)) {
@@ -133,6 +141,11 @@ export function createProjectVideoAssetStore(
       inTransaction = true;
       await client.query("SET LOCAL statement_timeout = '120s'");
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`zero-project-video:${input.principalHash}:${input.projectId}`]);
+      // Re-check the authoritative PostgreSQL project state while holding the
+      // same lock as deletion. This closes the stale-read upload/delete race.
+      if (input.isProjectActive && !(await input.isProjectActive())) {
+        throw new ProjectVideoProjectNotFoundError();
+      }
 
       if (input.jobId) {
         const existing = await client.query<ProjectVideoRow>(

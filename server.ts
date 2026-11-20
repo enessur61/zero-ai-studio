@@ -9,9 +9,9 @@ import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createProjectVideoAssetStore, ProjectVideoLimitError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
 import path from 'node:path';
-import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
+import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
@@ -69,6 +69,7 @@ import type {
   ProjectAsset,
   StudioProject,
 } from './src/types/zero.ts';
+import type { ZeroDatabase } from './server/store.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
@@ -2643,11 +2644,16 @@ app.put(
         jobId,
         contentType: contentType as 'video/mp4' | 'video/webm',
         payload: req.body,
+        isProjectActive: async () => {
+          const latest = await readPersistentState<ZeroDatabase>();
+          return Boolean(latest?.payload.projects.some((item) => item.id === req.params.id));
+        },
       });
       project.updatedAt = new Date().toISOString();
       await saveDb(db);
       return res.json({ ok: true, serverPersisted: true, asset });
     } catch (error) {
+      if (error instanceof ProjectVideoProjectNotFoundError) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
       if (error instanceof ProjectVideoLimitError) return res.status(413).json({ error: error.message });
       if (error instanceof Error && /Invalid|Wan job/.test(error.message)) return res.status(400).json({ error: error.message });
       throw error;
