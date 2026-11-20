@@ -34,9 +34,9 @@ export function classifyGeminiResourceType(modelId: string, payload: string): Ze
   return 'text';
 }
 
-export function classifyGeminiResourceError(error: unknown): 'FAILED' | 'UNKNOWN' {
+export function classifyGeminiResourceError(error: unknown): 'REJECTED' | 'UNKNOWN' {
   const kind = classifyProviderError(error);
-  if (kind === 'quota-exhausted' || kind === 'rate-limited' || kind === 'auth' || kind === 'not-found') return 'FAILED';
+  if (kind === 'quota-exhausted' || kind === 'rate-limited' || kind === 'auth' || kind === 'not-found') return 'REJECTED';
   const message = error instanceof Error ? error.message : String(error);
   const clientStatus = message.match(/\b(?:HTTP\s*)?(4\d{2})\b/i);
   if (clientStatus) return 'FAILED';
