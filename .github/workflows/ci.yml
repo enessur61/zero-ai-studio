@@ -3,7 +3,7 @@ name: ZERO AI STUDIO CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, zero/prisma-preview-code-guard-20261120]
   pull_request:
 
 permissions:
