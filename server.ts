@@ -2585,7 +2585,7 @@ app.get('/api/projects/:id/videos', asyncRoute(async (req, res) => {
     return res.status(404).json({ error: 'Projekt nicht gefunden.' });
   }
   const assets = await getProjectVideoAssetStore().list(req.params.id, createZeroPrincipalHash());
-  return res.json({ assets, retentionDays: 90, maxClipBytes: 100 * 1024 * 1024, maxProjectBytes: 500 * 1024 * 1024 });
+  return res.json({ assets, retention: 'manual-delete', maxClipBytes: 100 * 1024 * 1024, maxProjectBytes: 500 * 1024 * 1024, maxProjectClips: 50 });
 }));
 
 app.get('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
