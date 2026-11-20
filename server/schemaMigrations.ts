@@ -75,6 +75,38 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         ON zero_cost_resource_rate_events (resource_type, created_at);
     `,
   },
+  {
+    version: 2,
+    name: 'principal-scoped-resource-daily-usage',
+    sql: `
+      CREATE TABLE IF NOT EXISTS zero_cost_principal_resource_usage (
+        day_utc DATE NOT NULL,
+        principal_hash CHAR(64) NOT NULL
+          CHECK (principal_hash ~ '^[a-f0-9]{64}$'),
+        resource_type TEXT NOT NULL
+          CHECK (resource_type IN ('text', 'image', 'audio', 'video')),
+        reserved_units INTEGER NOT NULL DEFAULT 0 CHECK (reserved_units >= 0),
+        consumed_units INTEGER NOT NULL DEFAULT 0 CHECK (consumed_units >= 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (day_utc, principal_hash, resource_type)
+      );
+
+      CREATE INDEX IF NOT EXISTS zero_cost_principal_resource_usage_lookup_idx
+        ON zero_cost_principal_resource_usage (principal_hash, day_utc, resource_type);
+
+      INSERT INTO zero_cost_principal_resource_usage
+        (day_utc, principal_hash, resource_type, reserved_units, consumed_units)
+      SELECT
+        day_utc,
+        principal_hash,
+        resource_type,
+        SUM(CASE WHEN status IN ('RESERVED', 'UNKNOWN') THEN reserved_units ELSE 0 END)::integer,
+        SUM(CASE WHEN status = 'SUCCEEDED' THEN reserved_units ELSE 0 END)::integer
+      FROM zero_cost_operations
+      GROUP BY day_utc, principal_hash, resource_type
+      ON CONFLICT (day_utc, principal_hash, resource_type) DO NOTHING;
+    `,
+  },
 ];
 
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
