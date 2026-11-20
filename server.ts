@@ -1659,7 +1659,7 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
   const worker = getPiperTtsWorkerConfig();
   if (!worker) {
     return res.status(503).json({
-      error: 'Der kostenlose deutsche Piper-Sprachdienst ist noch nicht verbunden. ZERO_TTS_WORKER_URL und ZERO_TTS_WORKER_TOKEN müssen in Render gesetzt sein. iPhone-Web-Speech bleibt direkt lokal verfügbar.',
+      error: 'Der Piper-Worker ist standardmäßig gesperrt. Erst nach bestätigter kostenloser Eigenhost-Bereitstellung beide ZERO_PIPER_WORKER-Freigaben setzen und ZERO_TTS_WORKER_URL sowie ZERO_TTS_WORKER_TOKEN konfigurieren. iPhone-Web-Speech bleibt lokal verfügbar.',
       costEur: 0, paidFallback: false,
     });
   }
