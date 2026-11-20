@@ -272,6 +272,70 @@ app.use(express.json({ limit: '26mb' }));
 // Persistent series continuity and dramaturgy API.
 app.use('/api/continuity', createContinuityRouter({ loadDb, saveDb }));
 
+app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const db = await loadDb();
+  const continuity = validateContinuityState(db.continuity ?? emptyContinuityState());
+  const series = continuity.series.find((item) => item.id === req.params.seriesId && !item.archivedAt);
+  if (!series) return res.status(404).json({ error: 'Serie nicht gefunden oder archiviert.' });
+  const input = buildStorySupervisorAiPrompt({ series, state: continuity, projects: db.projects ?? [], characters: db.characters ?? [] });
+  if (input.prompt.length < 80) return res.status(422).json({ error: 'Zu wenig Serienmaterial für eine belastbare dramaturgische Analyse.' });
+
+  let raw = '';
+  let modelId = '';
+  let costMode: 'confirmed-free-cloud' | 'blocked' = 'blocked';
+  const cloudflareFree = isCloudflareWorkersAiConfigured() && isCloudflareWorkersAiAllowed();
+  const cloudflareRoute = cloudflareFree
+    ? chooseZeroChatModel(db.models, db.budgetGuard, 'cloudflare-glm-4.7-flash')
+    : null;
+  if (cloudflareRoute?.modelId === 'cloudflare-glm-4.7-flash') {
+    const result = await generateCloudflareText({
+      systemPrompt: input.systemPrompt,
+      prompt: input.prompt,
+      maxTokens: 1800,
+      enableThinking: true,
+    });
+    raw = result.text;
+    modelId = result.modelId;
+    costMode = 'confirmed-free-cloud';
+  } else {
+    if (process.env.ZERO_GEMINI_FREE_TIER_ONLY !== 'true') {
+      return res.status(503).json({
+        error: 'KI-Analyse sicher blockiert: Kein bestätigtes kostenloses Modell verfügbar. Cloudflare benötigt den bestätigten Workers-Free-Plan; Gemini benötigt ZERO_GEMINI_FREE_TIER_ONLY=true. Kein Provider-Aufruf und kein kostenpflichtiger Fallback.',
+        paidFallback: false,
+      });
+    }
+    const geminiModels = db.models.filter((model) => model.id.startsWith('gemini-'));
+    const route = chooseZeroChatModel(geminiModels, db.budgetGuard, 'gemini-3.8-flash');
+    if (!route) return res.status(503).json({ error: 'Kein verifiziertes Gemini-Free-Tier-Modell mit gültigem Restkontingent. Sicher gestoppt.', paidFallback: false });
+    await reserveZeroBudgetModelAllowed(route.modelId, 'STORY_SUPERVISOR_DRAMATURGY', db);
+    try {
+      const ai = getGeminiClient();
+      const response = await withTransientRetry(() => ai.models.generateContent({
+        model: route.modelId,
+        contents: input.prompt,
+        config: { systemInstruction: input.systemPrompt, responseMimeType: 'application/json', maxOutputTokens: 1800, temperature: 0.2 },
+      }));
+      raw = response.text ?? '';
+      modelId = route.modelId;
+      await saveDb(db);
+    } catch (error) {
+      if (isQuotaExhaustionError(error)) await markGeminiQuotaExhausted(route.modelId, db).catch(() => undefined);
+      await saveDb(db).catch(() => undefined);
+      throw error;
+    }
+    costMode = 'confirmed-free-cloud';
+  }
+  const analysis = parseStorySupervisorAiResponse(raw, input.validCharacterIds);
+  const latest = continuity.dramaturgyAnalyses.filter((item) => item.seriesId === series.id).sort((a,b) => b.version-a.version)[0];
+  const source = JSON.stringify({ series, projects: db.projects.filter((project) => series.projectIds.includes(project.id)), characters: db.characters, knowledge: continuity.knowledge.filter((item) => item.seriesId === series.id), relationships: continuity.relationships.filter((item) => item.seriesId === series.id), events: continuity.events.filter((item) => item.seriesId === series.id) });
+  const version = createDramaturgyAnalysisVersion({ seriesId: series.id, modelId, costMode, analysis, previous: latest, source });
+  continuity.dramaturgyAnalyses.push(version);
+  db.continuity = continuity;
+  await saveDb(db);
+  return res.json({ analysis, analysisVersion: version, modelId, costMode, paidFallback: false, generatedAt: version.createdAt });
+}));
+
 // Enforce server-owned project identity before every project-id route.
 app.use('/api/projects/:id', createProjectOwnershipMiddleware(async () => (await loadDb()).projects));
 
@@ -2169,6 +2233,42 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.json({ jobs: payload.jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}));
+
+app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
+  const worker = getWanWorkerConfig();
+  const id = req.params.id;
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  if (!isValidWanJobId(id)) return res.status(400).json({ error: 'Ungültige Job-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(new URL(`/jobs/${id}/cancel`, worker.baseUrl), {
+      method: 'POST',
+      headers: worker.headers,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Abbruch konnte vom Worker nicht bestätigt werden.' });
+    if (payload.id !== id || !['cancelled', 'cancel_requested', 'succeeded', 'failed'].includes(String(payload.status))) {
+      return res.status(502).json({ error: 'Ungültige Abbruchbestätigung vom Wan-Worker.' });
+    }
+    const statusCode = payload.status === 'cancel_requested' ? 202 : 200;
+    return res.status(statusCode).json({
+      job: {
+        id,
+        status: payload.status,
+        cancelled: payload.status === 'cancelled',
+        cancelRequested: payload.status === 'cancel_requested',
+        message: typeof payload.message === 'string' ? payload.message : 'Worker-Status aktualisiert.',
+      },
+    });
+  } catch {
+    return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Der Abbruch ist nicht bestätigt; bitte den Jobstatus erneut prüfen.' });
   } finally {
     clearTimeout(timeout);
   }
