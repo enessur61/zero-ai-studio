@@ -87,5 +87,26 @@ class ModelCachePersistenceTests(unittest.TestCase):
         self.assertFalse(self.path.with_suffix(".onnx.part").exists())
 
 
+    def test_health_payload_matches_server_readiness_contract(self):
+        with patch.object(app, "APP_TOKEN", "zero-ci-worker-token-with-at-least-32-characters"):
+            payload = app.health()
+
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["auth_configured"], True)
+        self.assertEqual(payload["engine"], "Piper ONNX CPU")
+        self.assertEqual(payload["model_id"], "de_DE-thorsten-medium")
+        self.assertEqual(payload["voice"], "de_DE-thorsten-medium")
+        self.assertEqual(payload["engine_version"], "1.8.0")
+        self.assertEqual(payload["model_revision"], app.REV)
+        self.assertEqual(payload["voice_revision"], app.REV)
+        self.assertEqual(payload["engine_license"], "GPL-3.0-or-later")
+        self.assertEqual(payload["voice_dataset_license"], "CC0")
+        self.assertEqual(payload["voice_training_base"], "rdh (nl_BE, one Flemish speaker, CC0)")
+        self.assertEqual(payload["model_sha256"], app.MODEL_SHA256)
+        self.assertEqual(payload["cost_eur"], 0)
+        self.assertEqual(payload["paid_fallback"], False)
+        self.assertEqual(payload["commercial_use_confirmed"], False)
+
+
 if __name__ == "__main__":
     unittest.main()
