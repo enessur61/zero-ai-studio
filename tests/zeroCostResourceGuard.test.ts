@@ -25,12 +25,12 @@ const base: ZeroResourceOperationInput = {
 };
 const rejectsCode = (code: string) => (error: unknown) => error instanceof ZeroResourceGuardError && error.code === code;
 
-const contextKeys = await runWithZeroPrincipal('server-owned-test-principal', 'client-request-key-0001', async () => ({
+const contextKeys = await runWithZeroPrincipal('server-owned-test-principal', 'request-00000001', async () => ({
   principal: requireZeroPrincipal(),
   first: createZeroIdempotencyKey(),
   same: createZeroIdempotencyKey(),
 }));
-const differentContextKey = await runWithZeroPrincipal('server-owned-test-principal', 'client-request-key-0002', () => createZeroIdempotencyKey());
+const differentContextKey = await runWithZeroPrincipal('server-owned-test-principal', 'request-00000002', () => createZeroIdempotencyKey());
 assert.equal(contextKeys.principal, 'server-owned-test-principal');
 assert.equal(contextKeys.first, contextKeys.same, 'same request header derives a stable operation key');
 assert.notEqual(contextKeys.first, differentContextKey, 'different request headers derive different operation keys');
