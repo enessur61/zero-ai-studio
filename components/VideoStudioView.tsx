@@ -75,11 +75,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
 
-  const persistArchivedPlayback = () => {
+  const persistArchivedPlayback = (preferLastKnownPosition = false) => {
     const video = archivedVideoRef.current;
     const snapshot = playbackSnapshotRef.current;
     if (!video || !snapshot || !playbackStorage) return;
-    const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : archivedPlaybackPositionRef.current;
+    const currentTime = preferLastKnownPosition
+      ? archivedPlaybackPositionRef.current
+      : Number.isFinite(video.currentTime) ? video.currentTime : archivedPlaybackPositionRef.current;
     archivedPlaybackPositionRef.current = Math.max(0, currentTime);
     saveProjectVideoPlaybackSnapshot(playbackStorage, {
       projectId: snapshot.projectId,
@@ -118,7 +120,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       return;
     }
     const video = archivedVideoRef.current;
-    const savePosition = () => persistArchivedPlayback();
+    const savePosition = (preferLastKnownPosition = false) => persistArchivedPlayback(preferLastKnownPosition);
     const onPlay = () => {
       shouldResumeArchivedVideoRef.current = true;
       savePosition();
@@ -127,13 +129,14 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       if (!recoveringArchivedVideoRef.current && document.visibilityState !== 'hidden') {
         shouldResumeArchivedVideoRef.current = false;
       }
-      savePosition();
+      savePosition(document.visibilityState === 'hidden');
     };
     video?.addEventListener('play', onPlay);
     video?.addEventListener('pause', onPause);
     video?.addEventListener('timeupdate', savePosition);
     video?.addEventListener('seeking', savePosition);
-    window.addEventListener('pagehide', savePosition);
+    const onPageHide = () => savePosition(true);
+    window.addEventListener('pagehide', onPageHide);
     const stopRecovery = watchProjectVideoRecovery({
       url: wanClipUrl,
       mediaTarget: video ?? undefined,
@@ -141,11 +144,12 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       onState: (state) => {
         setVideoRecoveryStatus(state);
         if (state === 'session-expired') {
-          savePosition();
+          savePosition(true);
           window.dispatchEvent(new Event('zero:session-expired'));
         }
       },
       onMediaFailure: (failure) => {
+        savePosition(true);
         if (failure === 'decode') setWanProgress('Safari konnte den Videostream nicht decodieren. ZERO startet keine endlosen Netzwerk-Wiederholungen.');
         if (failure === 'unsupported') setWanProgress('Dieses Videoformat wird von diesem Safari-Decoder nicht unterstützt.');
       },
@@ -164,7 +168,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       video?.removeEventListener('pause', onPause);
       video?.removeEventListener('timeupdate', savePosition);
       video?.removeEventListener('seeking', savePosition);
-      window.removeEventListener('pagehide', savePosition);
+      window.removeEventListener('pagehide', onPageHide);
     };
   }, [wanClipUrl]);
 
@@ -214,7 +218,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
     setWanClipScene(scene?.title ?? 'Gespeicherter Clip');
     pendingPlaybackRestoreRef.current = null;
-    setScenes((previous) =>
+    setScenes((previous) => previous.map((item) =>
       item.id === asset.sceneId ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
     ));
     setWanProgress('Clip aus der dauerhaften ZERO-Projektablage wiederhergestellt.');
