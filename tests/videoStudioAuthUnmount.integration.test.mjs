@@ -115,7 +115,7 @@ const fetchMock = async (input, init = {}) => {
 globalThis.fetch = fetchMock;
 window.fetch = fetchMock;
 
-const { act } = await import('react');
+const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: App } = await import('../App.tsx');
 
@@ -145,7 +145,7 @@ function installMediaMocks(video) {
 
 const root = createRoot(window.document.getElementById('root'));
 try {
-  await act(async () => { root.render(React.createElement(App)); });
+  await act(async () => { root.render(createElement(App)); });
   const firstVideo = await waitFor(
     () => window.document.querySelector('video'),
     'The real App did not mount VideoStudioView from the persisted playback marker.',
