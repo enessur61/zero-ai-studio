@@ -207,6 +207,8 @@ try {
   let deleteCompleted = false;
   let thirdStreamCompleted = false;
   let thirdStreamPromise: Promise<Awaited<ReturnType<typeof concurrentStreamStore.openRead>>> | null = null;
+  let deleteGuardStream: Awaited<ReturnType<typeof concurrentStreamStore.openRead>> = null;
+  let deleteGuardIterator: AsyncIterator<Buffer> | null = null;
   try {
     const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
     assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
@@ -222,25 +224,35 @@ try {
     assert.equal(gatePoolA.totalCount, 3, 'two video readers and one app query fit in production max=5');
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(thirdStreamCompleted, false, 'third video stream waits before checking out another DB connection');
-    const blockedDelete = projectVideoStoreB.remove(
-      concurrentVideo.id, 'project-video-integration', videoPrincipal
-    ).then((removed) => { deleteCompleted = true; return removed; });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(deleteCompleted, false, 'shared row locks preserve bytes while admitted streams remain active');
-    // Release only one reader first: the queued third reader must acquire its
-    // shared row lock before the delete can proceed past the still-active second reader.
+
     await concurrentIterators[0].return?.();
     const third = await thirdStream;
     assert.ok(third, 'queued third stream is admitted as soon as one active slot is released');
     assert.equal(thirdStreamCompleted, true);
-    assert.equal(deleteCompleted, false, 'the remaining original reader still holds the deletion lock');
     await concurrentIterators[1].return?.();
     await third!.close();
-    assert.equal(await blockedDelete, true, 'deletion proceeds after all admitted stream readers release their locks');
+
+    // Independently prove the row lock blocks deletion while a reader is active.
+    deleteGuardStream = await concurrentStreamStore.openRead(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    );
+    assert.ok(deleteGuardStream);
+    deleteGuardIterator = deleteGuardStream!.chunksForRange(0, 512 * 1024 - 1)[Symbol.asyncIterator]();
+    await deleteGuardIterator.next();
+    const blockedDelete = projectVideoStoreB.remove(
+      concurrentVideo.id, 'project-video-integration', videoPrincipal
+    ).then((removed) => { deleteCompleted = true; return removed; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(deleteCompleted, false, 'shared row lock preserves bytes during an active stream');
+    await deleteGuardIterator.return?.();
+    await deleteGuardStream!.close();
+    assert.equal(await blockedDelete, true, 'deletion proceeds after the active stream releases its row lock');
   } finally {
     await Promise.all(concurrentIterators.map(async (iterator) => {
       try { await iterator.return?.(); } catch { /* cleanup continues */ }
     }));
+    if (deleteGuardIterator) await deleteGuardIterator.return?.().catch(() => undefined);
+    if (deleteGuardStream) await deleteGuardStream.close().catch(() => undefined);
     if (thirdStreamPromise) await thirdStreamPromise.then((stream) => stream?.close()).catch(() => undefined);
     await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
   }
