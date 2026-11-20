@@ -322,5 +322,88 @@ export function createProjectVideoAssetStore(
     }
   }
 
-  return { put, list, get, getLatestForScene, remove, removeProject };
+
+  async function openRead(
+    assetId: string,
+    projectId: string,
+    principalHash: string,
+    rangeStart = 0,
+    rangeEnd?: number,
+  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer> }) | null> {
+    if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
+    await ready();
+    const client = await database.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN READ ONLY');
+      inTransaction = true;
+      await client.query("SET LOCAL statement_timeout = '120s'");
+      // Keep a shared row lock for the lifetime of the stream. This prevents
+      // replacement/deletion from changing the bytes between range requests.
+      const result = await client.query<ProjectVideoRow>(
+        `SELECT asset_id, project_id, scene_id, job_id, content_type,
+                octet_length(payload)::text AS size_bytes, sha256, created_at
+         FROM zero_project_video_assets
+         WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3
+         FOR SHARE`,
+        [assetId, projectId, principalHash],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        client.release();
+        return null;
+      }
+      const asset = toAsset(row);
+      const start = Math.max(0, Math.min(asset.sizeBytes - 1, Math.floor(rangeStart)));
+      const end = Math.max(start, Math.min(asset.sizeBytes - 1, Math.floor(rangeEnd ?? (asset.sizeBytes - 1))));
+      const chunks = (async function* (): AsyncGenerator<Buffer> {
+        try {
+          const chunkBytes = 256 * 1024;
+          for (let offset = start; offset <= end; offset += chunkBytes) {
+            const length = Math.min(chunkBytes, end - offset + 1);
+            const chunkResult = await client.query<{ chunk: Buffer }>(
+              'SELECT substring(payload FROM $2 FOR $3) AS chunk FROM zero_project_video_assets WHERE asset_id = $1',
+              [assetId, offset + 1, length],
+            );
+            const chunk = chunkResult.rows[0]?.chunk;
+            if (!Buffer.isBuffer(chunk) || chunk.length !== length) {
+              throw new Error('Project video stream returned an incomplete database chunk.');
+            }
+            yield chunk;
+          }
+        } finally {
+          if (inTransaction) {
+            await client.query('COMMIT').catch(() => undefined);
+            inTransaction = false;
+          }
+          client.release();
+        }
+      })();
+      return { ...asset, chunks };
+    } catch (error) {
+      if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
+      client.release();
+      throw error;
+    }
+  }
+
+  async function openReadLatestForScene(
+    projectId: string,
+    sceneId: string,
+    principalHash: string,
+  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer> }) | null> {
+    await ready();
+    const lookup = await database.query<{ asset_id: string }>(
+      `SELECT asset_id FROM zero_project_video_assets
+       WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId, sceneId, principalHash],
+    );
+    const assetId = lookup.rows[0]?.asset_id;
+    return assetId ? openRead(assetId, projectId, principalHash) : null;
+  }
+
+  return { put, list, get, getLatestForScene, openRead, openReadLatestForScene, remove, removeProject };
 }
