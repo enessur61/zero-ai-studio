@@ -160,7 +160,7 @@ class PersistentJobStore:
                 """
                 SELECT payload FROM zero_video_jobs
                 WHERE principal_hash = ?
-                ORDER BY updated_at DESC LIMIT ?
+                ORDER BY updated_at DESC, rowid DESC LIMIT ?
                 """,
                 (principal_hash, bounded_limit),
             ).fetchall()

@@ -157,6 +157,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
           ['queued', 'running'].includes(job.status));
         const completed = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
           job.status === 'succeeded');
+        // The worker returns newest-updated jobs first; restore only the latest
+        // completed clip per scene so an older render cannot overwrite it.
+        const latestCompletedByScene = new Map<string, typeof completed[number]>();
+        for (const job of latestCompletedByScene.values()) {
+          const sceneId = job.scene_id ?? '';
+          if (!latestCompletedByScene.has(sceneId)) latestCompletedByScene.set(sceneId, job);
+        }
         if (resumable.length) {
           setWanBusy(true);
           setWanProgress('Gespeicherte Wan-Aufträge werden nach dem erneuten Öffnen fortgesetzt...');
