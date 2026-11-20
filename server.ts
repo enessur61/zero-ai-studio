@@ -13,8 +13,8 @@ import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
-import { ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
+import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
+import { requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -2679,6 +2679,16 @@ app.post('/api/characters', asyncRoute(async (req, res) => {
   });
   await saveDb(db);
   res.json({ character: char });
+}));
+
+// Read-only operation recovery is scoped to the server-bound principal.
+app.get('/api/zero/operations/:id', asyncRoute(async (req, res) => {
+  const operation = await getZeroResourceOperationStatusWithPool(
+    getPostgresPool(), requireZeroPrincipal(), req.params.id,
+  );
+  res.setHeader('Cache-Control', 'no-store');
+  if (!operation) return res.status(404).json({ error: 'ZERO-Auftrag nicht gefunden.' });
+  return res.json({ operation });
 }));
 
 // === ZERO COST GUARD CONTROL (authenticated admin API) ===
