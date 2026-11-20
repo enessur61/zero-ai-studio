@@ -204,7 +204,7 @@ class PersistentJobStore:
                 except (TypeError, json.JSONDecodeError):
                     continue
                 if isinstance(existing, dict) and existing.get("kind") != "daily_usage" and existing.get("status") in {
-                    "queued", "running", "cancel_requested"
+                    "queued", "running", "cancel_requested", "deleting"
                 }:
                     active += 1
             if active >= max_concurrent:
