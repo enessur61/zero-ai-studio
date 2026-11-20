@@ -2041,7 +2041,7 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
     const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
     const targetDurationSec = episodeOne ? 60 : Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
-    const generateImages = Boolean(req.body?.generateImages);
+    const generateImages = episodeOne ? false : Boolean(req.body?.generateImages);
 
     if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
