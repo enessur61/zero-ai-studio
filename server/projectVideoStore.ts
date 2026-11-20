@@ -399,7 +399,7 @@ export function createProjectVideoAssetStore(
     projectId: string,
     sceneId: string,
     principalHash: string,
-  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer> }) | null> {
+  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
     await ready();
     const lookup = await database.query<{ asset_id: string }>(
       `SELECT asset_id FROM zero_project_video_assets

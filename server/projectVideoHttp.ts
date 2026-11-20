@@ -20,7 +20,7 @@ export function parseProjectVideoRange(
 ): ProjectVideoRange {
   const full = { kind: 'full' as const, start: 0, end: size - 1 };
   if (!header || (ifRange && ifRange !== etag)) return full;
-  const match = /^bytes=(\\d*)-(\\d*)$/.exec(header.trim());
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
   if (!match || (!match[1] && !match[2]) || size < 1) return { kind: 'invalid' };
   let start: number;
   let end: number;
