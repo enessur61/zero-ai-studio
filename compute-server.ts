@@ -25,6 +25,8 @@ configureRuntimeConfig({
   ZERO_VIDEO_ENGINE_TOKEN: secret(input.ZERO_VIDEO_ENGINE_TOKEN),
 });
 
+// The deployment workflow probes /api/health and /api/auth/status after this
+// entrypoint starts, validating only this branch-scoped preview environment.
 // The existing Express routes, middleware, auth and static-file handling are
 // retained. Import only after the Prisma-provided port, DB and inputs are ready.
 await import("./server.ts");
