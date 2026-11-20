@@ -34,32 +34,30 @@ jobs:
         run: |
           set -euo pipefail
           base="https://s5j2brwlvh3d4mkm2cyrycm5.fra.prisma.build"
-          for attempt in $(seq 1 12); do
-            if curl --connect-timeout 5 --max-time 10 --fail --silent --show-error "$base/api/health" -o /tmp/zero-health.json; then
+          health_status="000"
+          for attempt in $(seq 1 8); do
+            health_status="$(curl --connect-timeout 5 --max-time 10 --silent --show-error -o /tmp/zero-health.json -w '%{http_code}' "$base/api/health" || true)"
+            if [ "$health_status" = "200" ]; then
               break
-            fi
-            if [ "$attempt" -eq 12 ]; then
-              echo "Preview health endpoint did not become ready."
-              exit 1
             fi
             sleep 5
           done
+          echo "Preview /api/health HTTP status: $health_status"
+          cat /tmp/zero-health.json || true
+          auth_status="$(curl --connect-timeout 5 --max-time 10 --silent --show-error -o /tmp/zero-auth-status.json -w '%{http_code}' "$base/api/auth/status" || true)"
+          echo "Preview /api/auth/status HTTP status: $auth_status"
+          cat /tmp/zero-auth-status.json || true
           python3 - <<'PY'
           import json
           with open("/tmp/zero-health.json", encoding="utf-8") as f:
-              data = json.load(f)
-          assert data.get("ok") is True, "Preview health endpoint did not report ok=true"
-          readiness = data.get("readiness", {})
+              health = json.load(f)
+          with open("/tmp/zero-auth-status.json", encoding="utf-8") as f:
+              auth = json.load(f)
+          assert health.get("ok") is True, "Preview health endpoint did not report ok=true"
+          readiness = health.get("readiness", {})
           assert readiness.get("database") == "ready", "Preview PostgreSQL is not ready"
           assert readiness.get("authentication") == "ready", "Preview authentication is not ready"
-          print("Preview HTTP health and isolated PostgreSQL readiness: PASS")
-          PY
-          curl --connect-timeout 5 --max-time 10 --fail --silent --show-error "$base/api/auth/status" -o /tmp/zero-auth-status.json
-          python3 - <<'PY'
-          import json
-          with open("/tmp/zero-auth-status.json", encoding="utf-8") as f:
-              data = json.load(f)
-          assert data.get("required") is True, "Production-mode auth gate is not active"
-          assert data.get("configured") is True, "Preview auth credentials are not configured"
-          print("Preview authentication configuration gate: PASS")
+          assert auth.get("required") is True, "Production-mode auth gate is not active"
+          assert auth.get("configured") is True, "Preview auth credentials are not configured"
+          print("Preview HTTP health, PostgreSQL and auth configuration: PASS")
           PY
