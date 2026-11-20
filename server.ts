@@ -8,11 +8,13 @@ import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sa
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
+import { ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
+import { runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -198,8 +200,17 @@ app.use((_req, res, next) => {
 });
 
 app.use('/api', (req, res, next) => {
-  if (!IS_PRODUCTION || ['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) {
-    return next();
+  if (['/health', '/auth/status', '/auth/login', '/auth/logout'].includes(req.path)) return next();
+  const suppliedIdempotencyKey = req.get('idempotency-key')?.trim();
+  if (suppliedIdempotencyKey && (suppliedIdempotencyKey.length < 8 || suppliedIdempotencyKey.length > 200)) {
+    return res.status(400).json({ error: 'Idempotency-Key muss 8 bis 200 Zeichen lang sein.' });
+  }
+  const requestIdempotencyKey = suppliedIdempotencyKey ?? randomUUID();
+
+  if (!IS_PRODUCTION) {
+    // Development has a distinct server-owned identity; no client principal is trusted.
+    res.locals.zeroPrincipal = 'zero-development';
+    return runWithZeroPrincipal('zero-development', requestIdempotencyKey, next);
   }
   if (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32) {
     return res.status(503).json({
@@ -208,7 +219,10 @@ app.use('/api', (req, res, next) => {
   }
   void hasValidSession(req).then((valid) => {
     if (!valid) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-    return next();
+    // This application currently has one authenticated administrator identity.
+    // Bind quotas to that server-owned identity; never accept a principal from request data.
+    res.locals.zeroPrincipal = 'zero-admin';
+    return runWithZeroPrincipal('zero-admin', requestIdempotencyKey, next);
   }).catch(next);
 });
 
@@ -2933,6 +2947,14 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
       code: 'PERSISTENCE_REVISION_CONFLICT',
       expectedRevision: error.expectedRevision,
       actualRevision: error.actualRevision,
+    });
+  }
+  if (error instanceof ZeroResourceOperationReplayError) {
+    return res.status(409).json({
+      error: 'Dieser ZERO-Auftrag existiert bereits; er wurde nicht erneut gestartet.',
+      code: 'OPERATION_REPLAY',
+      replayed: true,
+      operation: error.operation,
     });
   }
   res.status(500).json({ error: 'Interner Serverfehler.' });
