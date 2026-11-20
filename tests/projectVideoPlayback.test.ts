@@ -52,7 +52,7 @@ const afterReloginRemount = readProjectVideoPlaybackSnapshot(storage, 1004);
 assert.equal(shouldOpenVideoStudioForPlaybackSnapshot(afterReloginRemount), true);
 assert.equal(findProjectVideoPlaybackAsset(afterReloginRemount!, 'project-1', history)?.title, 'Selected clip',
   'a fresh authenticated Video Studio mount restores the exact archived clip after login');
-assert.equal(readProjectVideoPlaybackSnapshot(storage, 1000 + 24 * 60 * 60 * 1000 + 1), null,
+assert.equal(readProjectVideoPlaybackSnapshot(storage, 1002 + 24 * 60 * 60 * 1000 + 1), null,
   'stale recovery markers expire after one day');
 assert.equal(storage.getItem(PROJECT_VIDEO_PLAYBACK_SNAPSHOT_KEY), null,
   'expired playback markers are cleared');
