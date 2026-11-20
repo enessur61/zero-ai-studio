@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Pool, PoolClient, QueryResultRow } from 'pg';
+import type { Pool, QueryResultRow } from 'pg';
 
 export const MAX_PROJECT_VIDEO_BYTES = 100 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_STORAGE_BYTES = 500 * 1024 * 1024;
