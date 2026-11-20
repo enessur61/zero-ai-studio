@@ -136,16 +136,6 @@ jobs:
           ZERO_POSTGRES_TESTS: 'true'
         run: npx tsx tests/postgresRevisionConcurrency.integration.test.ts
       - run: npm run build
-      - name: Enforce Gitleaks result after completing validation
-        if: always()
-        shell: bash
-        run: |
-          if [ "${GITLEAKS_STATUS:-1}" != "0" ]; then
-            echo "Gitleaks detected a finding. Review the redacted metadata above; CI remains blocked."
-            exit 1
-          fi
-          echo "Gitleaks passed."
-
       - name: Production server smoke test
         shell: bash
         run: |
@@ -565,3 +555,13 @@ jobs:
           if (afterLogout.status !== 401) throw new Error('Revoked session cookie remained valid after logout');
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
+      - name: Enforce Gitleaks result after completing validation
+        if: always()
+        shell: bash
+        run: |
+          if [ "${GITLEAKS_STATUS:-1}" != "0" ]; then
+            echo "Gitleaks detected a finding. Review the redacted metadata above; CI remains blocked."
+            exit 1
+          fi
+          echo "Gitleaks passed."
+
