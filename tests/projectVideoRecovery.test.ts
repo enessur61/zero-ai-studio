@@ -29,6 +29,13 @@ if (!address || typeof address === 'string') throw new Error('Recovery HTTP test
 const base = `http://127.0.0.1:${address.port}`;
 const url = `${base}/clip`;
 const testFetch = (input: RequestInfo | URL, init?: RequestInit) => fetch(new URL(String(input), base), init);
+const waitFor = async (condition: () => boolean, message: string) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+};
 
 try {
   assert.equal(await probeProjectVideoAccess(url, testFetch), 'ready');
@@ -50,8 +57,7 @@ try {
     documentTarget: documentEvents,
     isVisible: () => visible,
   });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(states.at(-1), 'ready');
+  await waitFor(() => states.at(-1) === 'ready', 'initial authenticated range probe did not finish');
 
   visible = false;
   windowEvents.dispatchEvent(new Event('pagehide'));
@@ -62,24 +68,20 @@ try {
 
   visible = true;
   documentEvents.dispatchEvent(new Event('visibilitychange'));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(resumes, 1, 'returning from background must revalidate and signal media resume');
+  await waitFor(() => resumes === 1, 'foreground recovery did not signal media resume');
 
   windowEvents.dispatchEvent(new Event('offline'));
   assert.equal(states.at(-1), 'offline', 'the browser offline event must be surfaced immediately');
   windowEvents.dispatchEvent(new Event('online'));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(resumes, 2, 'network restoration must revalidate and resume once');
+  await waitFor(() => resumes === 2, 'network restoration did not resume media');
 
   authenticated = false;
   mediaEvents.dispatchEvent(new Event('error'));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(states.at(-1), 'session-expired', 'expired login must be surfaced without replaying private media');
+  await waitFor(() => states.at(-1) === 'session-expired', 'expired session was not detected');
 
   authenticated = true;
   windowEvents.dispatchEvent(new Event('pageshow'));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(states.at(-1), 'ready', 'a renewed login must restore access');
+  await waitFor(() => states.at(-1) === 'ready' && resumes === 3, 're-login did not restore access and resume media');
   assert.equal(resumes, 3, 'successful re-login must signal one recovery');
 
   stop();
