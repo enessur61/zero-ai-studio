@@ -51,6 +51,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
+  const shouldResumeArchivedVideoRef = useRef(false);
+  const recoveringArchivedVideoRef = useRef(false);
   const [videoRecoveryStatus, setVideoRecoveryStatus] = useState<ProjectVideoRecoveryState>('ready');
   const [wanClipScene, setWanClipScene] = useState('');
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
@@ -66,23 +68,45 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setVideoRecoveryStatus('ready');
       return;
     }
-    return watchProjectVideoRecovery({
+    const video = archivedVideoRef.current;
+    const onPlay = () => { shouldResumeArchivedVideoRef.current = true; };
+    const onPause = () => {
+      // iOS may pause media as the app is backgrounded; preserve playback intent
+      // until the page is visible again. A user pause while visible is respected.
+      if (!recoveringArchivedVideoRef.current && document.visibilityState !== 'hidden') {
+        shouldResumeArchivedVideoRef.current = false;
+      }
+    };
+    video?.addEventListener('play', onPlay);
+    video?.addEventListener('pause', onPause);
+    const stopRecovery = watchProjectVideoRecovery({
       url: wanClipUrl,
-      mediaTarget: archivedVideoRef.current ?? undefined,
+      mediaTarget: video ?? undefined,
       onState: setVideoRecoveryStatus,
       onResume: () => {
-        const video = archivedVideoRef.current;
         if (!video) return;
         const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-        const shouldResumePlayback = !video.paused && !video.ended;
+        const shouldResumePlayback = shouldResumeArchivedVideoRef.current && !video.ended;
+        recoveringArchivedVideoRef.current = true;
         const restorePosition = () => {
           video.currentTime = position;
-          if (shouldResumePlayback) void video.play().catch(() => undefined);
+          if (shouldResumePlayback) {
+            void video.play().catch(() => undefined).finally(() => {
+              recoveringArchivedVideoRef.current = false;
+            });
+          } else {
+            recoveringArchivedVideoRef.current = false;
+          }
         };
         video.addEventListener('loadedmetadata', restorePosition, { once: true });
         video.load();
       },
     });
+    return () => {
+      stopRecovery();
+      video?.removeEventListener('play', onPlay);
+      video?.removeEventListener('pause', onPause);
+    };
   }, [wanClipUrl]);
 
 
