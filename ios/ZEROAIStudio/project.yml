@@ -37,6 +37,10 @@ targets:
             echo "error: ZERO_APP_URL is required; refusing to build an app without an explicit server URL." >&2
             exit 1
           fi
+          if [ "${INFOPLIST_KEY_ZERO_APP_URL:-}" != "$ZERO_APP_URL" ]; then
+            echo "error: INFOPLIST_KEY_ZERO_APP_URL must exactly match ZERO_APP_URL." >&2
+            exit 1
+          fi
           if [ -z "${ZERO_PREVIEW_ISOLATION_APPROVED:-}" ]; then
             echo "error: ZERO_PREVIEW_ISOLATION_APPROVED is required after manual Preview isolation verification." >&2
             exit 1
