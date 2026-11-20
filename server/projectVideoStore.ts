@@ -268,6 +268,57 @@ export function createProjectVideoAssetStore(
     );
   }
 
+  async function getMetadata(assetId: string, projectId: string, principalHash: string): Promise<ProjectVideoAsset | null> {
+    await ready();
+    const result = await database.query<ProjectVideoRow>(
+      `SELECT asset_id, project_id, scene_id, job_id, content_type, size_bytes, sha256, created_at
+       FROM zero_project_video_assets
+       WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3`,
+      [assetId, projectId, principalHash],
+    );
+    return result.rows[0] ? toAsset(result.rows[0]) : null;
+  }
+
+  async function getLatestForSceneMetadata(
+    projectId: string,
+    sceneId: string,
+    principalHash: string,
+  ): Promise<ProjectVideoAsset | null> {
+    await ready();
+    const result = await database.query<ProjectVideoRow>(
+      `SELECT asset_id, project_id, scene_id, job_id, content_type, size_bytes, sha256, created_at
+       FROM zero_project_video_assets
+       WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId, sceneId, principalHash],
+    );
+    return result.rows[0] ? toAsset(result.rows[0]) : null;
+  }
+
+  /** Reads only the requested byte window from PostgreSQL; payload size is bounded by length. */
+  async function readRange(
+    assetId: string,
+    projectId: string,
+    principalHash: string,
+    start: number,
+    length: number,
+  ): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
+    if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) || length < 1 || length > 1024 * 1024) {
+      throw new Error('Invalid project video byte range.');
+    }
+    await ready();
+    const result = await database.query<ProjectVideoRow>(
+      `SELECT asset_id, project_id, scene_id, job_id, content_type, size_bytes, sha256, created_at,
+              substring(payload FROM $4 FOR $5) AS payload
+       FROM zero_project_video_assets
+       WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3
+         AND $4 <= size_bytes AND $5 <= size_bytes - $4 + 1`,
+      [assetId, projectId, principalHash, start + 1, length],
+    );
+    const row = result.rows[0];
+    return row?.payload ? { ...toAsset(row), payload: row.payload } : null;
+  }
+
   async function remove(assetId: string, projectId: string, principalHash: string): Promise<boolean> {
     await ready();
     const client = await database.connect();
@@ -322,5 +373,5 @@ export function createProjectVideoAssetStore(
     }
   }
 
-  return { put, list, get, getLatestForScene, remove, removeProject };
+  return { put, list, get, getLatestForScene, getMetadata, getLatestForSceneMetadata, readRange, remove, removeProject };
 }
