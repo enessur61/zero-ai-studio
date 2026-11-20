@@ -3,6 +3,7 @@ import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles }
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { apiRequest } from '../lib/api.ts';
 
 interface VideoStudioViewProps {
   projects: StudioProject[];
@@ -87,74 +88,125 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     return () => { active = false; };
   }, []);
 
+  async function restoreWanJobVideo(jobId: string, scene: FilmScene, isActive: () => boolean = () => true) {
+    const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include', cache: 'no-store' });
+    if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
+    const blob = await videoResponse.blob();
+    if (!blob.type.includes('video') || blob.size < 1024 || blob.size > 100 * 1024 * 1024) {
+      throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
+    }
+    if (!isActive()) return;
+    const clipUrl = URL.createObjectURL(blob);
+    setWanClipUrl(clipUrl);
+    setWanClipScene(scene.title);
+    setScenes((previous) => previous.map((item) =>
+      item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
+    ));
+    try {
+      const storageStatus = currentProject?.id
+        ? await saveSceneVideoClip(currentProject.id, scene.id, blob)
+        : null;
+      if (!isActive()) return;
+      setWanProgress(storageStatus?.serverPersisted
+        ? 'Wan-Clip wiederhergestellt · dauerhaft im ZERO-Projekt gespeichert und geräteübergreifend verfügbar.'
+        : 'Wan-Clip aus dem persistenten Worker-Speicher wiederhergestellt. Der Clip bleibt über die gespeicherte Job-ID abrufbar.');
+    } catch {
+      if (isActive()) setWanProgress('Wan-Clip aus dem persistenten Worker-Speicher wiederhergestellt. Die zusätzliche ZERO-Projektsynchronisierung war nicht möglich.');
+    }
+  }
+
+  async function waitForWanJob(jobId: string, scene: FilmScene, isActive: () => boolean = () => true) {
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10000));
+      if (!isActive()) return false;
+      const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
+      const statusPayload = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
+      const job = statusPayload.job;
+      if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+      if (job.status === 'succeeded') {
+        setWanProgress('MP4 wird aus dem persistenten Wan-Speicher wiederhergestellt...');
+        await restoreWanJobVideo(jobId, scene, isActive);
+        return true;
+      }
+      setWanProgress(job.status === 'queued'
+        ? 'Gespeicherter Wan-Auftrag wartet auf die GPU...'
+        : 'Gespeicherter Wan-Auftrag läuft weiter...');
+    }
+    throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag bleibt gespeichert und kann später erneut aufgenommen werden.');
+  }
+
+  // On a fresh iPhone page load, discover jobs for this project from the
+  // authenticated worker registry and resume polling without creating new work.
+  useEffect(() => {
+    let active = true;
+    const projectId = currentProject?.id;
+    if (!projectId) return () => { active = false; };
+    (async () => {
+      try {
+        const response = await fetch(`/api/video/engine/jobs?projectId=${encodeURIComponent(projectId)}`, {
+          credentials: 'include', cache: 'no-store',
+        });
+        if (!response.ok) return;
+        const payload = await response.json() as { jobs?: Array<{
+          id: string; status: string; scene_id?: string; created_at?: string;
+        }> };
+        const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+        const sceneById = new Map(currentProject?.scenes.map((scene) => [scene.id, scene]) ?? []);
+        const resumable = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
+          ['queued', 'running'].includes(job.status));
+        const completed = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
+          job.status === 'succeeded');
+        if (resumable.length) {
+          setWanBusy(true);
+          setWanProgress('Gespeicherte Wan-Aufträge werden nach dem erneuten Öffnen fortgesetzt...');
+          for (const job of resumable) {
+            if (!active) return;
+            const scene = sceneById.get(job.scene_id ?? '');
+            if (!scene) continue;
+            await waitForWanJob(job.id, scene, () => active);
+          }
+          if (active) setWanBusy(false);
+        }
+        for (const job of completed) {
+          if (!active) return;
+          const scene = sceneById.get(job.scene_id ?? '');
+          if (!scene || scene.videoUrl) continue;
+          await restoreWanJobVideo(job.id, scene, () => active);
+        }
+      } catch (restoreError) {
+        if (active) setWanProgress(restoreError instanceof Error
+          ? `Gespeicherte Wan-Aufträge konnten nicht vollständig wiederhergestellt werden: ${restoreError.message}`
+          : 'Gespeicherte Wan-Aufträge konnten nicht vollständig wiederhergestellt werden.');
+      } finally {
+        if (active) setWanBusy(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [currentProject?.id]);
+
   async function handleWanSceneGeneration(scene: FilmScene) {
-    if (wanBusy || !wanWorker.online) return;
+    if (wanBusy || !wanWorker.online || !currentProject?.id) return;
     setWanBusy(true);
-    setWanProgress('Sende Szene an den Wan-GPU-Worker...');
+    setWanProgress('Sende Szene idempotent an den Wan-GPU-Worker...');
     setError(null);
     setWanClipUrl(null);
     try {
       const prompt = (scene.videoPrompt || [scene.title, scene.location, scene.timeOfDay, scene.subtitleText].filter(Boolean).join('. ')).trim();
       if (prompt.length < 8) throw new Error('Für diese Szene fehlt ein ausreichender Video-Prompt.');
-      const created = await fetch('/api/video/engine/jobs', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1800), aspectRatio }),
+      const requestBody = JSON.stringify({
+        prompt: prompt.slice(0, 1800),
+        aspectRatio,
+        projectId: currentProject.id,
+        sceneId: scene.id,
       });
-      const createdPayload = await created.json();
-      if (!created.ok || typeof createdPayload.job?.id !== 'string') {
-        throw new Error(createdPayload.error || 'Wan-Auftrag konnte nicht gestartet werden.');
-      }
-      const jobId = createdPayload.job.id as string;
-      setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Das kann mehrere Minuten dauern...');
-      let completed = false;
-      for (let attempt = 0; attempt < 180; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 10000));
-        const statusResponse = await fetch(`/api/video/engine/jobs/${jobId}`, { credentials: 'include', cache: 'no-store' });
-        const statusPayload = await statusResponse.json();
-        if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
-        const job = statusPayload.job;
-        if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
-        if (job.status === 'succeeded') {
-          setWanProgress('MP4 wird auf ZERO übertragen...');
-          const videoResponse = await fetch(`/api/video/engine/jobs/${jobId}/video`, { credentials: 'include' });
-          if (!videoResponse.ok) throw new Error('Das fertige Wan-MP4 konnte nicht geladen werden.');
-          const blob = await videoResponse.blob();
-          if (!blob.type.includes('video') || blob.size < 1024) throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
-          const clipUrl = URL.createObjectURL(blob);
-          setWanClipUrl(clipUrl);
-          let persistedLocally = false;
-          let persistedOnServer = false;
-          let storagePersistent: boolean | null = null;
-          let storageError = '';
-          if (currentProject?.id) {
-            try {
-              const storageStatus = await saveSceneVideoClip(currentProject.id, scene.id, blob);
-              persistedLocally = storageStatus.localSaved;
-              persistedOnServer = storageStatus.serverPersisted === true;
-              storagePersistent = storageStatus.persistent;
-            } catch (saveError) {
-              storageError = saveError instanceof Error ? saveError.message : 'Unbekannter Speicherfehler';
-            }
-          }
-          setWanClipScene(scene.title);
-          setScenes((previous) => previous.map((item) =>
-            item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
-          ));
-          setWanProgress(persistedOnServer
-            ? persistedLocally && storagePersistent === true
-              ? 'Echter Wan-2.1-Clip fertig · lokal und dauerhaft im ZERO-Projekt gespeichert · geräteübergreifend verfügbar.'
-              : 'Echter Wan-2.1-Clip fertig · dauerhaft im ZERO-Projekt gespeichert. Lokaler Browser-Cache ist nicht verfügbar oder nicht gegen Bereinigung geschützt.'
-            : persistedLocally
-              ? `Clip nur lokal gespeichert; Serversynchronisierung fehlgeschlagen. Bitte vor Gerätewechsel oder Neuladen exportieren. ${storageError}`
-              : `Clip erzeugt, aber nicht dauerhaft gespeichert. Bitte sofort exportieren. ${storageError}`);
-          completed = true;
-          break;
-        }
-        setWanProgress(job.status === 'queued' ? 'Wan-Auftrag wartet auf die GPU...' : 'Wan 2.1 generiert den Clip...');
-      }
-      if (!completed) throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag kann im Worker weiterlaufen; bitte später den Status erneut prüfen.');
+      const createdPayload = await apiRequest<{
+        job: { id: string; status: string };
+      }>('/api/video/engine/jobs', { method: 'POST', body: requestBody });
+      if (typeof createdPayload.job?.id !== 'string') throw new Error('Wan-Auftrag konnte nicht gestartet werden.');
+      setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Der Auftrag bleibt bei Verbindungsabbruch gespeichert...');
+      const completed = await waitForWanJob(createdPayload.job.id, scene);
+      if (!completed) throw new Error('Wan-Auftrag wird im Hintergrund fortgesetzt und kann später wieder aufgenommen werden.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
       setWanProgress('');

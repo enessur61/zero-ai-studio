@@ -36,3 +36,11 @@ export function createZeroIdempotencyKey(): string {
   if (!context?.requestIdempotencyKey) throw new Error('ZERO Idempotency-Key context is required.');
   return createHash('sha256').update(context.requestIdempotencyKey).digest('hex');
 }
+
+
+/** Return a stable, non-reversible identifier for forwarding principal scope to trusted workers. */
+export function createZeroPrincipalHash(): string {
+  const context = zeroPrincipalStorage.getStore();
+  if (!context?.principal) throw new Error('Authenticated ZERO principal context is required.');
+  return createHash('sha256').update(context.principal).digest('hex');
+}

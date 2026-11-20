@@ -14,7 +14,7 @@ import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError 
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
+import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
 import {
   assertZeroBudgetModelAllowed,
@@ -1943,13 +1943,23 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
 app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
+  const rawIdempotencyKey = req.get('Idempotency-Key')?.trim() ?? '';
+  if (!rawIdempotencyKey || rawIdempotencyKey.length > 256) {
+    return res.status(400).json({ error: 'Für Wan-Aufträge ist ein stabiler Idempotency-Key erforderlich.' });
+  }
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
   const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
+  const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId.trim() : '';
+  const sceneId = typeof req.body?.sceneId === 'string' ? req.body.sceneId.trim() : '';
+  const safeId = /^[A-Za-z0-9_-]{1,128}$/;
   const seed = Number.isInteger(req.body?.seed) && req.body.seed >= 0 && req.body.seed <= 2147483647
     ? req.body.seed
     : undefined;
   if (prompt.length < 8 || prompt.length > 1800) {
     return res.status(400).json({ error: 'Der Wan-Prompt muss zwischen 8 und 1.800 Zeichen lang sein.' });
+  }
+  if (!safeId.test(projectId) || !safeId.test(sceneId)) {
+    return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
   const controller = new AbortController();
@@ -1957,19 +1967,64 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   try {
     const response = await fetch(new URL('/jobs', worker.baseUrl), {
       method: 'POST',
-      headers: { ...worker.headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, duration_sec: 5, aspect_ratio: aspectRatio, ...(seed === undefined ? {} : { seed }) }),
+      headers: {
+        ...worker.headers,
+        'Content-Type': 'application/json',
+        'X-Zero-Principal-Hash': createZeroPrincipalHash(),
+        'Idempotency-Key': createZeroIdempotencyKey(),
+      },
+      body: JSON.stringify({
+        prompt, duration_sec: 5, aspect_ratio: aspectRatio,
+        project_id: projectId, scene_id: sceneId,
+        ...(seed === undefined ? {} : { seed }),
+      }),
       signal: controller.signal,
       redirect: 'error',
     });
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok) return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
-    if (typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id) || payload.status !== 'queued') {
+    const payload = await response.json().catch(() => ({})) as {
+      job?: Record<string, unknown>; replayed?: boolean; detail?: unknown;
+    };
+    if (!response.ok) {
+      if (response.status === 409) return res.status(409).json({ error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' });
+      return res.status(response.status === 429 ? 429 : 502).json({ error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status });
+    }
+    const job = payload.job;
+    if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
+        !['queued', 'running', 'succeeded', 'failed'].includes(String(job.status))) {
       return res.status(502).json({ error: 'Ungültige Auftragsantwort vom Wan-Worker.' });
     }
-    return res.status(202).json({ job: { id: payload.id, status: 'queued', durationSec: 5, engine: 'Wan 2.1' }, maxFinalDurationSec: 60, costFallback: false });
+    return res.status(payload.replayed === true ? 200 : 202).json({
+      job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
+      maxFinalDurationSec: 60,
+      costFallback: false,
+    });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}));
+
+app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
+  const worker = getWanWorkerConfig();
+  if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht konfiguriert.' });
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return res.status(400).json({ error: 'Ungültige ZERO-Projekt-ID.' });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const url = new URL('/jobs', worker.baseUrl);
+    url.searchParams.set('project_id', projectId);
+    const response = await fetch(url, {
+      headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    const payload = await response.json().catch(() => ({})) as { jobs?: unknown };
+    if (!response.ok || !Array.isArray(payload.jobs)) return res.status(502).json({ error: 'Gespeicherte Wan-Aufträge konnten nicht geladen werden.' });
+    return res.json({ jobs: payload.jobs, costFallback: false });
+  } catch {
+    return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
   } finally {
     clearTimeout(timeout);
   }
@@ -1984,7 +2039,9 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(new URL(`/jobs/${id}`, worker.baseUrl), {
-      headers: worker.headers, signal: controller.signal, redirect: 'error',
+      headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
+      signal: controller.signal,
+      redirect: 'error',
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
@@ -2005,7 +2062,9 @@ app.get('/api/video/engine/jobs/:id/video', asyncRoute(async (req, res) => {
   const timeout = setTimeout(() => controller.abort(), 120000);
   try {
     const response = await fetch(new URL(`/jobs/${id}/video`, worker.baseUrl), {
-      headers: worker.headers, signal: controller.signal, redirect: 'error',
+      headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
+      signal: controller.signal,
+      redirect: 'error',
     });
     if (!response.ok) return res.status(response.status === 409 || response.status === 404 ? response.status : 502).json({ error: 'Das Wan-Video ist noch nicht verfügbar.' });
     const length = Number(response.headers.get('content-length') ?? 0);

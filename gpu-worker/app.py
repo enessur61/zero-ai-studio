@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import hashlib
+import json
 import os
 import shutil
 import uuid
@@ -15,8 +17,8 @@ from job_store import PersistentJobStore, has_persistent_mount, require_persiste
 import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
@@ -45,6 +47,8 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    project_id: str = Field(min_length=1, max_length=128)
+    scene_id: str = Field(min_length=1, max_length=128)
 
 
 def require_auth(authorization: str | None) -> None:
@@ -133,12 +137,45 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/jobs", status_code=202)
+def public_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: job[key]
+        for key in (
+            "id", "status", "created_at", "started_at", "finished_at",
+            "duration_sec", "engine", "filename", "size_bytes", "error",
+            "project_id", "scene_id",
+        )
+        if key in job
+    }
+
+
+def request_fingerprint(request: GenerateRequest) -> str:
+    payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@app.get("/jobs")
+def list_jobs(
+    authorization: str | None = Header(default=None),
+    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
+    project_id: str | None = Query(default=None, max_length=128),
+) -> dict[str, Any]:
+    require_auth(authorization)
+    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
+        raise HTTPException(status_code=401, detail="Authenticated principal is required")
+    jobs = _JOB_STORE.list_by_principal(principal_hash.lower(), project_id=project_id, limit=50)
+    return {"jobs": [public_job(job) for job in jobs]}
+
+
+@app.post("/jobs")
 def create_job(
     request: GenerateRequest,
     background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
-) -> dict[str, Any]:
+    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
+    idempotency_key_hash: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> JSONResponse:
     require_auth(authorization)
     try:
         require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
@@ -146,11 +183,34 @@ def create_job(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
+    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
+        raise HTTPException(status_code=401, detail="Authenticated principal is required")
+    if not idempotency_key_hash or len(idempotency_key_hash) != 64 or any(c not in "0123456789abcdef" for c in idempotency_key_hash.lower()):
+        raise HTTPException(status_code=400, detail="A hashed idempotency key is required")
+
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    fingerprint = request_fingerprint(request)
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": now,
+        "duration_sec": 5,
+        "engine": "Wan 2.1",
+        "project_id": request.project_id,
+        "scene_id": request.scene_id,
+        "principal_hash": principal_hash.lower(),
+        "idempotency_key_hash": idempotency_key_hash.lower(),
+        "request_fingerprint": fingerprint,
+    }
     with _jobs_lock:
-        # Keep only a small in-memory history; do not let an unauthenticated
-        # caller or long-running host grow the job registry without bound.
+        existing, replayed, conflict = _JOB_STORE.create_or_get(job)
+        if conflict:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
+        if replayed:
+            _jobs[str(existing["id"])] = existing
+            return JSONResponse(status_code=200, content={"job": public_job(existing), "replayed": True})
+
         if len(_jobs) >= 50:
             for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
                 old_id = str(old["id"])
@@ -159,15 +219,9 @@ def create_job(
                 if old_file.parent == OUTPUT_DIR and old_file.is_file():
                     old_file.unlink(missing_ok=True)
             if len(_jobs) >= 50:
+                _JOB_STORE.delete(job_id)
                 raise HTTPException(status_code=429, detail="Worker job queue is full")
-        _jobs[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "duration_sec": 5,
-            "engine": "Wan 2.1",
-        }
-        _JOB_STORE.save(dict(_jobs[job_id]))
+        _jobs[job_id] = job
     background_tasks.add_task(
         asyncio.to_thread,
         run_generation,
@@ -176,35 +230,49 @@ def create_job(
         request.aspect_ratio,
         request.seed,
     )
-    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1"}
+    return JSONResponse(status_code=202, content={"job": public_job(job), "replayed": False})
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+def get_job(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
+) -> dict[str, Any]:
     require_auth(authorization)
+    if not principal_hash:
+        raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job:
+    if not job or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return public_job(job)
 
 
 @app.get("/jobs/{job_id}/video")
-def get_video(job_id: str, authorization: str | None = Header(default=None)) -> FileResponse:
+def get_video(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
+) -> FileResponse:
     require_auth(authorization)
+    if not principal_hash:
+        raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job or job.get("status") != "succeeded":
+    if not job or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="Video is not ready")
-    video_path = OUTPUT_DIR / str(job.get("filename", ""))
+    video_path = (OUTPUT_DIR / str(job.get("filename", ""))).resolve()
     if video_path.parent != OUTPUT_DIR or not video_path.is_file():
         raise HTTPException(status_code=404, detail="Video file not found")
     return FileResponse(video_path, media_type="video/mp4", filename=f"zero-{job_id}.mp4")
