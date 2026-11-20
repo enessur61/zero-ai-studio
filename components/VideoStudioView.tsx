@@ -487,6 +487,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
       if (!statusResponse.ok) throw new Error(statusPayload.error || 'Wan-Jobstatus konnte nicht geladen werden.');
       const job = statusPayload.job;
       if (job.status === 'failed') throw new Error(String(job.error || 'Wan-Generierung fehlgeschlagen.'));
+      if (job.status === 'cancelled') { setWanProgress('Wan-Auftrag wurde kontrolliert abgebrochen.'); return false; }
       if (job.status === 'succeeded') {
         setWanProgress('MP4 wird aus dem persistenten Wan-Speicher wiederhergestellt...');
         await restoreWanJobVideo(jobId, scene, isActive);
@@ -494,7 +495,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
       }
       setWanProgress(job.status === 'queued'
         ? 'Gespeicherter Wan-Auftrag wartet auf die GPU...'
-        : 'Gespeicherter Wan-Auftrag läuft weiter...');
+        : job.status === 'cancel_requested'
+          ? 'Der Worker führt den angeforderten Abbruch aus...'
+          : 'Gespeicherter Wan-Auftrag läuft weiter...');
     }
     throw new Error('Wan-Generierung dauert ungewöhnlich lange. Der Auftrag bleibt gespeichert und kann später erneut aufgenommen werden.');
   }
@@ -516,7 +519,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
         setWanJobHistory(jobs);
         const sceneById = new Map(currentProject?.scenes.map((scene) => [scene.id, scene]) ?? []);
         const resumable = jobs.filter((job) => sceneById.has(job.sceneId ?? '') &&
-          ['queued', 'running'].includes(job.status));
+          ['queued', 'running', 'cancel_requested'].includes(job.status));
         const completed = jobs.filter((job) => sceneById.has(job.sceneId ?? '') &&
           job.status === 'succeeded');
         // The worker returns newest-updated jobs first; restore only the latest
