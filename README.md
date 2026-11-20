@@ -190,6 +190,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 ## 4. Datenbank & Persistenz
 
 - **Lokale Entwicklung**: Atomar geschriebene JSON-Persistenz unter `data/zero-studio-db.json` (temporäre Datei + `rename`).
+- **CI / Pull Requests**: GitHub Actions startet für PostgreSQL-Integrationstests einen isolierten PostgreSQL-16-Dienst. Dieser ersetzt Neon ausschließlich für CI-/PR-Tests; die Produktionsdatenbank bleibt separat über `DATABASE_URL` konfiguriert.
 - **Produktion**: PostgreSQL über `DATABASE_URL`. Die App speichert den vollständigen ZERO-Zustand als JSONB in `zero_app_state`; JSON-System-Backups und verifizierte ZIP-Archive liegen als `BYTEA` in `zero_backup_files`. Damit hängen Produktionsdaten und Backups nicht von einem flüchtigen Anwendungsdateisystem ab.
 - **Initialisierung**: Tabellen werden beim ersten Datenbankzugriff automatisch angelegt. Ist noch kein Zustand vorhanden, wird das Standardprojekt initialisiert und in PostgreSQL gespeichert. Vorhandene Datensätze werden nicht durch die Initialisierung überschrieben.
 - **Produktionsschutz**: Ohne `DATABASE_URL` verweigert ZERO in Produktion den Zugriff auf die JSON-Datei. `ZERO_ALLOW_EPHEMERAL_DB=true` ist ausschließlich für den CI-Smoke-Test vorgesehen und darf nicht in Render gesetzt werden.
