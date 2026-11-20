@@ -1608,7 +1608,16 @@ function getPiperTtsWorkerConfig(): { baseUrl: URL; headers: Record<string, stri
   if (!configuredUrl || !token) return null;
   try {
     const baseUrl = new URL(configuredUrl);
-    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    const internalComposeWorker =
+      IS_PRODUCTION &&
+      baseUrl.protocol === 'http:' &&
+      baseUrl.hostname === 'zero-worker' &&
+      baseUrl.port === '8000';
+    const allowedProtocol =
+      baseUrl.protocol === 'https:' ||
+      (!IS_PRODUCTION && baseUrl.protocol === 'http:') ||
+      internalComposeWorker;
+    if (!allowedProtocol || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) return null;
     baseUrl.pathname = '/';
     baseUrl.search = '';
     baseUrl.hash = '';
@@ -2148,7 +2157,16 @@ function getWanWorkerConfig(): { baseUrl: URL; headers: Record<string, string> }
   if (!configuredUrl || !token) return null;
   try {
     const baseUrl = new URL(configuredUrl);
-    if (!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)) return null;
+    const internalComposeWorker =
+      IS_PRODUCTION &&
+      baseUrl.protocol === 'http:' &&
+      baseUrl.hostname === 'wan-worker' &&
+      baseUrl.port === '8000';
+    const allowedProtocol =
+      baseUrl.protocol === 'https:' ||
+      (!IS_PRODUCTION && baseUrl.protocol === 'http:') ||
+      internalComposeWorker;
+    if (!allowedProtocol || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) return null;
     baseUrl.pathname = '/';
     baseUrl.search = '';
     baseUrl.hash = '';
