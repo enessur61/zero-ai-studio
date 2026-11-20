@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Pool, QueryResultRow } from 'pg';
+import type { Pool, PoolClient, QueryResultRow } from 'pg';
 
 export const MAX_PROJECT_VIDEO_BYTES = 100 * 1024 * 1024;
 export const MAX_PROJECT_VIDEO_STORAGE_BYTES = 500 * 1024 * 1024;
@@ -375,7 +375,7 @@ export function createProjectVideoAssetStore(
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
     await ready();
     const releaseAdmission = await acquireProjectVideoStreamSlot(database);
-    let client: Awaited<ReturnType<Pool['connect']>> | null = null;
+    let client: PoolClient | null = null;
     let inTransaction = false;
     try {
       client = await database.connect();
