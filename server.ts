@@ -345,9 +345,10 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
 // Enforce server-owned project identity before every project-id route.
 app.use('/api/projects/:id', createProjectOwnershipMiddleware(
   async () => (await loadDb()).projects,
-  async (projectId, principal, idempotencyKey) =>
-    Boolean(process.env.DATABASE_URL) &&
-    isProjectDeletionIdempotentRetry(projectId, principal.id, idempotencyKey),
+  async (projectId, principal, idempotencyKey) => {
+    if (!process.env.DATABASE_URL) return false;
+    return isProjectDeletionIdempotentRetry(projectId, principal.id, idempotencyKey);
+  },
 ));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
