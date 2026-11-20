@@ -5,6 +5,7 @@ export interface ApiAuthOptions {
   adminPassword: string;
   sessionSecret: string;
   hasValidSession: (request: Request) => Promise<boolean>;
+  onAuthenticated?: (request: Request, response: Response, next: NextFunction) => void;
 }
 
 const PUBLIC_API_PATHS = new Set(['/live', '/health', '/auth/status', '/auth/login', '/auth/logout']);
@@ -12,8 +13,13 @@ const PUBLIC_API_PATHS = new Set(['/live', '/health', '/auth/status', '/auth/log
 /** Shared production API gate. Mounted at /api so req.path is API-relative. */
 export function createApiAuthMiddleware(options: ApiAuthOptions): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!options.isProduction || PUBLIC_API_PATHS.has(req.path)) {
+    if (PUBLIC_API_PATHS.has(req.path)) {
       next();
+      return;
+    }
+    const continueAuthenticated = () => options.onAuthenticated ? options.onAuthenticated(req, res, next) : next();
+    if (!options.isProduction) {
+      continueAuthenticated();
       return;
     }
 
@@ -29,7 +35,7 @@ export function createApiAuthMiddleware(options: ApiAuthOptions): RequestHandler
         res.status(401).json({ error: 'Anmeldung erforderlich.' });
         return;
       }
-      next();
+      continueAuthenticated();
     }).catch(next);
   };
 }
