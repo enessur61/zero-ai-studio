@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { watchProjectVideoRecovery, type ProjectVideoRecoveryState } from '../lib/projectVideoRecovery.ts';
-import { clearProjectVideoPlaybackSnapshot, findProjectVideoPlaybackAsset, readProjectVideoPlaybackSnapshot, saveProjectVideoPlaybackSnapshot, type ProjectVideoPlaybackSnapshot, type ProjectVideoSnapshotStorage } from '../lib/projectVideoPlayback.ts';
+import { clearProjectVideoPlaybackSnapshot, findProjectVideoPlaybackAsset, readProjectVideoPlaybackSnapshot, saveProjectVideoPlaybackSnapshot, persistProjectVideoPlaybackOnUnmount, type ProjectVideoPlaybackSnapshot, type ProjectVideoSnapshotStorage } from '../lib/projectVideoPlayback.ts';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
@@ -63,6 +63,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
   const shouldResumeArchivedVideoRef = useRef(false);
   const recoveringArchivedVideoRef = useRef(false);
+  const sessionExpiredDuringPlaybackRef = useRef(false);
+  const [playbackResumeBlocked, setPlaybackResumeBlocked] = useState(false);
   const playbackSnapshotRef = useRef<ProjectVideoPlaybackSnapshot | null>(initialPlaybackSnapshotRef.current);
   const pendingPlaybackRestoreRef = useRef<ProjectVideoPlaybackSnapshot | null>(initialPlaybackSnapshotRef.current);
   const archivedPlaybackPositionRef = useRef(initialPlaybackSnapshotRef.current?.currentTime ?? 0);
@@ -104,9 +106,11 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     restorePositionOnMetadataRef.current = null;
     if (shouldResumeArchivedVideoRef.current && !video.ended) {
       recoveringArchivedVideoRef.current = true;
-      void video.play().catch(() => undefined).finally(() => {
-        recoveringArchivedVideoRef.current = false;
-      });
+      setPlaybackResumeBlocked(false);
+      void video.play().catch(() => {
+        setPlaybackResumeBlocked(true);
+        setWanProgress('Safari hat die automatische Wiedergabe blockiert. Tippe im Videoplayer auf Play, um an der gespeicherten Stelle fortzufahren.');
+      }).finally(() => { recoveringArchivedVideoRef.current = false; });
     } else {
       recoveringArchivedVideoRef.current = false;
     }
@@ -122,14 +126,16 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     const video = archivedVideoRef.current;
     const savePosition = (preferLastKnownPosition = false) => persistArchivedPlayback(preferLastKnownPosition);
     const onPlay = () => {
+      sessionExpiredDuringPlaybackRef.current = false;
+      setPlaybackResumeBlocked(false);
       shouldResumeArchivedVideoRef.current = true;
       savePosition();
     };
     const onPause = () => {
-      if (!recoveringArchivedVideoRef.current && document.visibilityState !== 'hidden') {
+      if (!sessionExpiredDuringPlaybackRef.current && !recoveringArchivedVideoRef.current && document.visibilityState !== 'hidden') {
         shouldResumeArchivedVideoRef.current = false;
       }
-      savePosition(document.visibilityState === 'hidden');
+      savePosition(document.visibilityState === 'hidden' || sessionExpiredDuringPlaybackRef.current);
     };
     const onTimeUpdate = () => savePosition();
     const onSeeking = () => savePosition();
@@ -146,6 +152,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       onState: (state) => {
         setVideoRecoveryStatus(state);
         if (state === 'session-expired') {
+          sessionExpiredDuringPlaybackRef.current = true;
           savePosition(true);
           window.dispatchEvent(new Event('zero:session-expired'));
         }
@@ -164,7 +171,13 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       },
     });
     return () => {
-      savePosition();
+      // Auth-gate unmount may follow Safari resetting currentTime. Keep the
+      // last known position on that path instead of persisting the media reset.
+      if (playbackStorage) {
+        persistProjectVideoPlaybackOnUnmount(playbackStorage, playbackSnapshotRef.current,
+          video?.currentTime ?? Number.NaN, archivedPlaybackPositionRef.current,
+          sessionExpiredDuringPlaybackRef.current, shouldResumeArchivedVideoRef.current);
+      } else savePosition(sessionExpiredDuringPlaybackRef.current);
       stopRecovery();
       video?.removeEventListener('play', onPlay);
       video?.removeEventListener('pause', onPause);
@@ -200,6 +213,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     // directly and does not need a second full-size Blob in browser memory.
     const clipUrl = `/api/projects/${encodeURIComponent(currentProject.id)}/videos/${encodeURIComponent(asset.id)}`;
     const pending = pendingPlaybackRestoreRef.current;
+    sessionExpiredDuringPlaybackRef.current = false;
+    setPlaybackResumeBlocked(false);
     if (pending?.projectId === currentProject.id && pending.assetId === asset.id) {
       archivedPlaybackPositionRef.current = pending.currentTime;
       shouldResumeArchivedVideoRef.current = pending.shouldPlay;
@@ -726,6 +741,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
               <div className="space-y-2">
                 <p className="text-xs text-white">Fertiger KI-Clip: {wanClipScene}</p>
                 <video ref={archivedVideoRef} src={wanClipUrl} onLoadedMetadata={handleArchivedVideoMetadata} controls playsInline preload="metadata" className="w-full rounded-xl bg-black" />
+                {playbackResumeBlocked && <p role="status" className="text-xs text-amber-300">Safari hat die automatische Wiedergabe nicht erlaubt. Tippe im Videoplayer auf Play; die gespeicherte Position bleibt erhalten.</p>}
                 {videoRecoveryStatus === 'offline' && <p role="status" className="text-xs text-amber-300">Verbindung unterbrochen. ZERO setzt die Prüfung fort, sobald Safari wieder online ist.</p>}
                 {videoRecoveryStatus === 'session-expired' && <p role="status" className="text-xs text-amber-300">Sitzung abgelaufen. Bitte erneut anmelden; danach wird die Wiedergabe beim Zurückkehren erneut geprüft. Downloads bitte anschließend erneut antippen.</p>}
                 {videoRecoveryStatus === 'missing' && <p role="status" className="text-xs text-rose-300">Dieser Clip ist nicht mehr verfügbar oder wurde gelöscht.</p>}
