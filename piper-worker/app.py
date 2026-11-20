@@ -8,19 +8,20 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from piper import PiperVoice, SynthesisConfig
+from voice_assets import MODEL_SHA256, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
 
 APP_TOKEN=os.environ.get("ZERO_TTS_WORKER_TOKEN","").strip()
 MODEL_DIR=Path(os.environ.get("PIPER_MODEL_DIR","/var/lib/zero-piper"))
 MODEL_DIR.mkdir(parents=True,exist_ok=True)
-REV="cf910fb59f1d79ab3b625a63993a108751c6c25d"
-VOICE="de_DE-thorsten-medium"
+REV=VOICE_REVISION
+VOICE=VOICE_ID
 URLS={
  "model":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx",
  "config":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx.json",
 }
 MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"dac4f7530c978753aeb40f214245659f"}
 EXPECTED_SIZES={"model":63221984,"config":6455}
-SHA256={"model":"fd270eb3d1ebf91d763f8a0f949b1b1bebdfefaea18c3aaf8577dd34536e064f","config":None}
+SHA256={"model":MODEL_SHA256,"config":None}
 NOISE_SCALE=0.5
 NOISE_W_SCALE=0.333
 MODEL=MODEL_DIR/f"{VOICE}.onnx"; CONFIG=MODEL_DIR/f"{VOICE}.onnx.json"
@@ -56,13 +57,22 @@ def sha256(path:Path)->str:
   for chunk in iter(lambda:f.read(1024*1024),b""): d.update(chunk)
  return d.hexdigest()
 
+def validate_asset(key:str,path:Path):
+ if key=="model": validate_model_file(path)
+ elif key=="config": validate_voice_config(path)
+ else: raise RuntimeError("Unknown Piper voice asset")
+
 def download(key:str,dest:Path,max_bytes:int):
  expected_size=EXPECTED_SIZES[key]
  expected_sha256=SHA256[key]
  if (dest.is_file() and dest.stat().st_size==expected_size
      and md5(dest)==MD5[key]
      and (expected_sha256 is None or sha256(dest)==expected_sha256)):
-  return
+  try:
+   validate_asset(key,dest)
+   return
+  except Exception:
+   dest.unlink(missing_ok=True)
  dest.unlink(missing_ok=True); tmp=dest.with_suffix(dest.suffix+".part")
  md5_digest=hashlib.md5(); sha256_digest=hashlib.sha256(); total=0
  req=urllib.request.Request(URLS[key],headers={"User-Agent":"ZERO-AI-STUDIO/1.0"})
@@ -79,6 +89,7 @@ def download(key:str,dest:Path,max_bytes:int):
    raise RuntimeError("Piper voice failed published MD5 integrity check")
   if expected_sha256 is not None and sha256_digest.hexdigest()!=expected_sha256:
    raise RuntimeError("Piper voice failed pinned SHA-256 integrity check")
+  validate_asset(key,tmp)
   tmp.replace(dest)
  except Exception:
   tmp.unlink(missing_ok=True); raise
@@ -108,7 +119,7 @@ def synthesize(text:str,speed:float)->bytes:
 def health():
  if not token_is_configured():
   raise HTTPException(503,"TTS worker authentication is not securely configured")
- return {"ok":True,"auth_configured":True,"engine":"Piper ONNX CPU","voice":VOICE,"voice_revision":REV,"voice_sample_rate":22050,"voice_loaded":voice is not None,"architecture":platform.machine(),"execution_providers":ONNX_PROVIDERS,"model_dir":str(MODEL_DIR),"cost_eur":0,"paid_fallback":False}
+ return {"ok":True,"auth_configured":True,"engine":"Piper ONNX CPU","voice":VOICE,"voice_revision":REV,"voice_sample_rate":22050,"voice_loaded":voice is not None,"architecture":platform.machine(),"execution_providers":ONNX_PROVIDERS,"engine_version":__import__("importlib.metadata",fromlist=["version"]).version("piper-tts"),"engine_license":"GPL-3.0-or-later","voice_dataset_license":"CC0","voice_training_base":"rdh (nl_BE, one Flemish speaker, CC0)","model_sha256":MODEL_SHA256,"commercial_use_confirmed":False,"model_dir":str(MODEL_DIR),"cost_eur":0,"paid_fallback":False}
 
 @app.post("/tts")
 def tts(request:Request,authorization:str|None=Header(default=None)):
