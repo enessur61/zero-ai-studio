@@ -5,7 +5,7 @@ import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { cacheSceneVideoClip, deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
 
-interface ProjectVideoHistoryItem {
+interface WanJobHistoryItem {\n  id: string;\n  status: string;\n  scene_id?: string;\n  created_at?: string;\n  finished_at?: string;\n  error?: string;\n}\n\ninterface ProjectVideoHistoryItem {
   id: string;
   projectId: string;
   sceneId: string;
@@ -42,6 +42,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
   const [wanClipScene, setWanClipScene] = useState('');
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
+  const [wanJobHistory, setWanJobHistory] = useState<WanJobHistoryItem[]>([]);
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
 
@@ -142,6 +143,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     let active = true;
     const projectId = currentProject?.id;
     setVideoHistory([]);
+    setWanJobHistory([]);
     setVideoHistoryError('');
     if (!projectId) return () => { active = false; };
     fetch(`/api/projects/${encodeURIComponent(projectId)}/videos`, {
@@ -244,9 +246,10 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
         });
         if (!response.ok) return;
         const payload = await response.json() as { jobs?: Array<{
-          id: string; status: string; scene_id?: string; created_at?: string;
+          id: string; status: string; scene_id?: string; created_at?: string; finished_at?: string; error?: string;
         }> };
         const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+        setWanJobHistory(jobs);
         const sceneById = new Map(currentProject?.scenes.map((scene) => [scene.id, scene]) ?? []);
         const resumable = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
           ['queued', 'running'].includes(job.status));
@@ -575,6 +578,39 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
                     <button type="button" disabled={deletingClipId === asset.id} onClick={() => void deleteArchivedVideo(asset).catch((deleteError) => setVideoHistoryError(deleteError instanceof Error ? deleteError.message : 'Clip konnte nicht gelöscht werden.'))}
                       className="min-h-[36px] px-2 rounded-lg bg-rose-500/10 text-rose-300 disabled:opacity-50" aria-label="Clip löschen"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Wan-Auftragshistorie</h3>
+                <p className="text-[11px] text-slate-400">Gespeicherte GPU-Aufträge · abgeschlossene Jobs lassen sich erneut in die ZERO-Projektablage übernehmen</p>
+              </div>
+              <span className="text-xs font-mono text-slate-300">{wanJobHistory.length}</span>
+            </div>
+            {!wanJobHistory.length && <p className="text-xs text-slate-500">Keine Wan-Aufträge für dieses Projekt gespeichert.</p>}
+            {wanJobHistory.map((job) => {
+              const scene = currentProject?.scenes.find((item) => item.id === job.scene_id);
+              const statusLabel = job.status === 'queued' ? 'Wartet' : job.status === 'running' ? 'Läuft' : job.status === 'succeeded' ? 'Abgeschlossen' : 'Fehlgeschlagen';
+              return (
+                <div key={job.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-[#090B10] border border-white/[0.06] p-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-white truncate">{scene?.title || job.scene_id || 'Wan-Auftrag'}</p>
+                    <p className="text-[10px] text-slate-400">{statusLabel} · {job.created_at ? new Date(job.created_at).toLocaleString('de-DE') : 'Zeitpunkt unbekannt'} · {job.id}</p>
+                    {job.status === 'failed' && job.error && <p className="text-[10px] text-rose-300">{job.error}</p>}
+                  </div>
+                  {job.status === 'succeeded' && scene && (
+                    <button type="button" disabled={wanBusy} onClick={() => {
+                      setWanBusy(true);
+                      void restoreWanJobVideo(job.id, scene)
+                        .catch((restoreError) => setVideoHistoryError(restoreError instanceof Error ? restoreError.message : 'Wan-Clip konnte nicht archiviert werden.'))
+                        .finally(() => setWanBusy(false));
+                    }} className="min-h-[36px] px-3 rounded-lg bg-violet-500/15 text-violet-200 text-[11px] disabled:opacity-50">
+                      Clip wiederherstellen
+                    </button>
+                  )}
                 </div>
               );
             })}
