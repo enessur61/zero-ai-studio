@@ -117,7 +117,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         ADD CONSTRAINT zero_cost_operations_status_check
         CHECK (status IN ('RESERVED', 'SUCCEEDED', 'FAILED', 'UNKNOWN', 'REJECTED'));
     `,
-  },,
+  },
 ];
 
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
