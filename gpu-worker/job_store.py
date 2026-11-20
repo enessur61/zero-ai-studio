@@ -156,23 +156,72 @@ class PersistentJobStore:
     def list_by_principal(self, principal_hash: str, project_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(int(limit), 50))
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT payload FROM zero_video_jobs
-                WHERE principal_hash = ?
-                ORDER BY updated_at DESC, rowid DESC LIMIT ?
-                """,
-                (principal_hash, bounded_limit),
-            ).fetchall()
+            if project_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT payload FROM zero_video_jobs
+                    WHERE principal_hash = ?
+                      AND json_extract(payload, '$.status') != 'deleting'
+                    ORDER BY updated_at DESC, rowid DESC LIMIT ?
+                    """,
+                    (principal_hash, bounded_limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT payload FROM zero_video_jobs
+                    WHERE principal_hash = ?
+                      AND json_extract(payload, '$.project_id') = ?
+                      AND json_extract(payload, '$.status') != 'deleting'
+                    ORDER BY updated_at DESC, rowid DESC LIMIT ?
+                    """,
+                    (principal_hash, project_id, bounded_limit),
+                ).fetchall()
         jobs: list[dict[str, Any]] = []
         for (payload,) in rows:
             try:
                 job = json.loads(payload)
             except (TypeError, json.JSONDecodeError):
                 continue
-            if isinstance(job, dict) and (project_id is None or job.get("project_id") == project_id):
+            if isinstance(job, dict):
                 jobs.append(job)
         return jobs
+
+    def mark_project_jobs_for_deletion(self, principal_hash: str, project_id: str) -> list[dict[str, Any]]:
+        """Mark active jobs for deferred cleanup and atomically delete terminal job rows."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT id, payload FROM zero_video_jobs
+                WHERE principal_hash = ? AND json_extract(payload, '$.project_id') = ?
+                """,
+                (principal_hash, project_id),
+            ).fetchall()
+            jobs: list[dict[str, Any]] = []
+            for job_id, payload in rows:
+                try:
+                    job = json.loads(payload)
+                except (TypeError, json.JSONDecodeError):
+                    connection.execute("DELETE FROM zero_video_jobs WHERE id = ?", (job_id,))
+                    continue
+                if not isinstance(job, dict):
+                    connection.execute("DELETE FROM zero_video_jobs WHERE id = ?", (job_id,))
+                    continue
+                if job.get("status") in {"queued", "running", "deleting"}:
+                    job["status"] = "deleting"
+                    jobs.append(job)
+                    connection.execute(
+                        """
+                        UPDATE zero_video_jobs SET payload = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (json.dumps(job, separators=(",", ":"), ensure_ascii=False), job_id),
+                    )
+                else:
+                    jobs.append(job)
+                    connection.execute("DELETE FROM zero_video_jobs WHERE id = ?", (job_id,))
+            return jobs
 
     def load_all(self) -> dict[str, dict[str, Any]]:
         with self._connect() as connection:
@@ -188,6 +237,14 @@ class PersistentJobStore:
                 self.delete(str(job_id))
                 continue
             if not isinstance(job, dict) or job.get("id") != job_id:
+                self.delete(str(job_id))
+                continue
+
+            if job.get("status") == "deleting":
+                filename = job.get("filename")
+                video_path = (self.output_dir / str(filename)).resolve() if filename else None
+                if video_path and video_path.parent == self.output_dir:
+                    video_path.unlink(missing_ok=True)
                 self.delete(str(job_id))
                 continue
 

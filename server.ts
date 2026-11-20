@@ -2719,16 +2719,39 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
     db.projects = db.projects.filter((project) => project.id !== req.params.id);
     await saveDb(db);
   }
-  // A retry after a storage outage is intentionally idempotent, even when the
-  // project state was already removed by the preceding request.
+  // Retry-safe cleanup spans both PostgreSQL project clips and the durable GPU worker.
   await getProjectVideoAssetStore().removeProject(req.params.id, createZeroPrincipalHash());
+  const worker = getWanWorkerConfig();
+  let workerCleanup: { deleted?: number; pending?: number } = {};
+  if (worker) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const workerUrl = new URL('/jobs', worker.baseUrl);
+      workerUrl.searchParams.set('project_id', req.params.id);
+      const response = await fetch(workerUrl, {
+        method: 'DELETE',
+        headers: { ...worker.headers, 'X-Zero-Principal-Hash': createZeroPrincipalHash() },
+        signal: controller.signal,
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        return res.status(503).json({ error: 'Wan-Aufträge und Worker-Dateien konnten noch nicht vollständig bereinigt werden. Projektlöschung erneut versuchen.' });
+      }
+      workerCleanup = await response.json().catch(() => ({})) as { deleted?: number; pending?: number };
+    } catch {
+      return res.status(503).json({ error: 'Wan-Worker für die Projektbereinigung nicht erreichbar. Projektlöschung erneut versuchen.' });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
   const projects = db.projects.map((project) => ({
     ...project,
     scenes: sanitizeProjectScenes(project.scenes),
     assets: sanitizeProjectAssets(project.assets),
     snapshots: sanitizeProjectSnapshots(project.snapshots),
   }));
-  res.json({ ok: true, projects });
+  res.json({ ok: true, projects, workerCleanup });
 }));
 
 // === ZERO CHARACTER ENGINE ===

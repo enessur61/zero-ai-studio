@@ -64,6 +64,15 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
     setVideoHistory(Array.isArray(payload.assets) ? payload.assets : []);
   }
 
+  async function refreshWanJobHistory(projectId: string) {
+    const response = await fetch(`/api/video/engine/jobs?projectId=${encodeURIComponent(projectId)}`, {
+      credentials: 'include', cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('Wan-Auftragshistorie konnte nicht geladen werden.');
+    const payload = await response.json() as { jobs?: WanJobHistoryItem[] };
+    setWanJobHistory(Array.isArray(payload.jobs) ? payload.jobs : []);
+  }
+
   async function restoreArchivedVideo(asset: ProjectVideoHistoryItem) {
     if (!currentProject?.id) return;
     const response = await fetch(
@@ -321,6 +330,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
       setWanProgress('Wan 2.1 rendert den 5-Sekunden-Clip. Der Auftrag bleibt bei Verbindungsabbruch gespeichert...');
       const completed = await waitForWanJob(createdPayload.job.id, scene);
       if (!completed) throw new Error('Wan-Auftrag wird im Hintergrund fortgesetzt und kann später wieder aufgenommen werden.');
+      await refreshWanJobHistory(currentProject.id).catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Wan-Clip konnte nicht generiert werden.');
       setWanProgress('');

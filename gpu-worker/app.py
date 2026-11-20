@@ -73,18 +73,39 @@ def get_pipeline() -> WanPipeline:
     return _pipeline
 
 
-def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
+def update_job(job_id: str, **changes: Any) -> dict[str, Any] | None:
     with _jobs_lock:
-        job = _jobs[job_id]
+        job = _jobs.get(job_id)
+        if not job or job.get("status") == "deleting":
+            return None
         job.update(changes)
         _JOB_STORE.save(dict(job))
         return dict(job)
 
 
+def cleanup_deleting_job(job_id: str, output_path: Path) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job and job.get("status") == "deleting":
+            _jobs.pop(job_id, None)
+            _JOB_STORE.delete(job_id)
+    output_path.unlink(missing_ok=True)
+
+
+def safe_job_output_path(job: dict[str, Any]) -> Path | None:
+    filename = job.get("filename")
+    if not isinstance(filename, str) or not filename:
+        return None
+    candidate = (OUTPUT_DIR / filename).resolve()
+    return candidate if candidate.parent == OUTPUT_DIR else None
+
+
 def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None) -> None:
     output_path = OUTPUT_DIR / f"{job_id}.mp4"
     try:
-        update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        if update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat()) is None:
+            cleanup_deleting_job(job_id, output_path)
+            return
         # Wan T2V-1.3B generates one short 480p shot (81 frames / about 5s).
         width, height = (832, 480) if aspect_ratio == "16:9" else (480, 832)
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
@@ -104,21 +125,23 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
-        update_job(
+        if update_job(
             job_id,
             status="succeeded",
             finished_at=datetime.now(timezone.utc).isoformat(),
             filename=output_path.name,
             size_bytes=output_path.stat().st_size,
             duration_sec=5,
-        )
+        ) is None:
+            cleanup_deleting_job(job_id, output_path)
     except Exception as exc:  # Report failure; never fall back to a paid API.
-        update_job(
+        if update_job(
             job_id,
             status="failed",
             finished_at=datetime.now(timezone.utc).isoformat(),
             error=str(exc)[:500],
-        )
+        ) is None:
+            cleanup_deleting_job(job_id, output_path)
 
 
 @app.get("/health")
@@ -166,6 +189,33 @@ def list_jobs(
         raise HTTPException(status_code=401, detail="Authenticated principal is required")
     jobs = _JOB_STORE.list_by_principal(principal_hash.lower(), project_id=project_id, limit=50)
     return {"jobs": [public_job(job) for job in jobs]}
+
+
+@app.delete("/jobs")
+def delete_project_jobs(
+    authorization: str | None = Header(default=None),
+    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
+    project_id: str = Query(min_length=1, max_length=128),
+) -> dict[str, int]:
+    require_auth(authorization)
+    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
+        raise HTTPException(status_code=401, detail="Authenticated principal is required")
+    removed = 0
+    pending = 0
+    with _jobs_lock:
+        jobs = _JOB_STORE.mark_project_jobs_for_deletion(principal_hash.lower(), project_id)
+        for job in jobs:
+            job_id = str(job.get("id", ""))
+            if job.get("status") == "deleting":
+                _jobs[job_id] = job
+                pending += 1
+                continue
+            _jobs.pop(job_id, None)
+            output_path = safe_job_output_path(job)
+            if output_path:
+                output_path.unlink(missing_ok=True)
+            removed += 1
+    return {"deleted": removed, "pending": pending}
 
 
 @app.post("/jobs")
@@ -248,7 +298,7 @@ def get_job(
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
+    if not job or job.get("status") == "deleting" or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
         raise HTTPException(status_code=404, detail="Job not found")
     return public_job(job)
 
@@ -268,7 +318,7 @@ def get_video(
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
+    if not job or job.get("status") == "deleting" or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
         raise HTTPException(status_code=404, detail="Job not found")
     if job.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="Video is not ready")
