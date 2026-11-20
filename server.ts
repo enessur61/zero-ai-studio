@@ -10,7 +10,7 @@ import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
+import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, ProjectVideoStreamCapacityError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
 import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
@@ -3107,6 +3107,9 @@ app.post('/api/automation/:id/confirm', asyncRoute(async (req, res) => {
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[ZERO API] Unhandled route error:', error);
   if (res.headersSent) return;
+  if (error instanceof ProjectVideoStreamCapacityError) {
+    return res.status(503).json({ error: 'ZERO-Videostream-Kapazität ist gerade ausgelastet. Bitte gleich erneut versuchen.', code: 'PROJECT_VIDEO_STREAM_CAPACITY' });
+  }
   if (error instanceof PersistentStateConflictError) {
     return res.status(409).json({
       error: 'Der Datenstand wurde parallel geändert. Bitte neu laden und erneut versuchen.',
