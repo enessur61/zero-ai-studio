@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import { ZERO_ADMIN_PRINCIPAL_ID, migrateProjectOwnership } from './projectIdentity.ts';
+import { emptyContinuityState, type ContinuityState } from '../src/types/continuity.ts';
+import { validateContinuityState } from './continuity.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -40,6 +42,7 @@ export interface ZeroDatabase {
   automationRuns: AutomationRun[];
   backups: SystemBackupMeta[];
   backupConfig: BackupConfigState;
+  continuity?: ContinuityState;
   settings: {
     targetDevice: 'iPhone 16 Pro Max';
     maxVideoDurationSec: 60;
@@ -431,6 +434,7 @@ function createDefaultDatabase(): ZeroDatabase {
     ],
     automationRuns: [],
     backups: [],
+    continuity: emptyContinuityState(),
     backupConfig: {
       currentVersion: '1.1.0',
       autoZipOnChange: false,
@@ -480,6 +484,9 @@ export async function loadDb(): Promise<ZeroDatabase> {
       ? JSON.stringify(createDefaultDatabase())
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
+    const previousContinuity = parsed.continuity;
+    parsed.continuity = validateContinuityState(parsed.continuity ?? emptyContinuityState());
+    const migratedContinuityState = !isDeepStrictEqual(previousContinuity, parsed.continuity);
     const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
     const migratedProjectOwnership = migrateProjectOwnership(parsed.projects);
     // Ensure new catalog models merge cleanly without wiping user test states
@@ -634,7 +641,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       } else if (stored) {
         dbRevisions.set(parsed, stored.revision);
       }
-    } else if (migratedStaticAssetPathCount > 0 || migratedProjectOwnership) {
+    } else if (migratedStaticAssetPathCount > 0 || migratedProjectOwnership || migratedContinuityState) {
       // Persist one-time migrations in local file-backed development too.
       await saveDb(parsed);
     }
