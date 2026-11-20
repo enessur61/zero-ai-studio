@@ -94,14 +94,11 @@ export function FilmDirectorView({
     setTtsSceneId(sceneId);
     setError(null);
     try {
-      const char = characters.find((c) => activeProject.characterIds.includes(c.id));
-      const tts = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts', {
+      // Film Director voiceovers use the dedicated free German Piper worker.
+      // This deliberately bypasses Gemini TTS and has no paid-provider fallback.
+      const tts = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts/piper', {
         method: 'POST',
-        body: JSON.stringify({
-          text: narrationText,
-          voiceName: char?.voiceName || 'Kore',
-          style: char?.voiceStyle || 'Ruhige deutsche Thriller-Erzählstimme',
-        }),
+        body: JSON.stringify({ text: narrationText, speed: 0.96 }),
       });
       const updatedScenes = activeProject.scenes.map((s) =>
         s.id === sceneId ? { ...s, audioDataUrl: tts.audioDataUrl, status: 'Szenenbereit' as const } : s
@@ -112,13 +109,13 @@ export function FilmDirectorView({
           method: 'PUT',
           body: JSON.stringify({
             scenes: updatedScenes,
-            snapshotNote: `Sprachaufnahme für Szene generiert`,
+            snapshotNote: 'Kostenlose deutsche Piper-Sprachaufnahme für Szene generiert',
           }),
         }
       );
       onProjectUpdated(saved.project);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sprachgenerierung fehlgeschlagen');
+      setError(err instanceof Error ? err.message : 'Kostenlose Piper-Sprachgenerierung fehlgeschlagen');
     } finally {
       setTtsSceneId(null);
     }
@@ -277,77 +274,34 @@ export function FilmDirectorView({
               </div>
 
               <div className="space-y-3">
-                {activeProject.scenes.map((sc) => (
-                  <div
-                    key={sc.id}
-                    className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3"
-                  >
-                    <div className="flex flex-col sm:flex-row gap-4">
-                      <div className="w-full sm:w-44 aspect-video rounded-xl overflow-hidden bg-[#090B10] border border-white/[0.07] shrink-0">
-                        {sc.imageUrl ? (
-                          <img
-                            src={sc.imageUrl}
-                            alt={sc.title}
-                            referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs text-slate-500">
-                            Entwurf ohne Bild
-                          </div>
-                        )}
+                {activeProject.scenes.map((s) => (
+                  <div key={s.id} className="bg-[#11151E] border border-white/[0.08] rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs text-slate-400">Szene {s.index} · {s.location}</p>
+                        <h3 className="text-sm font-semibold text-white">{s.title}</h3>
                       </div>
-
-                      <div className="flex-1 space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-xs text-slate-400">
-                              Szene {sc.index} · {sc.location} · {sc.cameraMovement}
-                            </p>
-                            <h3 className="text-sm font-semibold text-white">{sc.title}</h3>
-                          </div>
-                          <span className="text-xs font-mono text-slate-300">{sc.durationSec}s</span>
-                        </div>
-
-                        <p className="text-xs text-slate-200 leading-relaxed">
-                          <span className="text-slate-500">Sprecher: </span>
-                          {sc.narrationText}
-                        </p>
-                        <p className="text-[11px] text-slate-400">
-                          Sound: {sc.soundCue}
-                        </p>
-
-                        {sc.audioDataUrl && (
-                          <audio src={sc.audioDataUrl} controls className="w-full h-8 mt-1" />
-                        )}
-                      </div>
+                      <span className="text-xs font-mono text-slate-300">{s.durationSec}s</span>
                     </div>
-
-                    <div className="flex flex-wrap gap-2 pt-2 border-t border-white/[0.06]">
+                    <p className="text-xs text-slate-300">{s.narrationText}</p>
+                    <div className="flex flex-wrap gap-2">
                       <button
-                        onClick={() => handleRegenerateScene(sc.id)}
-                        disabled={regenSceneId === sc.id}
-                        className="min-h-[38px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs text-white inline-flex items-center gap-1.5"
+                        type="button"
+                        onClick={() => void handleGenerateSceneVoice(s.id, s.narrationText)}
+                        disabled={ttsSceneId === s.id || !s.narrationText.trim()}
+                        className="min-h-[38px] rounded-lg bg-white/[0.08] px-3 text-xs text-white disabled:opacity-40 inline-flex items-center gap-2"
                       >
-                        {regenSceneId === sc.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <RefreshCw className="w-3.5 h-3.5" />
-                        )}
-                        Szene neu generieren
+                        {ttsSceneId === s.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Volume2 className="w-3.5 h-3.5" />}
+                        {ttsSceneId === s.id ? 'Stimme wird erzeugt...' : 'Deutsche Stimme generieren (0 €)'}
                       </button>
-
                       <button
-                        onClick={() => handleGenerateSceneVoice(sc.id, sc.narrationText)}
-                        disabled={ttsSceneId === sc.id}
-                        className="min-h-[38px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs text-white inline-flex items-center gap-1.5"
+                        type="button"
+                        onClick={() => void handleRegenerateScene(s.id)}
+                        disabled={regenSceneId === s.id}
+                        className="min-h-[38px] rounded-lg bg-white/[0.08] px-3 text-xs text-white disabled:opacity-40 inline-flex items-center gap-2"
                       >
-                        {ttsSceneId === sc.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Volume2 className="w-3.5 h-3.5" />
-                        )}
-                        Voiceover erzeugen (0 €)
+                        {regenSceneId === s.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Szene überarbeiten
                       </button>
                     </div>
                   </div>
