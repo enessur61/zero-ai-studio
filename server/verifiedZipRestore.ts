@@ -1,4 +1,5 @@
 import type { ZipBackupVersion } from '../src/types/zero.ts';
+import { migrateProjectOwnership } from './projectIdentity.ts';
 import type { ZeroDatabase } from './store.ts';
 
 type VerifiedZip = {
@@ -53,6 +54,7 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
     try {
       const parsed: unknown = JSON.parse(dbEntry.toString('utf8'));
       dependencies.assertRestorableDatabase(parsed);
+      migrateProjectOwnership(parsed.projects);
       parsedRestoredDb = parsed;
     } catch (err) {
       throw new Error(

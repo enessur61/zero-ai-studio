@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
+import { ZERO_ADMIN_PRINCIPAL_ID, migrateProjectOwnership } from './projectIdentity.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -273,6 +274,7 @@ function createDefaultDatabase(): ZeroDatabase {
     projects: [
       {
         id: projectId,
+        ownerId: ZERO_ADMIN_PRINCIPAL_ID,
         title: 'Schatten über Mitte',
         logline: 'Eine Akustik-Forensikerin entdeckt in einer verregneten Berliner Nacht ein wiederkehrendes Signal in alten Tonbändern.',
         genre: 'Neo-Noir Thriller',
@@ -471,6 +473,7 @@ export async function loadDb(): Promise<ZeroDatabase> {
       : await fs.readFile(DB_PATH, 'utf8');
     const parsed = JSON.parse(raw) as ZeroDatabase;
     const migratedStaticAssetPathCount = migrateLegacyStaticAssetPaths(parsed);
+    const migratedProjectOwnership = migrateProjectOwnership(parsed.projects);
     // Ensure new catalog models merge cleanly without wiping user test states
     const existingById = new Map(parsed.models.map((m) => [m.id, m]));
     parsed.models = INITIAL_MODEL_CATALOG.map((def) => {
@@ -623,8 +626,8 @@ export async function loadDb(): Promise<ZeroDatabase> {
       } else if (stored) {
         dbRevisions.set(parsed, stored.revision);
       }
-    } else if (migratedStaticAssetPathCount > 0) {
-      // Persist the one-time migration in local file-backed development too.
+    } else if (migratedStaticAssetPathCount > 0 || migratedProjectOwnership) {
+      // Persist one-time migrations in local file-backed development too.
       await saveDb(parsed);
     }
     return dbCache;
@@ -813,6 +816,7 @@ export async function restoreSystemBackup(backupId: string): Promise<ZeroDatabas
   try {
     const parsed: unknown = JSON.parse(raw);
     assertRestorableDatabase(parsed);
+    migrateProjectOwnership(parsed.projects);
     restored = parsed;
   } catch (error) {
     throw new Error(`Wiederherstellung abgebrochen — Backup ungültig: ${error instanceof Error ? error.message : String(error)}`);
