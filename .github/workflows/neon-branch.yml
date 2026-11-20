@@ -29,10 +29,13 @@ jobs:
       db_url_with_pooler: ${{ steps.create_neon_branch.outputs.db_url_with_pooler }}
     needs: setup
     if: |
-      github.event_name == 'pull_request' && (
-      github.event.action == 'synchronize'
-      || github.event.action == 'opened'
-      || github.event.action == 'reopened')
+      github.event_name == 'pull_request'
+      && github.head_ref != 'prisma-cloud/setup-v3icl3cvq646n2a35puh95r3'
+      && (
+        github.event.action == 'synchronize'
+        || github.event.action == 'opened'
+        || github.event.action == 'reopened'
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Get branch expiration date as an env variable (2 weeks from now)
@@ -50,7 +53,9 @@ jobs:
   delete_neon_branch:
     name: Delete Neon Branch
     needs: setup
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: github.event_name == 'pull_request'
+      && github.head_ref != 'prisma-cloud/setup-v3icl3cvq646n2a35puh95r3'
+      && github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
       - name: Delete Neon Branch
