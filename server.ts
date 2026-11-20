@@ -7,6 +7,11 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { buildContinuityDirectorContext, recordFilmProductionContinuity, recordFilmSceneRevision, detectSemanticContinuityConflicts, resolveFilmCameraMovement } from './server/filmDirection.ts';
+import { validateContinuityState } from './server/continuity.ts';
+import { createDramaturgyAnalysisVersion } from './server/dramaturgyVersions.ts';
+import { buildStorySupervisorAiPrompt, parseStorySupervisorAiResponse } from './server/storySupervisorAI.ts';
+import { emptyContinuityState } from './src/types/continuity.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -60,6 +65,7 @@ import {
   toggleZipBackupProtection,
 } from './server/store.ts';
 import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.ts';
+import { createContinuityRouter } from './src/routes/continuity.ts';
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
   buildFullProjectZip,
@@ -262,6 +268,9 @@ app.use('/api', (req, res, next) => {
 
 // 18 MiB audio uploads are Base64-expanded by roughly one third before JSON parsing.
 app.use(express.json({ limit: '26mb' }));
+
+// Persistent series continuity and dramaturgy API.
+app.use('/api/continuity', createContinuityRouter({ loadDb, saveDb }));
 
 // Enforce server-owned project identity before every project-id route.
 app.use('/api/projects/:id', createProjectOwnershipMiddleware(async () => (await loadDb()).projects));
@@ -2225,6 +2234,55 @@ function requireActiveCloudflareTextModel(db: Awaited<ReturnType<typeof loadDb>>
   }
 }
 
+async function generateFreeFilmDirectorText(params: {
+  db: Awaited<ReturnType<typeof loadDb>>;
+  systemPrompt: string;
+  prompt: string;
+  maxTokens: number;
+}): Promise<{ text: string; modelId: string }> {
+  // Cloudflare is excluded unless the operator has explicitly confirmed a
+  // Workers Free account. Gemini is selected only through ZERO's free quota gate.
+  const models = params.db.models.filter((model) =>
+    isCloudflareWorkersAiAllowed() || model.id !== 'cloudflare-glm-4.7-flash'
+  );
+  const decision = chooseZeroChatModel(
+    models,
+    params.db.budgetGuard,
+    'gemini-3.8-flash',
+  );
+  if (!decision) {
+    throw new Error('ZERO findet kein aktiviertes, erfolgreich getestetes und nachweislich kostenlos freigegebenes Textmodell. Cloudflare bleibt ohne bestätigten Workers-Free-Plan gesperrt.');
+  }
+
+  if (decision.modelId === 'cloudflare-glm-4.7-flash') {
+    const result = await generateCloudflareText({
+      systemPrompt: params.systemPrompt,
+      prompt: params.prompt,
+      maxTokens: params.maxTokens,
+    });
+    return result;
+  }
+
+  await reserveZeroBudgetModelAllowed(decision.modelId, 'FILM_DIRECTOR', params.db);
+  const response = await withTransientRetry(() =>
+    getGeminiClient().models.generateContent({
+      model: decision.modelId,
+      contents: [{
+        role: 'user',
+        parts: [{ text: `${params.systemPrompt}\n\n${params.prompt}` }],
+      }],
+      config: {
+        responseMimeType: 'application/json',
+        maxOutputTokens: params.maxTokens,
+      },
+    })
+  );
+  const text = response.text?.trim() ?? '';
+  if (!text) throw new Error('Das kostenlose ZERO-Textmodell hat keine gültige Antwort geliefert.');
+  return { text, modelId: decision.modelId };
+}
+
+
 function parseCloudflareJsonObject(raw: string): Record<string, unknown> {
   const cleaned = raw.trim().replace(/^\u0060\u0060\u0060(?:json)?\s*/i, '').replace(/\s*\u0060\u0060\u0060$/i, '').trim();
   const start = cleaned.indexOf('{');
@@ -2255,16 +2313,21 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
     const charContext = char
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
+    const continuityState = validateContinuityState(db.continuity ?? emptyContinuityState());
+    const seriesId = typeof req.body?.seriesId === 'string' ? req.body.seriesId.trim() : '';
+    const continuityContext = seriesId ? buildContinuityDirectorContext(continuityState, seriesId, char ? [char.id] : [], db.characters) : null;
+    if (seriesId && !continuityContext) return res.status(404).json({ error: 'Die ausgewählte Serie existiert nicht oder ist archiviert.' });
+    if (continuityContext && (continuityContext.conflicts.length || continuityContext.semanticConflicts.length)) return res.status(409).json({ error: 'Die Serienkontinuität enthält Widersprüche. Bitte zuerst die Konflikte im Continuity-Bereich beheben.', code: 'CONTINUITY_CONFLICT', conflicts: continuityContext.conflicts, semanticConflicts: continuityContext.semanticConflicts });
 
-    requireActiveCloudflareTextModel(db);
-
-    const modelResponse = await generateCloudflareText({
+    const modelResponse = await generateFreeFilmDirectorText({
+      db,
       systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
       prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
 Genre: ${genre}
 Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
 ${charContext}
+${continuityContext?.promptText ?? ''}
 Erstelle exakt 4 Szenen, deren Dauer zusammen exakt ${targetDurationSec} Sekunden ergibt. Jede Szene muss mindestens 5 Sekunden haben. Halte die Felder kompakt, aber konkret.
 
 Gib ausschließlich dieses JSON-Schema zurück:
@@ -2316,15 +2379,6 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
     }
 
-    const validMoves: FilmScene['cameraMovement'][] = [
-      'Statisch',
-      'Langsamer Zoom-In',
-      'Sanfter Zoom-Out',
-      'Schwenk Links',
-      'Schwenk Rechts',
-      'Vertikaler Tilt',
-    ];
-
     let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
@@ -2332,7 +2386,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       location: s.location,
       timeOfDay: s.timeOfDay,
       durationSec: Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
-      cameraMovement: validMoves[idx % validMoves.length],
+      cameraMovement: resolveFilmCameraMovement(s.cameraMovement, idx),
       characterIds: char ? [char.id] : [],
       narrationText: s.narrationText,
       dialogueText: '',
@@ -2355,6 +2409,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
     if (generateImages) {
       const imageModel = db.models.find((item) => item.id === 'flux-1-schnell-free');
       const imageReady = Boolean(
+        isCloudflareWorkersAiAllowed() &&
         imageModel?.enabled &&
         imageModel.testPassed &&
         imageModel.status === 'FUNKTIONIERT' &&
@@ -2362,7 +2417,7 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       );
       if (!imageReady) {
         imageGenerationWarnings.push(
-          'FLUX-Szenenbilder sind noch nicht freigegeben. Bitte FLUX.1 Schnell im Model Hub live testen und aktivieren. Der Filmtext wurde trotzdem erstellt.'
+          'FLUX-Szenenbilder sind gesperrt, solange ZERO_CLOUDFLARE_AI_ENABLED=true und ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=true nicht für ein Workers-Free-Konto gesetzt ist und FLUX nicht live getestet wurde. Der Filmtext wurde trotzdem erstellt.'
         );
         mappedScenes.forEach((scene) => { scene.status = 'Bildgenerierung nicht verfügbar'; });
       } else {
@@ -2440,10 +2495,12 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       createdAt: now,
       updatedAt: now,
     });
+    const continuityResult = continuityContext && seriesId ? recordFilmProductionContinuity(continuityState, seriesId, newProject) : null;
+    if (continuityResult) db.continuity = continuityState;
     await saveDb(db);
     await maybeAutoCreateZipBackup(`Filmprojekt "${newProject.title}" generiert (${totalSec}s)`);
 
-    res.json({ project: newProject, imageGenerationWarnings });
+    res.json({ project: newProject, imageGenerationWarnings, ...(continuityResult ? { continuity: continuityResult } : {}) });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
@@ -2461,17 +2518,23 @@ app.post('/api/film/regenerate-scene', asyncRoute(async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (!scene) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+    const continuityState = validateContinuityState(db.continuity ?? emptyContinuityState());
+    const linkedSeries = continuityState.series.find((item) => !item.archivedAt && item.projectIds.includes(project.id));
+    const continuityContext = linkedSeries ? buildContinuityDirectorContext(continuityState, linkedSeries.id, scene.characterIds, db.characters) : null;
+    const targetConflictId = typeof req.body?.targetConflictId === 'string' ? req.body.targetConflictId : ''; const targetedConflict = targetConflictId ? continuityContext?.semanticConflicts.find((item) => item.id === targetConflictId && item.sceneId === scene.id) : undefined; if (targetConflictId && !targetedConflict) return res.status(404).json({ error: 'Der ausgewählte Konflikt gehört nicht zu dieser Szene oder ist nicht mehr aktuell.' }); if (!targetedConflict && continuityContext && (continuityContext.conflicts.length || continuityContext.semanticConflicts.length)) return res.status(409).json({ error: 'Szenen-Neugenerierung gestoppt: Bitte einen konkreten Kontinuitätskonflikt zur gezielten Korrektur auswählen.', code: 'CONTINUITY_CONFLICT', conflicts: continuityContext.conflicts, semanticConflicts: continuityContext.semanticConflicts });
 
-    requireActiveCloudflareTextModel(db);
-    const response = await generateCloudflareText({
+    const response = await generateFreeFilmDirectorText({
+      db,
       systemPrompt: 'Du bist ZERO FILM DIRECTOR. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown oder Erklärtext.',
       prompt: `Überarbeite Szene ${scene.index} (" ${scene.title}") des Kurzfilms "${project.title}" gemäß Anweisung: "${instruction}".
 Bisherige Erzählung: ${scene.narrationText}
 Bisheriger Bild-Prompt: ${scene.imagePrompt}
+${continuityContext?.promptText ?? ''}
+${targetedConflict ? '\nZIELKONFLIKT: ' + targetedConflict.message + '\nVERBINDLICHE KORREKTUR: ' + targetedConflict.suggestion : ''}
 
-Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
-{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","soundCue":"..."}`,
-      maxTokens: 500,
+Gib ausschließlich ein JSON-Objekt mit genau diesen Feldern zurück:
+{"title":"...","narrationText":"...","subtitleText":"...","imagePrompt":"...","videoPrompt":"...","soundCue":"...","characterIds":["bestehende Figuren-IDs"]}`,
+      maxTokens: 750,
     });
     const updated = parseCloudflareJsonObject(response.text);
     const stringField = (value: unknown, fallback: string): string =>
@@ -2480,16 +2543,26 @@ Gib ausschließlich ein JSON-Objekt mit genau diesen String-Feldern zurück:
     scene.title = stringField(updated.title, scene.title);
     scene.narrationText = stringField(updated.narrationText, scene.narrationText);
     scene.subtitleText = stringField(updated.subtitleText, scene.subtitleText);
-    scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
     scene.soundCue = stringField(updated.soundCue, scene.soundCue);
+    scene.imagePrompt = stringField(updated.imagePrompt, scene.imagePrompt);
+    scene.videoPrompt = stringField(updated.videoPrompt, scene.videoPrompt);
+    if (Array.isArray(updated.characterIds) && updated.characterIds.every((id: unknown) => typeof id === 'string' && db.characters.some((character) => character.id === id))) scene.characterIds = [...new Set(updated.characterIds as string[])];
+    if (targetedConflict?.code === 'DEAD_CHARACTER_ON_SCREEN' && targetedConflict.characterId) scene.characterIds = scene.characterIds.filter((id) => id !== targetedConflict.characterId);
 
     // Text and scene direction can be revised without an unavailable cloud image provider.
     // Keep any previous image asset, but mark the scene as a draft because it no longer matches the revised prompt.
     scene.status = 'Entwurf';
     project.updatedAt = new Date().toISOString();
+    project.version = (project.version ?? 0) + 1;
+    if (linkedSeries) {
+      recordFilmSceneRevision(continuityState, linkedSeries.id, project, scene);
+      const remaining = detectSemanticContinuityConflicts(continuityState, linkedSeries.id, db.characters).filter((item) => item.id === targetConflictId);
+      if (targetedConflict && remaining.length) return res.status(422).json({ error: 'Die gezielte Korrektur hat den Kontinuitätskonflikt noch nicht behoben. Es wurde nichts gespeichert.', code: 'CONTINUITY_CORRECTION_INCOMPLETE', conflicts: remaining });
+      db.continuity = continuityState;
+    }
     await saveDb(db);
 
-    res.json({ scene, project });
+    res.json({ scene, project, ...(targetedConflict ? { resolvedConflictId: targetedConflict.id } : {}) });
   } catch (err) {
     res.status(400).json({ error: formatGermanApiError(err) });
   }
