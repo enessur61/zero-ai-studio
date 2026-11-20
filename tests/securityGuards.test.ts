@@ -56,6 +56,24 @@ assert.ok(server.includes("!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].incl
 assert.ok(server.includes("endpoint.protocol !== 'https:'"), 'Video health checks must reject non-HTTPS production destinations.');
 assert.ok(server.includes("redirect: 'error'"), 'Worker requests must not follow redirects to an unreviewed destination.');
 assert.ok(server.includes('paidFallback: false') && server.includes('costFallback: false'), 'Worker outages must not trigger paid provider fallbacks.');
+const section = (start: string, end: string): string => {
+  const startAt = server.indexOf(start);
+  const endAt = server.indexOf(end, startAt + start.length);
+  assert.ok(startAt >= 0 && endAt > startAt, 'Expected worker source section: ' + start);
+  return server.slice(startAt, endAt);
+};
+const workerConfigSections = [
+  ['Web search', section('function getZeroWebSearchWorker()', "app.post('/api/web/research'")],
+  ['Piper TTS', section('function getPiperTtsWorkerConfig()', "app.post('/api/audio/tts/piper'")],
+  ['Wan video', section('function getWanWorkerConfig()', "app.post('/api/video/engine/jobs'")],
+] as const;
+for (const [name, source] of workerConfigSections) {
+  assert.ok(source.includes('runtimeConfig.') && source.includes('_URL?.trim()'), name + ' must use an explicit runtime URL.');
+  assert.ok(source.includes('_TOKEN?.trim()'), name + ' must require an explicit worker token.');
+  assert.ok(source.includes("!['https:', ...(IS_PRODUCTION ? [] : ['http:'])].includes(baseUrl.protocol)"), name + ' must reject non-HTTPS production URLs.');
+}
+assert.ok((server.match(/redirect: 'error'/g) ?? []).length >= 5, 'Every worker proxy must reject redirects rather than forwarding credentials to another host.');
+
 
 
 console.log('ZERO fail-closed security guard tests passed.');
