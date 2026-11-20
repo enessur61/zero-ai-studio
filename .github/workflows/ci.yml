@@ -89,8 +89,17 @@ jobs:
       - run: npm test
       - name: Test persistent GPU worker job storage
         run: python3 gpu-worker/test_job_store.py
+      - name: Test authenticated Wan worker API lifecycle without GPU inference
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-cache-dir -r gpu-worker/test-requirements.txt
+          python3 gpu-worker/test_worker_api.py
+      - name: Install and validate the pinned Piper worker runtime
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-cache-dir -r piper-worker/requirements.txt
+          python3 -c "from piper import PiperVoice, SynthesisConfig; print('Piper runtime API import passed')"
+          python3 piper-worker/test_voice_assets.py
       - name: Validate Piper and GPU worker Python syntax
-        run: python3 -m py_compile piper-worker/app.py gpu-worker/app.py
+        run: python3 -m py_compile piper-worker/app.py piper-worker/voice_assets.py gpu-worker/app.py
       - name: Run PostgreSQL revision and concurrency integration tests
         env:
           DATABASE_URL: postgres://zero:zero-test-password@localhost:5432/zero_test
