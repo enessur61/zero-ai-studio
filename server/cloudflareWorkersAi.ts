@@ -1,4 +1,5 @@
-import { withZeroCostResourceOperation, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 const CLOUDFLARE_MODEL_ID = '@cf/zai-org/glm-4.7-flash';
 const API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 
@@ -33,14 +34,20 @@ function guardedCloudflareFetcher(
         if (typeof value === 'string' && value.length > 100) inputBytes = Math.max(inputBytes, Math.floor(value.length * 0.75));
       }
     } catch { /* byte cap still applies to opaque request bodies */ }
-    return withZeroCostResourceOperation(
-      { provider: 'cloudflare-workers-ai', modelId, resourceType, studio, action,
-        payload: { url: String(input), body }, inputBytes, ...(inputChars ? { inputChars } : {}) },
+    const operationInput = {
+      provider: 'cloudflare-workers-ai' as const, modelId, resourceType, studio, action,
+      payload: { url: String(input), body }, inputBytes, ...(inputChars ? { inputChars } : {}),
+    };
+    const operationResult = await withZeroCostResourceOperation(
+      { ...operationInput, principal: requireZeroPrincipal(),
+        idempotencyKey: createZeroIdempotencyKey() },
       () => fetcher(input, init),
       process.env,
       undefined,
       (response) => response.ok ? 'SUCCEEDED' : response.status >= 500 ? 'UNKNOWN' : 'FAILED',
     );
+    if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
+    return operationResult;
   }) as typeof fetch;
 }
 
