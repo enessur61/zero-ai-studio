@@ -25,7 +25,16 @@ export async function probeProjectVideoAccess(
     });
     if (response.status === 401 || response.status === 403) return 'session-expired';
     if (response.status === 404 || response.status === 410) return 'missing';
-    if (response.status !== 206) {
+    const contentRange = response.headers.get('content-range');
+    const contentLength = response.headers.get('content-length');
+    const acceptsRanges = response.headers.get('accept-ranges');
+    if (
+      response.status !== 206 ||
+      !contentRange ||
+      !/^bytes 0-0\\/\\d+$/.test(contentRange) ||
+      contentLength !== '1' ||
+      acceptsRanges?.toLowerCase() !== 'bytes'
+    ) {
       await response.body?.cancel().catch(() => undefined);
       return 'error';
     }
@@ -55,9 +64,14 @@ export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions):
   let disposed = false;
   let interrupted = false;
   let checking = false;
+  let retryRequested = false;
 
   const check = async () => {
-    if (disposed || checking || !isVisible()) return;
+    if (disposed || !isVisible()) return;
+    if (checking) {
+      retryRequested = true;
+      return;
+    }
     checking = true;
     try {
       const state = await probeProjectVideoAccess(options.url, options.fetcher);
@@ -70,12 +84,16 @@ export function watchProjectVideoRecovery(options: ProjectVideoRecoveryOptions):
       }
     } finally {
       checking = false;
+      if (!disposed && retryRequested && isVisible()) {
+        retryRequested = false;
+        void check();
+      }
     }
   };
 
   const markBackgrounded = () => { interrupted = true; };
   const markOffline = () => { interrupted = true; options.onState('offline'); };
-  const onMediaError = () => { void check(); };
+  const onMediaError = () => { interrupted = true; void check(); };
   const resumeIfVisible = () => { if (isVisible()) void check(); };
   const onVisibilityChange = () => {
     if (isVisible()) void check();
