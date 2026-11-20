@@ -229,11 +229,11 @@ try {
 
   // Canonical JSON key order produces the same request fingerprint and replay.
   const canonicalFirst = await reserveZeroCostResourceOperationWithPool(poolA, {
-    ...base, payload: { prompt: 'canonical', options: { temperature: 0.2, topP: 0.9 } },
+    ...base, resourceType: 'audio', payload: { prompt: 'canonical', options: { temperature: 0.2, topP: 0.9 } },
     idempotencyKey: 'canon-00000001',
   }, env);
   const canonicalReplay = await reserveZeroCostResourceOperationWithPool(poolB, {
-    ...base, payload: { options: { topP: 0.9, temperature: 0.2 }, prompt: 'canonical' },
+    ...base, resourceType: 'audio', payload: { options: { topP: 0.9, temperature: 0.2 }, prompt: 'canonical' },
     idempotencyKey: 'canon-00000001',
   }, env);
   assert.equal(canonicalReplay.operation.operationId, canonicalFirst.operation.operationId);
