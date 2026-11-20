@@ -148,7 +148,7 @@ try {
   assert.equal((await limitedB.list('project-video-limits', videoPrincipal)).length, 2);
 
   const byteLimitedA = createProjectVideoAssetStore(poolA, {
-    maxProjectVideoBytes: 4096, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
+    maxProjectVideoBytes: 3000, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
   });
   const byteLimitedB = createProjectVideoAssetStore(poolB, {
     maxProjectVideoBytes: 4096, maxProjectStorageBytes: 3000, maxProjectVideoCount: 5,
