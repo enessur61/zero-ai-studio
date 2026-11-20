@@ -205,7 +205,7 @@ try {
   );
   let deleteCompleted = false;
   let thirdStreamCompleted = false;
-  let queuedThirdStream: Awaited<ReturnType<typeof concurrentStreamStore.openRead>> | null = null;
+  let thirdStreamPromise: Promise<Awaited<ReturnType<typeof concurrentStreamStore.openRead>>> | null = null;
   try {
     const firstChunks = await Promise.all(concurrentIterators.map((iterator) => iterator.next()));
     assert.ok(firstChunks.every((entry) => entry.value && entry.value.length > 0));
@@ -213,7 +213,8 @@ try {
       'slow streams still read no more than 256 KiB per DB chunk');
     const thirdStream = concurrentStreamStore.openRead(
       concurrentVideo.id, 'project-video-integration', videoPrincipal
-    ).then((stream) => { thirdStreamCompleted = true; queuedThirdStream = stream; return stream; });
+    ).then((stream) => { thirdStreamCompleted = true; return stream; });
+    thirdStreamPromise = thirdStream;
     const appOperation = await gatePoolA.query('SELECT 1 AS app_query_while_streams_are_paused');
     assert.equal(appOperation.rows[0].app_query_while_streams_are_paused, 1,
       'ordinary app DB work completes while two video streams are paused');
@@ -235,7 +236,7 @@ try {
     await Promise.all(concurrentIterators.map(async (iterator) => {
       try { await iterator.return?.(); } catch { /* cleanup continues */ }
     }));
-    if (queuedThirdStream) await queuedThirdStream.close().catch(() => undefined);
+    if (thirdStreamPromise) await thirdStreamPromise.then((stream) => stream?.close()).catch(() => undefined);
     await projectVideoStoreB.remove(concurrentVideo.id, 'project-video-integration', videoPrincipal).catch(() => false);
   }
 
