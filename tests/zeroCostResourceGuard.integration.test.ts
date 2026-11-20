@@ -228,14 +228,15 @@ try {
   await finishZeroCostResourceOperationWithPool(poolB, principalB.operation.operationId, principalB.leaseToken!, principalB.operation.leaseGeneration!, 'FAILED');
 
   // Canonical JSON key order produces the same request fingerprint and replay.
+  const canonicalEnv = { ...env, ZERO_RESOURCE_AUDIO_CONCURRENCY: '5' };
   const canonicalFirst = await reserveZeroCostResourceOperationWithPool(poolA, {
     ...base, resourceType: 'audio', payload: { prompt: 'canonical', options: { temperature: 0.2, topP: 0.9 } },
     idempotencyKey: 'canon-00000001',
-  }, env);
+  }, canonicalEnv);
   const canonicalReplay = await reserveZeroCostResourceOperationWithPool(poolB, {
     ...base, resourceType: 'audio', payload: { options: { topP: 0.9, temperature: 0.2 }, prompt: 'canonical' },
     idempotencyKey: 'canon-00000001',
-  }, env);
+  }, canonicalEnv);
   assert.equal(canonicalReplay.operation.operationId, canonicalFirst.operation.operationId);
   await finishZeroCostResourceOperationWithPool(poolA, canonicalFirst.operation.operationId, canonicalFirst.leaseToken!, canonicalFirst.operation.leaseGeneration!, 'FAILED');
 
