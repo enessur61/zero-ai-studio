@@ -30,6 +30,11 @@ const providerKeys = ['GEMINI_API_KEY', 'ZERO_GEMINI_FREE_TIER_ONLY', 'CLOUDFLAR
 const clearIndex = compute.indexOf('clearRuntimeConfig([');
 const configureIndex = compute.indexOf('configureRuntimeConfig({');
 assert.ok(clearIndex >= 0 && configureIndex > clearIndex, 'Preview must clear inherited provider settings before injecting scoped inputs.');
+const clearBlock = compute.slice(clearIndex, configureIndex);
+assert.ok(clearBlock.includes('"ZERO_ADMIN_PASSWORD"') && clearBlock.includes('"ZERO_SESSION_SECRET"'), 'Preview must clear inherited authentication secrets before applying branch-scoped values.');
+assert.ok(compute.includes('const { db } = service.load();') && compute.includes('const databaseUrl = db.url;'), 'Preview DATABASE_URL must originate only from its branch-provisioned Composer database.');
+assert.ok(compute.includes('DATABASE_URL: databaseUrl'), 'The branch-provisioned database URL must override any inherited DATABASE_URL.');
+assert.ok(prismaModule.includes('rawPostgres({ name: "database" })') && prismaModule.includes('deps: { db: database }'), 'Each Composer branch must provision and wire its own raw PostgreSQL resource.');
 for (const key of postgresEnvironmentKeys) assert.ok(compute.includes('"' + key + '"'), 'Preview must clear inherited PostgreSQL override ' + key);
 for (const key of providerKeys) assert.ok(compute.includes('"' + key + '"'), 'Preview must clear inherited ' + key);
 assert.ok(prismaModule.includes('ZERO_ADMIN_PASSWORD: envSecret("ZERO_ADMIN_PASSWORD")'));
