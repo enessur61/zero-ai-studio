@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import hashlib
-import json
 import os
 import shutil
 import uuid
@@ -12,24 +10,34 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from job_store import PersistentJobStore, has_persistent_mount, require_persistent_storage
+from job_store import PersistentJobStore, has_persistent_mount, has_sufficient_gpu_memory, require_persistent_storage
 
 import torch
 from diffusers import WanPipeline
 from diffusers.utils import export_to_video
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 APP_TOKEN = os.environ.get("ZERO_VIDEO_ENGINE_TOKEN", "")
+WAN_GPU_ENABLED = os.environ.get("ZERO_WAN_GPU_ENABLED", "false").strip().lower() == "true"
+WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false").strip().lower() == "true"
+try:
+    WAN_DAILY_JOB_LIMIT = min(max(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), 1), 3)
+except ValueError:
+    WAN_DAILY_JOB_LIMIT = 0
+WAN_MAX_CONCURRENT_JOBS = 1
 MODEL_ID = os.environ.get("WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 OUTPUT_DIR = Path(os.environ.get("WAN_OUTPUT_DIR", "/tmp/zero-wan-jobs")).resolve()
+HF_CACHE_DIR = Path(os.environ.get("HF_HOME", "/data/huggingface-cache")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 PERSISTENT_MOUNT_CONFIGURED = has_persistent_mount(OUTPUT_DIR)
+MODEL_CACHE_PERSISTENT = has_persistent_mount(HF_CACHE_DIR)
 if os.environ.get("WAN_REQUIRE_PERSISTENT_STORAGE", "false").lower() == "true":
     require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+    require_persistent_storage(MODEL_CACHE_PERSISTENT)
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
 
@@ -47,8 +55,13 @@ class GenerateRequest(BaseModel):
     duration_sec: int = Field(default=5, ge=5, le=5)
     aspect_ratio: str = Field(default="16:9", pattern="^(16:9|9:16)$")
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
-    project_id: str = Field(min_length=1, max_length=128)
-    scene_id: str = Field(min_length=1, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
+    scene_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def require_cost_gate() -> None:
+    if not WAN_GPU_ENABLED or not WAN_GPU_COSTS_CONFIRMED or WAN_DAILY_JOB_LIMIT < 1:
+        raise HTTPException(status_code=403, detail="Wan-GPU gesperrt: ZERO_WAN_GPU_ENABLED und ZERO_WAN_GPU_COSTS_CONFIRMED müssen separat true sein; Tageslimit maximal 3.")
 
 
 def require_auth(authorization: str | None) -> None:
@@ -59,11 +72,19 @@ def require_auth(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def gpu_vram_total_mb() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    return round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024))
+
+
 def get_pipeline() -> WanPipeline:
     global _pipeline
     if _pipeline is None:
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU not detected. Wan worker requires an NVIDIA CUDA GPU.")
+        if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+            raise RuntimeError("Wan worker requires at least 12 GB of NVIDIA GPU VRAM; 24 GB is recommended.")
         # Load lazily so health checks do not download multi-GB model weights.
         _pipeline = WanPipeline.from_pretrained(
             MODEL_ID,
@@ -73,44 +94,51 @@ def get_pipeline() -> WanPipeline:
     return _pipeline
 
 
-def update_job(job_id: str, **changes: Any) -> dict[str, Any] | None:
+def update_job(job_id: str, **changes: Any) -> dict[str, Any]:
     with _jobs_lock:
-        job = _jobs.get(job_id)
-        if not job or job.get("status") == "deleting":
-            return None
+        job = _jobs[job_id]
+        if job.get("status") == "cancelled":
+            return dict(job)
+        if job.get("status") == "cancel_requested" and changes.get("status") in {"running", "succeeded", "failed"}:
+            return dict(job)
         job.update(changes)
         _JOB_STORE.save(dict(job))
         return dict(job)
 
 
-def cleanup_deleting_job(job_id: str, output_path: Path) -> None:
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job and job.get("status") == "deleting":
-            _jobs.pop(job_id, None)
-            _JOB_STORE.delete(job_id)
+def finish_cancelled_job(job_id: str, output_path: Path) -> None:
     output_path.unlink(missing_ok=True)
-
-
-def safe_job_output_path(job: dict[str, Any]) -> Path | None:
-    filename = job.get("filename")
-    if not isinstance(filename, str) or not filename:
-        return None
-    candidate = (OUTPUT_DIR / filename).resolve()
-    return candidate if candidate.parent == OUTPUT_DIR else None
+    with _jobs_lock:
+        job = _jobs[job_id]
+        job.update({
+            "status": "cancelled",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "cancel_reason": "Abbruch abgeschlossen; es wird kein MP4 bereitgestellt.",
+        })
+        _JOB_STORE.save(dict(job))
 
 
 def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None) -> None:
     output_path = OUTPUT_DIR / f"{job_id}.mp4"
     try:
-        if update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat()) is None:
-            cleanup_deleting_job(job_id, output_path)
+        started = update_job(job_id, status="running", started_at=datetime.now(timezone.utc).isoformat())
+        if started.get("status") != "running":
             return
         # Wan T2V-1.3B generates one short 480p shot (81 frames / about 5s).
         width, height = (832, 480) if aspect_ratio == "16:9" else (480, 832)
         generator = torch.Generator(device="cuda").manual_seed(seed) if seed is not None else None
         with _generation_lock, torch.inference_mode():
+            with _jobs_lock:
+                cancelled_before_gpu = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_before_gpu:
+                finish_cancelled_job(job_id, output_path)
+                return
             pipe = get_pipeline()
+            with _jobs_lock:
+                cancelled_during_model_load = _jobs[job_id].get("status") == "cancel_requested"
+            if cancelled_during_model_load:
+                finish_cancelled_job(job_id, output_path)
+                return
             result = pipe(
                 prompt=prompt,
                 negative_prompt="low quality, blurry, distorted, watermark, text",
@@ -122,148 +150,87 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
                 generator=generator,
             )
             frames = result.frames[0]
+            with _jobs_lock:
+                cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+            if cancellation_requested:
+                finish_cancelled_job(job_id, output_path)
+                return
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
-        if output_path.stat().st_size > 100 * 1024 * 1024:
-            raise RuntimeError("Wan MP4 exceeds the 100 MB project archive limit")
-        if update_job(
+        finished = update_job(
             job_id,
             status="succeeded",
             finished_at=datetime.now(timezone.utc).isoformat(),
             filename=output_path.name,
             size_bytes=output_path.stat().st_size,
             duration_sec=5,
-        ) is None:
-            cleanup_deleting_job(job_id, output_path)
+        )
+        if finished.get("status") == "cancel_requested":
+            finish_cancelled_job(job_id, output_path)
     except Exception as exc:  # Report failure; never fall back to a paid API.
-        output_path.unlink(missing_ok=True)
-        if update_job(
+        with _jobs_lock:
+            cancellation_requested = _jobs[job_id].get("status") == "cancel_requested"
+        if cancellation_requested:
+            finish_cancelled_job(job_id, output_path)
+            return
+        update_job(
             job_id,
             status="failed",
             finished_at=datetime.now(timezone.utc).isoformat(),
             error=str(exc)[:500],
-        ) is None:
-            cleanup_deleting_job(job_id, output_path)
+        )
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    daily_jobs_accepted = _JOB_STORE.daily_usage()
     return {
         "ok": True,
         "engine": "Wan 2.1",
         "model": MODEL_ID,
         "model_loaded": _pipeline is not None,
         "cuda_available": torch.cuda.is_available(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "gpu_vram_total_mb": gpu_vram_total_mb(),
+        "gpu_vram_free_mb": round(torch.cuda.mem_get_info(0)[0] / (1024 * 1024)) if torch.cuda.is_available() else 0,
+        "gpu_vram_recommended_min_mb": 12 * 1024,
         "max_shot_duration_sec": 5,
         "max_final_duration_sec": 60,
         "cost_fallback": False,
+        "cost_gate_open": WAN_GPU_ENABLED and WAN_GPU_COSTS_CONFIRMED and 1 <= WAN_DAILY_JOB_LIMIT <= 3,
+        "daily_job_limit": WAN_DAILY_JOB_LIMIT,
+        "daily_jobs_accepted": daily_jobs_accepted,
+        "daily_jobs_remaining": max(0, WAN_DAILY_JOB_LIMIT - daily_jobs_accepted),
+        "max_concurrent_jobs": WAN_MAX_CONCURRENT_JOBS,
         "job_store": "sqlite",
         "persistent_storage_configured": PERSISTENT_MOUNT_CONFIGURED,
+        "model_cache_persistent": MODEL_CACHE_PERSISTENT,
     }
 
 
-def public_job(job: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: job[key]
-        for key in (
-            "id", "status", "created_at", "started_at", "finished_at",
-            "duration_sec", "engine", "filename", "size_bytes", "error",
-            "project_id", "scene_id",
-        )
-        if key in job
-    }
-
-
-def request_fingerprint(request: GenerateRequest) -> str:
-    payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-@app.get("/jobs")
-def list_jobs(
-    authorization: str | None = Header(default=None),
-    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
-    project_id: str | None = Query(default=None, max_length=128),
-) -> dict[str, Any]:
-    require_auth(authorization)
-    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
-        raise HTTPException(status_code=401, detail="Authenticated principal is required")
-    jobs = _JOB_STORE.list_by_principal(principal_hash.lower(), project_id=project_id, limit=50)
-    return {"jobs": [public_job(job) for job in jobs]}
-
-
-@app.delete("/jobs")
-def delete_project_jobs(
-    authorization: str | None = Header(default=None),
-    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
-    project_id: str = Query(min_length=1, max_length=128),
-) -> dict[str, int]:
-    require_auth(authorization)
-    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
-        raise HTTPException(status_code=401, detail="Authenticated principal is required")
-    removed = 0
-    pending = 0
-    with _jobs_lock:
-        jobs = _JOB_STORE.mark_project_jobs_for_deletion(principal_hash.lower(), project_id)
-        for job in jobs:
-            job_id = str(job.get("id", ""))
-            if job.get("status") == "deleting":
-                _jobs[job_id] = job
-                pending += 1
-                continue
-            _jobs.pop(job_id, None)
-            output_path = safe_job_output_path(job)
-            if output_path:
-                output_path.unlink(missing_ok=True)
-            removed += 1
-    return {"deleted": removed, "pending": pending}
-
-
-@app.post("/jobs")
+@app.post("/jobs", status_code=202)
 def create_job(
     request: GenerateRequest,
     background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
-    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
-    idempotency_key_hash: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> JSONResponse:
+) -> dict[str, Any]:
     require_auth(authorization)
+    require_cost_gate()
     try:
         require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+        require_persistent_storage(MODEL_CACHE_PERSISTENT)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not torch.cuda.is_available():
         raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
-    if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
-        raise HTTPException(status_code=401, detail="Authenticated principal is required")
-    if not idempotency_key_hash or len(idempotency_key_hash) != 64 or any(c not in "0123456789abcdef" for c in idempotency_key_hash.lower()):
-        raise HTTPException(status_code=400, detail="A hashed idempotency key is required")
-
+    if not has_sufficient_gpu_memory(gpu_vram_total_mb() * 1024 * 1024):
+        raise HTTPException(status_code=503, detail="Wan requires at least 12 GB GPU VRAM; 24 GB is recommended.")
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    fingerprint = request_fingerprint(request)
-    job = {
-        "id": job_id,
-        "status": "queued",
-        "created_at": now,
-        "duration_sec": 5,
-        "engine": "Wan 2.1",
-        "project_id": request.project_id,
-        "scene_id": request.scene_id,
-        "principal_hash": principal_hash.lower(),
-        "idempotency_key_hash": idempotency_key_hash.lower(),
-        "request_fingerprint": fingerprint,
-    }
     with _jobs_lock:
-        existing, replayed, conflict = _JOB_STORE.create_or_get(job)
-        if conflict:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
-        if replayed:
-            _jobs[str(existing["id"])] = existing
-            return JSONResponse(status_code=200, content={"job": public_job(existing), "replayed": True})
-
+        # Keep only a small in-memory history; do not let an unauthenticated
+        # caller or long-running host grow the job registry without bound.
         if len(_jobs) >= 50:
             for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
                 old_id = str(old["id"])
@@ -272,8 +239,23 @@ def create_job(
                 if old_file.parent == OUTPUT_DIR and old_file.is_file():
                     old_file.unlink(missing_ok=True)
             if len(_jobs) >= 50:
-                _JOB_STORE.delete(job_id)
                 raise HTTPException(status_code=429, detail="Worker job queue is full")
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "created_at": now,
+            "duration_sec": 5,
+            "engine": "Wan 2.1",
+            **({"project_id": request.project_id} if request.project_id else {}),
+            **({"scene_id": request.scene_id} if request.scene_id else {}),
+        }
+        allowed, reason, count = _JOB_STORE.create_job_if_allowed(job, daily_limit=WAN_DAILY_JOB_LIMIT, max_concurrent=WAN_MAX_CONCURRENT_JOBS)
+        if not allowed:
+            if reason == "daily_limit":
+                raise HTTPException(status_code=429, detail=f"Wan-Tageslimit erreicht ({count}/{WAN_DAILY_JOB_LIMIT}).")
+            if reason == "duplicate_id":
+                raise HTTPException(status_code=409, detail="Doppelte Wan-Auftrags-ID; bitte erneut versuchen.")
+            raise HTTPException(status_code=429, detail="Wan-GPU ist ausgelastet; maximal ein aktiver Job gleichzeitig.")
         _jobs[job_id] = job
     background_tasks.add_task(
         asyncio.to_thread,
@@ -283,49 +265,69 @@ def create_job(
         request.aspect_ratio,
         request.seed,
     )
-    return JSONResponse(status_code=202, content={"job": public_job(job), "replayed": False})
+    return {"id": job_id, "status": "queued", "duration_sec": 5, "engine": "Wan 2.1", "daily_jobs_accepted": count, "daily_job_limit": WAN_DAILY_JOB_LIMIT}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_auth(authorization)
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    with _jobs_lock:
+        job = _JOB_STORE.request_cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        _jobs[job_id] = dict(job)
+        return {
+            "id": job_id,
+            "status": job["status"],
+            "cancel_requested": job["status"] == "cancel_requested",
+            "cancelled": job["status"] == "cancelled",
+            "message": job.get("cancel_reason", "Auftrag ist bereits abgeschlossen."),
+        }
+
+
+@app.get("/jobs")
+def list_jobs(
+    limit: int = Query(default=50, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_auth(authorization)
+    with _jobs_lock:
+        persisted = _JOB_STORE.list_jobs(limit)
+        for job in persisted:
+            _jobs[str(job["id"])] = dict(job)
+        return {"jobs": persisted, "limit": limit}
 
 
 @app.get("/jobs/{job_id}")
-def get_job(
-    job_id: str,
-    authorization: str | None = Header(default=None),
-    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
-) -> dict[str, Any]:
+def get_job(job_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_auth(authorization)
-    if not principal_hash:
-        raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job or job.get("status") == "deleting" or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return public_job(job)
+    return job
 
 
 @app.get("/jobs/{job_id}/video")
-def get_video(
-    job_id: str,
-    authorization: str | None = Header(default=None),
-    principal_hash: str | None = Header(default=None, alias="X-Zero-Principal-Hash"),
-) -> FileResponse:
+def get_video(job_id: str, authorization: str | None = Header(default=None)) -> FileResponse:
     require_auth(authorization)
-    if not principal_hash:
-        raise HTTPException(status_code=401, detail="Authenticated principal is required")
     try:
         uuid.UUID(job_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Job not found")
     with _jobs_lock:
         job = dict(_jobs.get(job_id, {}))
-    if not job or job.get("status") == "deleting" or not hmac.compare_digest(str(job.get("principal_hash", "")), principal_hash):
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.get("status") != "succeeded":
+    if not job or job.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="Video is not ready")
-    video_path = (OUTPUT_DIR / str(job.get("filename", ""))).resolve()
+    video_path = OUTPUT_DIR / str(job.get("filename", ""))
     if video_path.parent != OUTPUT_DIR or not video_path.is_file():
         raise HTTPException(status_code=404, detail="Video file not found")
     return FileResponse(video_path, media_type="video/mp4", filename=f"zero-{job_id}.mp4")
