@@ -14,9 +14,9 @@ const asset = {
   sha256: 'a'.repeat(64),
   createdAt: new Date(0).toISOString(),
   close: async () => undefined,
-  chunks: (async function* () {
-    for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-      yield bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
+  chunksForRange: (start = 0, end = bytes.length - 1) => (async function* () {
+    for (let offset = start; offset <= end; offset += 64 * 1024) {
+      yield bytes.subarray(offset, Math.min(end + 1, offset + 64 * 1024));
     }
   })(),
 };
@@ -37,10 +37,10 @@ let aborted = false;
 app.get('/clip', (req, res) => {
   const streamAsset = {
     ...asset,
-    chunks: (async function* () {
+    chunksForRange: (start = 0, end = bytes.length - 1) => (async function* () {
       try {
-        for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-          yield bytes.subarray(offset, Math.min(bytes.length, offset + 64 * 1024));
+        for (let offset = start; offset <= end; offset += 64 * 1024) {
+          yield bytes.subarray(offset, Math.min(end + 1, offset + 64 * 1024));
         }
       } finally {
         if (req.query.watchAbort === '1') aborted = true;

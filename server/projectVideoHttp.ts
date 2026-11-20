@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import type { ProjectVideoAsset } from './projectVideoStore.ts';
 
 export interface OpenProjectVideoStream extends ProjectVideoAsset {
-  chunks: AsyncIterable<Buffer>;
+  chunksForRange: (start?: number, end?: number) => AsyncIterable<Buffer>;
   close: () => Promise<void>;
 }
 
@@ -72,7 +72,7 @@ export function sendProjectVideoStream(
     res.status(206);
     res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${asset.sizeBytes}`);
   }
-  const body = Readable.from(asset.chunks, { objectMode: false });
+  const body = Readable.from(asset.chunksForRange(range.start, range.end), { objectMode: false });
   res.once('close', () => {
     if (!res.writableEnded) {
       body.destroy();

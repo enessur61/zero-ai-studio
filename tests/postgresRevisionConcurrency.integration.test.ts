@@ -121,13 +121,13 @@ try {
   videoHttpApp.get('/owner/:assetId', asyncRoute(async (req, res) => {
     const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', videoPrincipal);
     if (!opened) return res.sendStatus(404);
-    const chunks = (async function* () {
-      for await (const chunk of opened.chunks) {
+    const chunksForRange = (start?: number, end?: number) => (async function* () {
+      for await (const chunk of opened.chunksForRange(start, end)) {
         maxVideoChunkBytes = Math.max(maxVideoChunkBytes, chunk.length);
         yield chunk;
       }
     })();
-    return sendProjectVideoStream(req, res, { ...opened, chunks });
+    return sendProjectVideoStream(req, res, { ...opened, chunksForRange });
   }));
   videoHttpApp.get('/other/:assetId', asyncRoute(async (req, res) => {
     const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', otherVideoPrincipal);

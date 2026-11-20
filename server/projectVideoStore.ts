@@ -327,9 +327,7 @@ export function createProjectVideoAssetStore(
     assetId: string,
     projectId: string,
     principalHash: string,
-    rangeStart = 0,
-    rangeEnd?: number,
-  ): Promise<(ProjectVideoAsset & { chunks: AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
+  ): Promise<(ProjectVideoAsset & { chunksForRange: (start?: number, end?: number) => AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
     await ready();
     const client = await database.connect();
@@ -356,8 +354,6 @@ export function createProjectVideoAssetStore(
         return null;
       }
       const asset = toAsset(row);
-      const start = Math.max(0, Math.min(asset.sizeBytes - 1, Math.floor(rangeStart)));
-      const end = Math.max(start, Math.min(asset.sizeBytes - 1, Math.floor(rangeEnd ?? (asset.sizeBytes - 1))));
       let released = false;
       const close = async () => {
         if (released) return;
@@ -368,26 +364,30 @@ export function createProjectVideoAssetStore(
         }
         client.release();
       };
-      const chunks = (async function* (): AsyncGenerator<Buffer> {
-        try {
-          const chunkBytes = 256 * 1024;
-          for (let offset = start; offset <= end; offset += chunkBytes) {
-            const length = Math.min(chunkBytes, end - offset + 1);
-            const chunkResult = await client.query<{ chunk: Buffer }>(
-              'SELECT substring(payload FROM $2 FOR $3) AS chunk FROM zero_project_video_assets WHERE asset_id = $1',
-              [assetId, offset + 1, length],
-            );
-            const chunk = chunkResult.rows[0]?.chunk;
-            if (!Buffer.isBuffer(chunk) || chunk.length !== length) {
-              throw new Error('Project video stream returned an incomplete database chunk.');
+      const chunksForRange = (rangeStart = 0, rangeEnd = asset.sizeBytes - 1): AsyncIterable<Buffer> => {
+        const start = Math.max(0, Math.min(asset.sizeBytes - 1, Math.floor(rangeStart)));
+        const end = Math.max(start, Math.min(asset.sizeBytes - 1, Math.floor(rangeEnd)));
+        return (async function* (): AsyncGenerator<Buffer> {
+          try {
+            const chunkBytes = 256 * 1024;
+            for (let offset = start; offset <= end; offset += chunkBytes) {
+              const length = Math.min(chunkBytes, end - offset + 1);
+              const chunkResult = await client.query<{ chunk: Buffer }>(
+                'SELECT substring(payload FROM $2 FOR $3) AS chunk FROM zero_project_video_assets WHERE asset_id = $1',
+                [assetId, offset + 1, length],
+              );
+              const chunk = chunkResult.rows[0]?.chunk;
+              if (!Buffer.isBuffer(chunk) || chunk.length !== length) {
+                throw new Error('Project video stream returned an incomplete database chunk.');
+              }
+              yield chunk;
             }
-            yield chunk;
+          } finally {
+            await close();
           }
-        } finally {
-          await close();
-        }
-      })();
-      return { ...asset, chunks, close };
+        })();
+      };
+      return { ...asset, chunksForRange, close };
     } catch (error) {
       if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
       client.release();
