@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { isAuthConfigurationValid, requireSessionSecret, validatePostgresConnectionString } from '../server/securityGuards.ts';
+import { clearRuntimeConfig, configureRuntimeConfig } from '../server/runtimeConfig.ts';
 
 const validDb = 'postgresql://zero_user:dummy-password@preview-db.example.invalid:5432/zero_preview?sslmode=require';
 assert.equal(validatePostgresConnectionString(validDb), validDb);
@@ -16,6 +17,33 @@ assert.equal(isAuthConfigurationValid('a'.repeat(12), 's'.repeat(31)), false);
 assert.throws(() => requireSessionSecret(undefined));
 assert.throws(() => requireSessionSecret('short'));
 assert.equal(requireSessionSecret('s'.repeat(32)), 's'.repeat(32));
+
+// Exercise the same environment reset used by Prisma Compute without retaining
+// or exposing any developer/CI environment values.
+const inheritedKeys = [
+  'ZERO_ADMIN_PASSWORD', 'ZERO_SESSION_SECRET', 'GEMINI_API_KEY',
+  'ZERO_GEMINI_FREE_TIER_ONLY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN',
+  'ZERO_WEB_SEARCH_URL', 'ZERO_WEB_SEARCH_TOKEN', 'ZERO_TTS_WORKER_URL',
+  'ZERO_TTS_WORKER_TOKEN', 'ZERO_VIDEO_ENGINE_URL', 'ZERO_VIDEO_ENGINE_TOKEN',
+  'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD',
+];
+const previousValues = new Map(inheritedKeys.map((key) => [key, process.env[key]]));
+try {
+  for (const key of inheritedKeys) process.env[key] = 'inherited-test-only';
+  clearRuntimeConfig(inheritedKeys);
+  for (const key of inheritedKeys) assert.equal(process.env[key], undefined, 'Inherited setting must be cleared: ' + key);
+  configureRuntimeConfig({ ZERO_ADMIN_PASSWORD: 'preview-admin-only', ZERO_SESSION_SECRET: 'p'.repeat(32) });
+  assert.equal(process.env.ZERO_ADMIN_PASSWORD, 'preview-admin-only');
+  assert.equal(process.env.ZERO_SESSION_SECRET, 'p'.repeat(32));
+  assert.equal(process.env.GEMINI_API_KEY, undefined, 'Unmapped provider keys must remain absent.');
+} finally {
+  for (const key of inheritedKeys) {
+    const previous = previousValues.get(key);
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+}
+
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const compute = read('../compute-server.ts');
