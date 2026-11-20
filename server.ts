@@ -2648,7 +2648,7 @@ app.get('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
   res.setHeader('Content-Length', String(asset.sizeBytes));
   res.setHeader('ETag', `"${asset.sha256}"`);
   res.setHeader('Cache-Control', 'private, no-store');
-  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.mp4"`);
+  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`);
   return res.send(asset.payload);
 }));
 
