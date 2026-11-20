@@ -28,3 +28,37 @@ jobs:
         with:
           module: module.mjs
           build-command: bun run build
+      - name: Verify isolated preview HTTP and PostgreSQL readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://s5j2brwlvh3d4mkm2cyrycm5.fra.prisma.build"
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error "$base/api/health" -o /tmp/zero-health.json; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Preview health endpoint did not become ready."
+              exit 1
+            fi
+            sleep 5
+          done
+          python3 - <<'PY'
+          import json
+          with open("/tmp/zero-health.json", encoding="utf-8") as f:
+              data = json.load(f)
+          assert data.get("ok") is True, "Preview health endpoint did not report ok=true"
+          readiness = data.get("readiness", {})
+          assert readiness.get("database") == "ready", "Preview PostgreSQL is not ready"
+          assert readiness.get("authentication") == "ready", "Preview authentication is not ready"
+          print("Preview HTTP health and isolated PostgreSQL readiness: PASS")
+          PY
+          curl --fail --silent --show-error "$base/api/auth/status" -o /tmp/zero-auth-status.json
+          python3 - <<'PY'
+          import json
+          with open("/tmp/zero-auth-status.json", encoding="utf-8") as f:
+              data = json.load(f)
+          assert data.get("required") is True, "Production-mode auth gate is not active"
+          assert data.get("configured") is True, "Preview auth credentials are not configured"
+          print("Preview authentication configuration gate: PASS")
+          PY
