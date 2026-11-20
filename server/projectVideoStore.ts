@@ -109,6 +109,7 @@ export function createProjectVideoAssetStore(database: Pool) {
     try {
       await client.query('BEGIN');
       inTransaction = true;
+      await client.query("SET LOCAL statement_timeout = '120s'");
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`zero-project-video:${input.principalHash}:${input.projectId}`]);
 
       if (input.jobId) {
@@ -191,27 +192,45 @@ export function createProjectVideoAssetStore(database: Pool) {
     return result.rows.map(toAsset);
   }
 
-  async function get(assetId: string, projectId: string, principalHash: string): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
+  async function readVideo(
+    query: string,
+    values: unknown[],
+  ): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
     await ready();
-    const result = await database.query<ProjectVideoRow>(
+    const client = await database.connect();
+    let inTransaction = false;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+      await client.query("SET LOCAL statement_timeout = '120s'");
+      const result = await client.query<ProjectVideoRow>(query, values);
+      await client.query('COMMIT');
+      inTransaction = false;
+      const row = result.rows[0];
+      return row?.payload ? { ...toAsset(row), payload: row.payload } : null;
+    } catch (error) {
+      if (inTransaction) await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function get(assetId: string, projectId: string, principalHash: string): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
+    return readVideo(
       `SELECT * FROM zero_project_video_assets
        WHERE asset_id = $1 AND project_id = $2 AND principal_hash = $3`,
       [assetId, projectId, principalHash],
     );
-    const row = result.rows[0];
-    return row?.payload ? { ...toAsset(row), payload: row.payload } : null;
   }
 
   async function getLatestForScene(projectId: string, sceneId: string, principalHash: string): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
-    await ready();
-    const result = await database.query<ProjectVideoRow>(
+    return readVideo(
       `SELECT * FROM zero_project_video_assets
        WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3
        ORDER BY created_at DESC LIMIT 1`,
       [projectId, sceneId, principalHash],
     );
-    const row = result.rows[0];
-    return row?.payload ? { ...toAsset(row), payload: row.payload } : null;
   }
 
   async function remove(assetId: string, projectId: string, principalHash: string): Promise<boolean> {
