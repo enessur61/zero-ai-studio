@@ -58,8 +58,8 @@ const providerKeys = [
   'ZERO_VIDEO_ENGINE_URL',
   'ZERO_VIDEO_ENGINE_TOKEN',
 ];
-assert.match(runtimeConfigSource, /export function clearRuntimeConfig\\(keys: readonly string\\[\\]\\): void/);
-assert.match(runtimeConfigSource, /delete runtimeConfig\\[key\\]/);
+assert.ok(runtimeConfigSource.includes('export function clearRuntimeConfig(keys: readonly string[]): void'));
+assert.ok(runtimeConfigSource.includes('delete runtimeConfig[key]'));
 const clearCall = computeSource.indexOf('clearRuntimeConfig([');
 const configureCall = computeSource.indexOf('configureRuntimeConfig({');
 assert.ok(clearCall >= 0 && configureCall > clearCall, 'Inherited provider configuration must be cleared before explicit inputs are applied.');
