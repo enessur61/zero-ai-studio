@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, Download, Film, Loader2, Music, Play, Share2, Sparkles, Trash2 } from 'lucide-react';
 import { renderTimelineVideoMax60s, type VideoRenderResult } from '../lib/localVideoCompositor.ts';
 import type { FilmScene, StudioProject } from '../types/zero.ts';
-import { cacheSceneVideoClip, deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
+import { deleteSceneVideoClip, loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
 
 interface WanJobHistoryItem {
@@ -75,15 +75,9 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack }: Video
 
   async function restoreArchivedVideo(asset: ProjectVideoHistoryItem) {
     if (!currentProject?.id) return;
-    const response = await fetch(
-      `/api/projects/${encodeURIComponent(currentProject.id)}/videos/${encodeURIComponent(asset.id)}`,
-      { credentials: 'same-origin', cache: 'no-store' }
-    );
-    if (!response.ok) throw new Error('Gespeicherter ZERO-Clip ist nicht mehr verfügbar.');
-    const blob = await response.blob();
-    if (!blob.type.startsWith('video/') || blob.size < 1024) throw new Error('Gespeicherter ZERO-Clip ist ungültig.');
-    await cacheSceneVideoClip(currentProject.id, asset.sceneId, blob).catch(() => undefined);
-    const clipUrl = URL.createObjectURL(blob);
+    // Keep the archived clip server-backed: Safari/iOS can request byte ranges
+    // directly and does not need a second full-size Blob in browser memory.
+    const clipUrl = `/api/projects/${encodeURIComponent(currentProject.id)}/videos/${encodeURIComponent(asset.id)}`;
     setWanClipUrl(clipUrl);
     const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
     setWanClipScene(scene?.title ?? 'Gespeicherter Clip');

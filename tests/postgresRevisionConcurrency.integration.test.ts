@@ -19,6 +19,7 @@ import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
+import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
 import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
@@ -112,6 +113,70 @@ try {
     payload: mp4Payload,
   });
   assert.equal(idempotentArchive.id, archivedVideo.id, 'retrying the same Wan job must not duplicate the project clip');
+
+  // Exercise the actual PostgreSQL BYTEA chunk reader through HTTP. The test
+  // principal is bound by each route closure, never supplied by the request.
+  const videoHttpApp = express();
+  let maxVideoChunkBytes = 0;
+  videoHttpApp.get('/owner/:assetId', asyncRoute(async (req, res) => {
+    const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', videoPrincipal);
+    if (!opened) return res.sendStatus(404);
+    const chunksForRange = (start?: number, end?: number) => (async function* () {
+      for await (const chunk of opened.chunksForRange(start, end)) {
+        maxVideoChunkBytes = Math.max(maxVideoChunkBytes, chunk.length);
+        yield chunk;
+      }
+    })();
+    return sendProjectVideoStream(req, res, { ...opened, chunksForRange });
+  }));
+  videoHttpApp.get('/other/:assetId', asyncRoute(async (req, res) => {
+    const opened = await projectVideoStoreB.openRead(req.params.assetId, 'project-video-integration', otherVideoPrincipal);
+    if (!opened) return res.sendStatus(404);
+    return sendProjectVideoStream(req, res, opened);
+  }));
+  const videoHttpServer = videoHttpApp.listen(0);
+  await once(videoHttpServer, 'listening');
+  const videoHttpAddress = videoHttpServer.address();
+  if (!videoHttpAddress || typeof videoHttpAddress === 'string') throw new Error('Project video HTTP test server did not bind.');
+  const videoHttpBase = `http://127.0.0.1:${videoHttpAddress.port}`;
+  try {
+    const firstRange = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: { Range: 'bytes=0-65535' },
+    });
+    assert.equal(firstRange.status, 206);
+    assert.equal(firstRange.headers.get('accept-ranges'), 'bytes');
+    assert.equal(firstRange.headers.get('content-range'), `bytes 0-65535/${mp4Payload.length}`);
+    const reader = firstRange.body?.getReader();
+    assert.ok(reader);
+    const firstChunk = await reader.read();
+    assert.ok(firstChunk.value && firstChunk.value.length > 0);
+    const resumedPrefix = Buffer.from(firstChunk.value.subarray(0, 4096));
+    await reader.cancel();
+
+    const resumed = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: {
+        Range: `bytes=${resumedPrefix.length}-`,
+        'If-Range': firstRange.headers.get('etag') ?? '',
+      },
+    });
+    assert.equal(resumed.status, 206);
+    assert.equal(resumed.headers.get('content-range'), `bytes ${resumedPrefix.length}-${mp4Payload.length - 1}/${mp4Payload.length}`);
+    const resumedBytes = Buffer.from(await resumed.arrayBuffer());
+    assert.deepEqual(Buffer.concat([resumedPrefix, resumedBytes]), mp4Payload,
+      'an interrupted iPhone-style range download can resume byte-exactly');
+
+    const forbidden = await fetch(`${videoHttpBase}/other/${archivedVideo.id}`);
+    assert.equal(forbidden.status, 404, 'another principal must not stream the asset');
+    const invalidRange = await fetch(`${videoHttpBase}/owner/${archivedVideo.id}`, {
+      headers: { Range: `bytes=${mp4Payload.length}-` },
+    });
+    assert.equal(invalidRange.status, 416);
+    assert.equal(invalidRange.headers.get('content-range'), `bytes */${mp4Payload.length}`);
+    assert.ok(maxVideoChunkBytes <= 256 * 1024,
+      'PostgreSQL streaming must never materialize a database chunk larger than 256 KiB');
+  } finally {
+    await new Promise<void>((resolve, reject) => videoHttpServer.close((error) => error ? reject(error) : resolve()));
+  }
 
   const projectCleanupVideo = await projectVideoStore.put({
     projectId: 'project-video-integration',

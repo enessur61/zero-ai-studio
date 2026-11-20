@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { sendProjectVideoStream } from './server/projectVideoHttp.ts';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
 import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/concurrencyGate.ts';
@@ -2596,15 +2597,11 @@ app.get('/api/projects/:id/scenes/:sceneId/video', asyncRoute(async (req, res) =
   if (!project.scenes.some((item) => item.id === req.params.sceneId)) {
     return res.status(404).json({ error: 'Szene nicht gefunden.' });
   }
-  const asset = await getProjectVideoAssetStore().getLatestForScene(
+  const asset = await getProjectVideoAssetStore().openReadLatestForScene(
     req.params.id, req.params.sceneId, createZeroPrincipalHash()
   );
   if (!asset) return res.status(404).json({ error: 'Für diese Szene ist kein gespeicherter Videoclip vorhanden.' });
-  res.setHeader('Content-Type', asset.contentType);
-  res.setHeader('Content-Length', String(asset.sizeBytes));
-  res.setHeader('ETag', `"${asset.sha256}"`);
-  res.setHeader('Cache-Control', 'private, no-store');
-  return res.send(asset.payload);
+  return sendProjectVideoStream(req, res, asset);
 }));
 
 app.get('/api/projects/:id/videos', asyncRoute(async (req, res) => {
@@ -2622,17 +2619,11 @@ app.get('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
   if (!db.projects.some((item) => item.id === req.params.id)) {
     return res.status(404).json({ error: 'Projekt nicht gefunden.' });
   }
-  const asset = await getProjectVideoAssetStore().get(
+  const asset = await getProjectVideoAssetStore().openRead(
     req.params.assetId, req.params.id, createZeroPrincipalHash()
   );
   if (!asset) return res.status(404).json({ error: 'Clip nicht gefunden oder Aufbewahrungsfrist abgelaufen.' });
-  const download = req.query.download === '1';
-  res.setHeader('Content-Type', asset.contentType);
-  res.setHeader('Content-Length', String(asset.sizeBytes));
-  res.setHeader('ETag', `"${asset.sha256}"`);
-  res.setHeader('Cache-Control', 'private, no-store');
-  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="zero-clip-${asset.id}.${asset.contentType === 'video/webm' ? 'webm' : 'mp4'}"`);
-  return res.send(asset.payload);
+  return sendProjectVideoStream(req, res, asset, req.query.download === '1');
 }));
 
 app.delete('/api/projects/:id/videos/:assetId', asyncRoute(async (req, res) => {
