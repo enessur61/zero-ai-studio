@@ -69,6 +69,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
   const [wanBusy, setWanBusy] = useState(false);
   const [wanProgress, setWanProgress] = useState('');
   const [wanClipUrl, setWanClipUrl] = useState<string | null>(null);
+  const wanClipUrlRef = useRef<string | null>(null);
   const archivedVideoRef = useRef<HTMLVideoElement | null>(null);
   const shouldResumeArchivedVideoRef = useRef(false);
   const recoveringArchivedVideoRef = useRef(false);
@@ -85,6 +86,19 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
   const [wanJobHistory, setWanJobHistory] = useState<WanJobHistoryItem[]>([]);
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
+
+  function replaceWanClipPreview(nextUrl: string | null, projectId?: string, sceneId?: string, kind: 'restored' | 'generated' = 'generated') {
+    const previous = wanClipUrlRef.current;
+    if (nextUrl?.startsWith('blob:') && projectId && sceneId) {
+      objectUrlRegistry.register(nextUrl, { projectId, sceneId, kind });
+      objectUrlRegistry.retainPreview(nextUrl, 'wan-clip-preview', projectId, kind);
+    }
+    wanClipUrlRef.current = nextUrl;
+    setWanClipUrl(nextUrl);
+    if (previous && previous !== nextUrl && previous.startsWith('blob:')) {
+      objectUrlRegistry.releasePreview(previous, 'wan-clip-preview');
+    }
+  }
 
   const persistArchivedPlayback = (preferLastKnownPosition = false) => {
     const video = archivedVideoRef.current;
@@ -240,7 +254,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
     };
     playbackSnapshotRef.current = snapshot;
     if (playbackStorage) saveProjectVideoPlaybackSnapshot(playbackStorage, snapshot);
-    setWanClipUrl(clipUrl);
+    replaceWanClipPreview(clipUrl, currentProject.id, asset.sceneId, 'restored');
     const scene = currentProject.scenes.find((item) => item.id === asset.sceneId);
     setWanClipScene(scene?.title ?? 'Gespeicherter Clip');
     pendingPlaybackRestoreRef.current = null;
@@ -273,7 +287,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
             playbackSnapshotRef.current = null;
             pendingPlaybackRestoreRef.current = null;
           }
-          if (wanClipUrl?.startsWith('blob:')) URL.revokeObjectURL(wanClipUrl);
+          if (wanClipUrl?.startsWith('blob:')) objectUrlRegistry.releaseSceneReference(wanClipUrl, currentProject.id, asset.sceneId);
+          replaceWanClipPreview(null);
           setWanClipUrl(null);
           setWanClipScene('');
         }
@@ -422,8 +437,8 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
       throw new Error('Der Wan-Worker lieferte keine gültige Videodatei.');
     }
     if (!isActive()) return;
-    const clipUrl = URL.createObjectURL(blob);
-    setWanClipUrl(clipUrl);
+    const clipUrl = objectUrlRegistry.create(blob, { projectId: currentProject?.id ?? '__preview__', sceneId: scene.id, kind: 'generated' });
+    replaceWanClipPreview(clipUrl, currentProject?.id ?? '__preview__', scene.id, 'generated');
     setWanClipScene(scene.title);
     setScenes((previous) => previous.map((item) =>
       item.id === scene.id ? { ...item, videoUrl: clipUrl, status: 'Szenenbereit' } : item
