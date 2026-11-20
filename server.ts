@@ -318,6 +318,13 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       core: 'ZERO CORE',
       maxVideoDurationSec: 60,
       readiness: { database: 'unavailable', authentication: 'ready' },
+      diagnostics: {
+        databaseUrlConfigured: Boolean(runtimeConfig.DATABASE_URL),
+        errorName: dbError.name,
+        errorCode: typeof dbError === 'object' && 'code' in dbError && typeof dbError.code === 'string'
+          ? dbError.code
+          : null,
+      },
       message: 'Die dauerhafte Datenbank ist nicht erreichbar oder nicht konfiguriert.',
     });
   }
