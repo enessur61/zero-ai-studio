@@ -198,7 +198,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         queued_cancel = worker._JOB_STORE.request_cancel(queued["id"], self.PRINCIPAL_A)
         self.assertEqual(queued_cancel["status"], "cancelled")
 
-        running = dict(queued, id="00000000-0000-4000-8000-000000000077", status="running", idempotency_key_hash="3" * 64)
+        running = dict(queued, id="00000000-0000-4000-8000-000000000077", status="running", principal_hash=self.PRINCIPAL_A, idempotency_key_hash="3" * 64, request_fingerprint="4" * 64)
         worker._JOB_STORE.create_or_get(running)
         requested = worker._JOB_STORE.request_cancel(running["id"], self.PRINCIPAL_A)
         self.assertEqual(requested["status"], "cancel_requested")
