@@ -44,7 +44,7 @@ function guardedCloudflareFetcher(
       () => fetcher(input, init),
       process.env,
       undefined,
-      (response) => response.ok ? 'SUCCEEDED' : response.status >= 500 ? 'UNKNOWN' : 'FAILED',
+      (response) => response.ok ? 'SUCCEEDED' : response.status >= 500 ? 'UNKNOWN' : 'REJECTED',
     );
     if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
     return operationResult;
