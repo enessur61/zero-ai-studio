@@ -100,7 +100,7 @@ export function getGeminiClient(): GoogleGenAI {
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey(getZeroResourceRequestFingerprint(operationInput)) },
+          idempotencyKey: createZeroIdempotencyKey() },
         () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
