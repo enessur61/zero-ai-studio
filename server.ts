@@ -27,6 +27,7 @@ import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
+import { isPiperWorkerHealthPayload } from './server/piperWorkerHealth.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -1644,6 +1645,27 @@ class WorkerPayloadTooLargeError extends Error {
   }
 }
 
+async function verifyPiperWorkerHealth(worker: { baseUrl: URL; headers: Record<string, string> }): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(new URL('/health', worker.baseUrl), {
+      method: 'GET',
+      headers: { ...worker.headers, Accept: 'application/json' },
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (!response.ok) return false;
+    const bytes = await readWorkerBodyLimited(response, 16 * 1024);
+    const payload: unknown = JSON.parse(bytes.toString('utf8'));
+    return isPiperWorkerHealthPayload(payload);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function readWorkerBodyLimited(response: Response, maxBytes: number): Promise<Buffer> {
   const declaredLength = Number(response.headers.get('content-length') ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -1706,16 +1728,25 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     return res.status(409).json({ error: 'Dieser Piper-Auftrag wurde mit diesem Idempotency-Key bereits angenommen oder abgeschlossen.', reservationId: reservation.reservationId, costEur: 0, paidFallback: false });
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 150000);
+  let controller: AbortController | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
   let completed = false;
-  let safeToRelease = false;
+  let safeToRelease = true;
   try {
+    if (!(await verifyPiperWorkerHealth(worker))) {
+      return res.status(503).json({
+        error: 'Piper-Worker-Health, Modellrevision, Lizenz oder Kostenmetadaten stimmen nicht mit dem freigegebenen kostenlosen Worker überein. Kein kostenpflichtiger Fallback.',
+        costEur: 0, paidFallback: false,
+      });
+    }
+    safeToRelease = false;
+    controller = new AbortController();
+    timeout = setTimeout(() => controller?.abort(), 150000);
     const response = await fetch(new URL('/tts', worker.baseUrl), {
       method: 'POST',
       headers: { ...worker.headers, 'Content-Type': 'application/json', Accept: 'audio/wav' },
       body: JSON.stringify({ text, speed }),
-      signal: controller.signal, redirect: 'error',
+      signal: controller?.signal, redirect: 'error',
     });
     if (!response.ok) {
       // Only a definitive 4xx rejection proves the worker did not accept work.
@@ -1758,7 +1789,7 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
       : 'Der eigene Piper-Sprachworker ist nicht erreichbar. Kein kostenpflichtiger Fallback wurde gestartet.';
     return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     if (!completed && safeToRelease) {
       await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'released' }).catch(() => undefined);
     }
