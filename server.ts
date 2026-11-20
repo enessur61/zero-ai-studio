@@ -81,6 +81,25 @@ function getProjectVideoAssetStore() {
   return projectVideoAssetStore;
 }
 
+async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () => Promise<T>): Promise<T> {
+  const client = await getPostgresPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`zero-project-lifecycle:${createZeroPrincipalHash()}:${projectId}`],
+    );
+    const result = await callback();
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 // ZIP downloads and restores share two PostgreSQL advisory-lock slots across all
 // Node processes. The local gate is only for development without PostgreSQL.
 export const zipOperationGate = process.env.DATABASE_URL
@@ -1970,6 +1989,12 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
+  return await withZeroProjectLifecycleLock(projectId, async () => {
+  const db = await loadDb();
+  const project = db.projects.find((item) => item.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Projekt nicht gefunden.' });
+  if (!project.scenes.some((item) => item.id === sceneId)) return res.status(404).json({ error: 'Szene nicht gefunden.' });
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -2011,6 +2036,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
+  });
 }));
 
 app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
@@ -2710,6 +2736,7 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
+  return await withZeroProjectLifecycleLock(req.params.id, async () => {
   const db = await loadDb();
   const projectExists = db.projects.some((project) => project.id === req.params.id);
   if (projectExists) {
@@ -2751,7 +2778,8 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
     assets: sanitizeProjectAssets(project.assets),
     snapshots: sanitizeProjectSnapshots(project.snapshots),
   }));
-  res.json({ ok: true, projects, workerCleanup });
+  return res.json({ ok: true, projects, workerCleanup });
+  });
 }));
 
 // === ZERO CHARACTER ENGINE ===
