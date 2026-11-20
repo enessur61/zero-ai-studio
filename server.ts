@@ -2705,9 +2705,6 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
 
 app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   const db = await loadDb();
-  if (db.projects.length <= 1) {
-    return res.status(400).json({ error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' });
-  }
   const projectExists = db.projects.some((project) => project.id === req.params.id);
   if (projectExists) {
     if (db.projects.length <= 1) {
