@@ -125,6 +125,8 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
             export_to_video(frames, str(output_path), fps=16)
         if not output_path.is_file() or output_path.stat().st_size < 1024:
             raise RuntimeError("Wan returned no usable MP4 output")
+        if output_path.stat().st_size > 100 * 1024 * 1024:
+            raise RuntimeError("Wan MP4 exceeds the 100 MB project archive limit")
         if update_job(
             job_id,
             status="succeeded",
@@ -135,6 +137,7 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
         ) is None:
             cleanup_deleting_job(job_id, output_path)
     except Exception as exc:  # Report failure; never fall back to a paid API.
+        output_path.unlink(missing_ok=True)
         if update_job(
             job_id,
             status="failed",
