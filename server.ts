@@ -26,6 +26,7 @@ import { readinessForStage, type HealthReadinessStage } from './server/healthRea
 import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
+import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -342,7 +343,12 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
 }));
 
 // Enforce server-owned project identity before every project-id route.
-app.use('/api/projects/:id', createProjectOwnershipMiddleware(async () => (await loadDb()).projects));
+app.use('/api/projects/:id', createProjectOwnershipMiddleware(
+  async () => (await loadDb()).projects,
+  async (projectId, principal, idempotencyKey) =>
+    Boolean(process.env.DATABASE_URL) &&
+    isProjectDeletionIdempotentRetry(projectId, principal.id, idempotencyKey),
+));
 
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
@@ -437,6 +443,7 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
     await authStore().ensureSchema();
     readinessStage = 'resource_guard';
     await ensureZeroResourceSchema();
+    await ensureProjectDeletionIdempotencySchema();
     readinessStage = 'ready';
     return res.json({
       ok: true,
@@ -3059,6 +3066,13 @@ app.delete('/api/projects/:id', asyncRoute(async (req, res) => {
   const ownedProjects = db.projects.filter((project) => project.ownerId === principal.id);
   const projectExists = ownedProjects.some((project) => project.id === req.params.id);
   if (projectExists) {
+    if (process.env.DATABASE_URL) {
+      await recordProjectDeletionIdempotency(
+        req.params.id,
+        principal.id,
+        String(res.locals.zeroRequestIdempotencyKey ?? ''),
+      );
+    }
     if (ownedProjects.length <= 1) {
       return { status: 400, body: { error: 'Mindestens ein aktives Projekt muss erhalten bleiben.' } };
     }
