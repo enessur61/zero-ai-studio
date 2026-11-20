@@ -93,6 +93,28 @@ try {
   assert.equal(await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), null);
   assert.equal(await projectVideoStoreB.remove(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), false);
   assert.equal(await projectVideoStoreB.removeProject('project-video-integration', otherVideoPrincipal), 0);
+  const rangedMetadata = await projectVideoStoreB.getMetadata(archivedVideo.id, 'project-video-integration', videoPrincipal);
+  assert.equal(rangedMetadata?.sizeBytes, mp4Payload.length, 'metadata lookup never requires selecting the BYTEA payload');
+  assert.equal(await projectVideoStoreB.getMetadata(archivedVideo.id, 'project-video-integration', otherVideoPrincipal), null,
+    'metadata lookup is principal-scoped');
+  const firstVideoRange = await projectVideoStoreB.readRange(
+    archivedVideo.id, 'project-video-integration', videoPrincipal, 0, 256 * 1024,
+  );
+  assert.deepEqual(firstVideoRange?.payload, mp4Payload.subarray(0, 256 * 1024),
+    'bounded PostgreSQL range reads return only the requested first window');
+  const finalVideoRange = await projectVideoStoreB.readRange(
+    archivedVideo.id, 'project-video-integration', videoPrincipal, mp4Payload.length - 1024, 1024,
+  );
+  assert.deepEqual(finalVideoRange?.payload, mp4Payload.subarray(-1024),
+    'bounded PostgreSQL range reads support resuming from the final window');
+  assert.equal(await projectVideoStoreB.readRange(
+    archivedVideo.id, 'project-video-integration', otherVideoPrincipal, 0, 1024,
+  ), null, 'range reads cannot cross principal boundaries');
+  await assert.rejects(
+    () => projectVideoStoreB.readRange(archivedVideo.id, 'project-video-integration', videoPrincipal, 0, 1024 * 1024 + 1),
+    /Invalid project video byte range/,
+    'a single database read cannot allocate an unbounded response buffer',
+  );
 
   const archivedVideoBytes = await projectVideoStoreB.get(
     archivedVideo.id, 'project-video-integration', videoPrincipal

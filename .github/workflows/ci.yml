@@ -299,6 +299,34 @@ jobs:
           if (!mediaReadFromSecondInstance.ok || !mediaBytesFromSecondInstance.equals(mp4Bytes)) {
             throw new Error('Binary scene media written on instance A was not visible on instance B');
           }
+          const firstVideoRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=0-65535' } });
+          const firstVideoRangeBytes = Buffer.from(await firstVideoRange.arrayBuffer());
+          if (firstVideoRange.status !== 206 || firstVideoRange.headers.get('content-range') !== 'bytes 0-65535/' + mp4Bytes.length ||
+              !firstVideoRangeBytes.equals(mp4Bytes.subarray(0, 65536)) || firstVideoRange.headers.get('accept-ranges') !== 'bytes') {
+            throw new Error('Scene video HTTP range response did not return the exact requested prefix');
+          }
+          const suffixVideoRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=-1024' } });
+          const suffixVideoRangeBytes = Buffer.from(await suffixVideoRange.arrayBuffer());
+          if (suffixVideoRange.status !== 206 || !suffixVideoRangeBytes.equals(mp4Bytes.subarray(-1024))) {
+            throw new Error('Scene video suffix range could not resume at the end of the clip');
+          }
+          const staleIfRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=0-1023', 'if-range': '"stale-etag"' } });
+          const staleIfRangeBytes = Buffer.from(await staleIfRange.arrayBuffer());
+          if (staleIfRange.status !== 200 || !staleIfRangeBytes.equals(mp4Bytes)) {
+            throw new Error('A stale If-Range validator must safely fall back to the complete current clip');
+          }
+          const invalidVideoRange = await fetch(baseB + sceneVideoPath, { headers: { cookie, range: 'bytes=999999999-' } });
+          if (invalidVideoRange.status !== 416 || invalidVideoRange.headers.get('content-range') !== 'bytes */' + mp4Bytes.length) {
+            throw new Error('Invalid scene video byte ranges must fail with HTTP 416');
+          }
+          const videoHead = await fetch(baseB + sceneVideoPath, { method: 'HEAD', headers: { cookie } });
+          if (!videoHead.ok || videoHead.headers.get('content-length') !== String(mp4Bytes.length) || (await videoHead.arrayBuffer()).byteLength !== 0) {
+            throw new Error('Scene video HEAD must return metadata without transferring the payload');
+          }
+          const unauthorizedVideoRange = await fetch(baseB + sceneVideoPath, { headers: { range: 'bytes=0-1023' } });
+          if (unauthorizedVideoRange.status !== 401 && unauthorizedVideoRange.status !== 403) {
+            throw new Error('Unauthenticated scene video range request was not rejected');
+          }
           const clipHistoryResponse = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos', { headers: { cookie } });
           const clipHistory = await clipHistoryResponse.json();
           const archivedClip = clipHistory.assets?.find((asset) => asset.id === mediaWritePayload.asset.id);
@@ -309,6 +337,15 @@ jobs:
           const downloadedClip = Buffer.from(await clipDownload.arrayBuffer());
           if (!clipDownload.ok || !downloadedClip.equals(mp4Bytes) || !clipDownload.headers.get('content-disposition')?.includes('attachment')) {
             throw new Error('Archived project clip download failed');
+          }
+          const rangedClipDownload = await fetch(baseB + '/api/projects/' + durationProject.id + '/videos/' + archivedClip.id + '?download=1', {
+            headers: { cookie, range: 'bytes=65536-131071' }
+          });
+          const rangedClipBytes = Buffer.from(await rangedClipDownload.arrayBuffer());
+          if (rangedClipDownload.status !== 206 || rangedClipDownload.headers.get('content-range') !== 'bytes 65536-131071/' + mp4Bytes.length ||
+              !rangedClipBytes.equals(mp4Bytes.subarray(65536, 131072)) ||
+              !rangedClipDownload.headers.get('content-disposition')?.includes('attachment')) {
+            throw new Error('Archived clip HTTP range download failed or lost attachment disposition');
           }
           if (!durationProject.snapshots[0].state ||
               durationProject.snapshots[0].state.scenes.length !== durationProject.scenes.length) {
