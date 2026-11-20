@@ -413,7 +413,7 @@ def cancel_job(
         _jobs[job_id] = dict(job)
     status = job.get("status")
     return {
-        "job": public_job(job),
+        **public_job(job),
         "cancelled": status == "cancelled",
         "cancel_requested": status == "cancel_requested",
         "message": "Abbruch angefordert." if status == "cancel_requested" else "Auftragsstatus aktualisiert.",
