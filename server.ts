@@ -37,6 +37,7 @@ import {
   runLiveModelTest,
 } from './server/adapters.ts';
 import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
+import { isCloudflareWorkersAiAllowed } from './server/cloudflareBudgetGate.ts';
 import {
   verifyCoreMLAdapterPackage,
   verifyZeroIOSRuntimeSuite,
@@ -458,17 +459,23 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
 app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configured = isCloudflareWorkersAiConfigured();
+  const freePlanGateOpen = isCloudflareWorkersAiAllowed();
+  const accountIdConfigured = Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim());
+  const apiTokenConfigured = Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim());
   const modelId = '@cf/zai-org/glm-4.7-flash';
   if (!configured) {
     return res.json({
       ok: false,
-      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
-      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      accountIdConfigured,
+      apiTokenConfigured,
+      freePlanGateOpen,
       cloudflareConnection: 'NOT_TESTED',
       modelResponse: 'NOT_TESTED',
       modelId,
       paidFallback: false,
-      message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
+      message: !freePlanGateOpen
+        ? 'Cloudflare Workers AI ist standardmäßig gesperrt. Vor der Freigabe müssen Workers-Free-Tarif und Ausschluss kostenpflichtiger Nutzung manuell geprüft und beide ZERO-Freigaben gesetzt werden.'
+        : 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
     });
   }
   try {
@@ -481,6 +488,7 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
       ok: true,
       accountIdConfigured: true,
       apiTokenConfigured: true,
+      freePlanGateOpen: true,
       cloudflareConnection: 'CONNECTED',
       modelResponse: 'RECEIVED',
       modelId: result.modelId,
@@ -493,6 +501,7 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
       ok: false,
       accountIdConfigured: true,
       apiTokenConfigured: true,
+      freePlanGateOpen: true,
       cloudflareConnection: 'FAILED',
       modelResponse: 'NOT_RECEIVED',
       modelId,
