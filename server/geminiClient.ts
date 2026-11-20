@@ -1,4 +1,4 @@
-import { runtimeConfig } from './server/runtimeConfig.ts';
+import { runtimeConfig } from './runtimeConfig.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
