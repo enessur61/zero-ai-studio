@@ -5,7 +5,18 @@ import type { FilmScene, StudioProject } from '../types/zero.ts';
 import { loadSceneVideoClip, saveSceneVideoClip } from '../lib/sceneVideoStore.ts';
 import { apiRequest } from '../lib/api.ts';
 
-interface ProjectVideoHistoryItem {\n  id: string;\n  projectId: string;\n  sceneId: string;\n  jobId: string | null;\n  contentType: string;\n  sizeBytes: number;\n  createdAt: string;\n  expiresAt: string;\n}\n\ninterface VideoStudioViewProps {
+interface ProjectVideoHistoryItem {
+  id: string;
+  projectId: string;
+  sceneId: string;
+  jobId: string | null;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+  expiresAt: string;
+}
+
+interface VideoStudioViewProps {
   projects: StudioProject[];
   activeProjectId?: string;
   soundtrack?: { url: string; title: string } | null;
