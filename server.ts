@@ -157,10 +157,19 @@ async function sendProjectVideoAsset(
     }
     offset += chunk.payload.length;
     if (!res.write(chunk.payload)) {
-      await Promise.race([
-        new Promise<void>((resolve) => res.once('drain', resolve)),
-        new Promise<void>((resolve) => res.once('close', resolve)),
-      ]);
+      await new Promise<void>((resolve) => {
+        const cleanup = () => {
+          res.off('drain', onDrain);
+          res.off('close', onClose);
+          res.off('error', onClose);
+          resolve();
+        };
+        const onDrain = cleanup;
+        const onClose = cleanup;
+        res.once('drain', onDrain);
+        res.once('close', onClose);
+        res.once('error', onClose);
+      });
     }
   }
   if (!res.destroyed) res.end();

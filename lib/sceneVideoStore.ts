@@ -247,13 +247,9 @@ export async function loadSceneVideoClip(projectId: string, sceneId: string): Pr
   if (!projectId || !sceneId) return null;
   try {
     const url = `/api/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/video`;
-    const head = await fetch(url, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store' });
-    if (head.status === 404 || (head.status >= 400 && head.status < 500)) return null;
-    if (head.ok) {
-      const remote = await downloadSceneVideoInRanges(url);
-      try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
-      return remote;
-    }
+    const remote = await downloadSceneVideoInRanges(url);
+    try { await saveLocally(projectId, sceneId, remote); } catch { /* remote copy remains durable */ }
+    return remote;
   } catch {
     // Fall back to the local cache when the server is temporarily unavailable.
   }
