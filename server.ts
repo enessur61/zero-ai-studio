@@ -21,7 +21,7 @@ import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError,
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { ensureZeroResourceSchema, getZeroResourceReservation, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
