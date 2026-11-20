@@ -1,4 +1,5 @@
 import { runtimeConfig } from './server/runtimeConfig.ts';
+import { isAuthConfigurationValid, requireSessionSecret } from './server/securityGuards.ts';
 import express from 'express';
 import { asyncRoute } from './server/asyncRoute.ts';
 import { createRestoreHandlers } from './server/restoreHandlers.ts';
@@ -67,6 +68,10 @@ import type {
 } from './src/types/zero.ts';
 
 const PORT = Number(runtimeConfig.PORT) || 3000;
+const IS_PRODUCTION = runtimeConfig.NODE_ENV !== 'development' && runtimeConfig.NODE_ENV !== 'test';
+if (IS_PRODUCTION && !runtimeConfig.DATABASE_URL) {
+  throw new Error('DATABASE_URL fehlt; Produktionsstart wird ohne PostgreSQL verweigert.');
+}
 const app = express();
 app.disable('x-powered-by');
 
@@ -80,7 +85,6 @@ export const zipOperationGate = runtimeConfig.DATABASE_URL
 // makes req.ip reflect the client address for login rate limiting.
 app.set('trust proxy', 1);
 
-const IS_PRODUCTION = runtimeConfig.NODE_ENV !== 'development' && runtimeConfig.NODE_ENV !== 'test';
 const ZERO_ADMIN_PASSWORD = runtimeConfig.ZERO_ADMIN_PASSWORD ?? '';
 const ZERO_SESSION_SECRET = runtimeConfig.ZERO_SESSION_SECRET ?? '';
 const AUTH_COOKIE_NAME = 'zero_session';
@@ -99,7 +103,7 @@ function tokenDigest(token: string): string {
 }
 
 function loginKeyDigest(address: string): string {
-  return createHmac('sha256', ZERO_SESSION_SECRET).update(address).digest('hex');
+  return createHmac('sha256', requireSessionSecret(ZERO_SESSION_SECRET)).update(address).digest('hex');
 }
 
 async function hasValidSession(req: express.Request): Promise<boolean> {
@@ -108,7 +112,7 @@ async function hasValidSession(req: express.Request): Promise<boolean> {
   if (!token) return false;
   const [expiresAt, nonce, signature] = token.split('.');
   if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
-  const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
+  const expected = createHmac('sha256', requireSessionSecret(ZERO_SESSION_SECRET)).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
   return authStore().hasSession(tokenDigest(token));
 }
@@ -117,7 +121,7 @@ async function createSessionCookie(): Promise<string> {
   const expiresAt = String(Date.now() + SESSION_DURATION_SECONDS * 1000);
   const nonce = randomBytes(24).toString('hex');
   const payload = expiresAt + '.' + nonce;
-  const signature = createHmac('sha256', ZERO_SESSION_SECRET).update(payload).digest('hex');
+  const signature = createHmac('sha256', requireSessionSecret(ZERO_SESSION_SECRET)).update(payload).digest('hex');
   const token = payload + '.' + signature;
   await authStore().createSession(tokenDigest(token), new Date(Number(expiresAt)));
   const secure = IS_PRODUCTION ? '; Secure' : '';
@@ -218,7 +222,7 @@ app.use(express.json({ limit: '26mb' }));
 app.get('/api/auth/status', asyncRoute(async (_req, res) => {
   const configured =
     !IS_PRODUCTION ||
-    (ZERO_ADMIN_PASSWORD.length >= 12 && ZERO_SESSION_SECRET.length >= 32);
+    isAuthConfigurationValid(ZERO_ADMIN_PASSWORD, ZERO_SESSION_SECRET);
   res.json({
     required: IS_PRODUCTION,
     configured,
