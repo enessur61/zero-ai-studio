@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx dev-server.ts",
     "start": "tsx start-server.ts",
-    "build": "vite build && bun build compute-server.ts --target=bun --outfile dist/index.js",
+    "build": "vite build && bun build compute-server.ts --target=bun --external vite --outfile dist/index.js",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
