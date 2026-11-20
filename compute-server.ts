@@ -3,12 +3,20 @@ import { configureRuntimeConfig } from "./server/runtimeConfig.ts";
 
 const { db } = service.load();
 const input = service.input();
+const databaseUrl = db.url;
+const databaseTarget = new URL(databaseUrl);
+console.log("[ZERO Compute] PostgreSQL target:", {
+  protocol: databaseTarget.protocol,
+  hostname: databaseTarget.hostname,
+  port: databaseTarget.port || "5432",
+  database: databaseTarget.pathname,
+});
 
 const secret = (value: { expose(): string } | undefined): string | undefined =>
   value?.expose();
 
 configureRuntimeConfig({
-  DATABASE_URL: db.url,
+  DATABASE_URL: databaseUrl,
   PORT: String(service.port()),
   NODE_ENV: "production",
   ZERO_ADMIN_PASSWORD: secret(input.ZERO_ADMIN_PASSWORD),
