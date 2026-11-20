@@ -766,13 +766,19 @@ jobs:
           docker compose --file docker-compose.workers.yml exec --no-TTY zero-app node --input-type=module -e "const base='http://zero-worker:8000'; const h=await fetch(base+'/health'); const p=await h.json(); if(!h.ok||!p.auth_configured||p.voice_loaded) throw new Error('Piper health or lazy-load state incorrect'); const denied=await fetch(base+'/tts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer invalid-ci-token'},body:JSON.stringify({text:'must not synthesize'})}); if(denied.status!==401) throw new Error('Piper did not reject an invalid token before inference'); console.log('Private Piper DNS, authenticated health and no-inference rejection passed.');"
           docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); p.write_text('survives-worker-restart')"
           docker compose --file docker-compose.workers.yml restart zero-worker
+          PIPER_HEALTH=""
           for attempt in $(seq 1 45); do
-            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --quiet zero-worker)
-            PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID")
+            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --all --quiet zero-worker | head -n 1)
+            if [ -n "$PIPER_ID" ]; then
+              PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID" 2>/dev/null || true)
+            fi
             if [ "$PIPER_HEALTH" = healthy ]; then break; fi
             sleep 2
           done
-          test "$PIPER_HEALTH" = healthy
+          if [ "$PIPER_HEALTH" != healthy ]; then
+            docker compose --file docker-compose.workers.yml logs --no-color zero-worker
+            exit 1
+          fi
           docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
           LIVE_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
           test "$LIVE_STATUS" = 200
