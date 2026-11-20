@@ -12,10 +12,11 @@ import { VideoObjectUrlRegistry } from '../lib/videoObjectUrlRegistry.ts';
 interface WanJobHistoryItem {
   id: string;
   status: string;
-  scene_id?: string;
-  created_at?: string;
-  finished_at?: string;
-  error?: string;
+  sceneId?: string;
+  createdAt?: string | null;
+  finishedAt?: string | null;
+  error?: string | null;
+  cancelReason?: string | null;
 }
 
 interface ProjectVideoHistoryItem {
@@ -84,6 +85,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
   const [videoHistory, setVideoHistory] = useState<ProjectVideoHistoryItem[]>([]);
   const [videoHistoryLoaded, setVideoHistoryLoaded] = useState(false);
   const [wanJobHistory, setWanJobHistory] = useState<WanJobHistoryItem[]>([]);
+  const [cancellingWanJobId, setCancellingWanJobId] = useState<string | null>(null);
   const [videoHistoryError, setVideoHistoryError] = useState('');
   const [deletingClipId, setDeletingClipId] = useState<string | null>(null);
 
@@ -228,6 +230,24 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
     if (!response.ok) throw new Error('Wan-Auftragshistorie konnte nicht geladen werden.');
     const payload = await response.json() as { jobs?: WanJobHistoryItem[] };
     setWanJobHistory(Array.isArray(payload.jobs) ? payload.jobs : []);
+  }
+
+  async function cancelWanJob(jobId: string) {
+    if (cancellingWanJobId) return;
+    setCancellingWanJobId(jobId);
+    try {
+      const response = await fetch(`/api/video/engine/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST', credentials: 'include', cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Wan-Abbruch konnte nicht bestätigt werden.');
+      if (currentProject?.id) await refreshWanJobHistory(currentProject.id);
+      setWanProgress(payload.job?.cancelRequested
+        ? 'Abbruch angefordert. Der Worker beendet den Auftrag kontrolliert.'
+        : payload.job?.cancelled ? 'Wan-Auftrag wurde abgebrochen.' : 'Wan-Auftragsstatus wurde aktualisiert.');
+    } finally {
+      setCancellingWanJobId(null);
+    }
   }
 
   async function restoreArchivedVideo(asset: ProjectVideoHistoryItem) {
@@ -491,21 +511,19 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
           credentials: 'include', cache: 'no-store',
         });
         if (!response.ok) return;
-        const payload = await response.json() as { jobs?: Array<{
-          id: string; status: string; scene_id?: string; created_at?: string; finished_at?: string; error?: string;
-        }> };
+        const payload = await response.json() as { jobs?: WanJobHistoryItem[] };
         const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
         setWanJobHistory(jobs);
         const sceneById = new Map(currentProject?.scenes.map((scene) => [scene.id, scene]) ?? []);
-        const resumable = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
+        const resumable = jobs.filter((job) => sceneById.has(job.sceneId ?? '') &&
           ['queued', 'running'].includes(job.status));
-        const completed = jobs.filter((job) => sceneById.has(job.scene_id ?? '') &&
+        const completed = jobs.filter((job) => sceneById.has(job.sceneId ?? '') &&
           job.status === 'succeeded');
         // The worker returns newest-updated jobs first; restore only the latest
         // completed clip per scene so an older render cannot overwrite it.
         const latestCompletedByScene = new Map<string, typeof completed[number]>();
         for (const job of completed) {
-          const sceneId = job.scene_id ?? '';
+          const sceneId = job.sceneId ?? '';
           if (!latestCompletedByScene.has(sceneId)) latestCompletedByScene.set(sceneId, job);
         }
         if (resumable.length) {
@@ -513,7 +531,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
           setWanProgress('Gespeicherte Wan-Aufträge werden nach dem erneuten Öffnen fortgesetzt...');
           for (const job of resumable) {
             if (!active) return;
-            const scene = sceneById.get(job.scene_id ?? '');
+            const scene = sceneById.get(job.sceneId ?? '');
             if (!scene) continue;
             await waitForWanJob(job.id, scene, () => active);
           }
@@ -521,7 +539,7 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
         }
         for (const job of latestCompletedByScene.values()) {
           if (!active) return;
-          const scene = sceneById.get(job.scene_id ?? '');
+          const scene = sceneById.get(job.sceneId ?? '');
           if (!scene || scene.videoUrl) continue;
           await restoreWanJobVideo(job.id, scene, () => active);
         }
@@ -845,15 +863,21 @@ export function VideoStudioView({ projects, activeProjectId, soundtrack, onProje
             </div>
             {!wanJobHistory.length && <p className="text-xs text-slate-500">Keine Wan-Aufträge für dieses Projekt gespeichert.</p>}
             {wanJobHistory.map((job) => {
-              const scene = currentProject?.scenes.find((item) => item.id === job.scene_id);
-              const statusLabel = job.status === 'queued' ? 'Wartet' : job.status === 'running' ? 'Läuft' : job.status === 'succeeded' ? 'Abgeschlossen' : 'Fehlgeschlagen';
+              const scene = currentProject?.scenes.find((item) => item.id === job.sceneId);
+              const statusLabel = job.status === 'queued' ? 'Wartet' : job.status === 'running' ? 'Läuft' : job.status === 'cancel_requested' ? 'Abbruch angefordert' : job.status === 'cancelled' ? 'Abgebrochen' : job.status === 'succeeded' ? 'Abgeschlossen' : 'Fehlgeschlagen';
               return (
                 <div key={job.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-[#090B10] border border-white/[0.06] p-3">
                   <div className="min-w-0">
-                    <p className="text-xs font-medium text-white truncate">{scene?.title || job.scene_id || 'Wan-Auftrag'}</p>
-                    <p className="text-[10px] text-slate-400">{statusLabel} · {job.created_at ? new Date(job.created_at).toLocaleString('de-DE') : 'Zeitpunkt unbekannt'} · {job.id}</p>
+                    <p className="text-xs font-medium text-white truncate">{scene?.title || job.sceneId || 'Wan-Auftrag'}</p>
+                    <p className="text-[10px] text-slate-400">{statusLabel} · {job.createdAt ? new Date(job.createdAt).toLocaleString('de-DE') : 'Zeitpunkt unbekannt'} · {job.id}</p>
                     {job.status === 'failed' && job.error && <p className="text-[10px] text-rose-300">{job.error}</p>}
+                    {job.status === 'cancelled' && job.cancelReason && <p className="text-[10px] text-slate-400">{job.cancelReason}</p>}
                   </div>
+                  {(job.status === 'queued' || job.status === 'running') && (
+                    <button type="button" disabled={cancellingWanJobId === job.id} onClick={() => void cancelWanJob(job.id).catch((cancelError) => setVideoHistoryError(cancelError instanceof Error ? cancelError.message : 'Wan-Abbruch fehlgeschlagen.'))} className="min-h-[36px] px-3 rounded-lg bg-rose-500/10 text-rose-300 text-[11px] disabled:opacity-50">
+                      {cancellingWanJobId === job.id ? 'Abbruch läuft…' : 'Auftrag abbrechen'}
+                    </button>
+                  )}
                   {job.status === 'succeeded' && scene && (
                     <button type="button" disabled={wanBusy} onClick={() => {
                       setWanBusy(true);
