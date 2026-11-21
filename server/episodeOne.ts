@@ -24,7 +24,7 @@ export const EPISODE_ONE = {
       timeOfDay: '02:13 Uhr',
       durationSec: 8,
       narrationText: '',
-      subtitleText: '02:13 · Du hast mich gestern getötet.',
+      subtitleText: '02:13 · EIGENE NUMMER · Du hast mich gestern getötet.',
       soundCue: 'Ein einzelner Nachrichtenton; die Musik hält abrupt inne.',
       imagePrompt: 'Photorealistic macro close-up of the same smartphone in the hand of Elias, 23, wearing his consistent plain black hoodie. One new message notification arrives at 02:13 from Elias own phone number. Cold blue-grey bedroom light, realistic glass reflections, premium thriller cinematography, 50mm macro lens, vertical 9:16. Keep screen text clean and unreadable for exact post-production overlay; no gibberish letters.',
       videoPrompt: 'Slow controlled macro push toward the same smartphone as the 02:13 notification arrives from Elias own number. Elias wears the same plain black hoodie. Subtle hand movement only, realistic reflections, stable phone geometry. Leave screen text unreadable for exact post-production typography; no generated lettering.',
