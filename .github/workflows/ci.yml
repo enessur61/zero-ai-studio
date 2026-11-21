@@ -140,7 +140,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
+          COMMON_ENV=(NODE_ENV=production ZERO_DEPLOYMENT_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
           env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
           SERVER_PID_A=$!
           trap 'status=$?; if [ "$status" -ne 0 ]; then echo "--- ZERO SERVER A LOG ---"; cat /tmp/zero-server-a.log; echo "--- ZERO SERVER B LOG ---"; cat /tmp/zero-server-b.log; fi; kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true; exit "$status"' EXIT
