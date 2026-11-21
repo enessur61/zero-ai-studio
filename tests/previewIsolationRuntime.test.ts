@@ -79,9 +79,23 @@ const missingAttestation = { ...validEnv, ZERO_PREVIEW_ATTESTATION_JSON: '' };
 assert.throws(() => assertRuntimePreviewIsolation(missingAttestation), /PREVIEW_ATTESTATION_MISSING_OR_OVERSIZED/);
 assert.throws(() => assertRuntimePreviewIsolation({ ...validEnv, ZERO_PREVIEW_ISOLATION_ATTESTED: 'true', ZERO_PREVIEW_ATTESTATION_JSON: '' }), /PREVIEW_ATTESTATION_MISSING_OR_OVERSIZED/);
 
-const tamperedPayload = makePayload();
-tamperedPayload.previewId = 'preview-tampered';
-assert.throws(() => assertRuntimePreviewIsolation({ ...validEnv, ZERO_PREVIEW_ATTESTATION_JSON: envelope(tamperedPayload) }), /PREVIEW_ATTESTATION_PREVIEW_MISMATCH/);
+const tamperedEnvelope = JSON.parse(validEnvelope);
+const tamperedBytes = Buffer.from(tamperedEnvelope.payload, 'base64url');
+const tamperedObject = JSON.parse(tamperedBytes.toString('utf8'));
+tamperedObject.previewId = 'preview-tampered';
+tamperedEnvelope.payload = Buffer.from(JSON.stringify(tamperedObject), 'utf8').toString('base64url');
+assert.throws(
+  () => assertRuntimePreviewIsolation({ ...validEnv, ZERO_PREVIEW_ATTESTATION_JSON: JSON.stringify(tamperedEnvelope) }),
+  /PREVIEW_ATTESTATION_SIGNATURE_INVALID/,
+  'payload tampering without the issuer private key must invalidate the signature',
+);
+
+const mismatchedPreviewPayload = makePayload();
+mismatchedPreviewPayload.previewId = 'preview-tampered';
+assert.throws(
+  () => assertRuntimePreviewIsolation({ ...validEnv, ZERO_PREVIEW_ATTESTATION_JSON: envelope(mismatchedPreviewPayload) }),
+  /PREVIEW_ATTESTATION_PREVIEW_MISMATCH/,
+);
 
 const badSignature = JSON.parse(validEnvelope);
 badSignature.signature = Buffer.alloc(64, 7).toString('base64url');
