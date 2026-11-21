@@ -35,11 +35,11 @@ export function PiperVoiceStudioView() {
         throw new Error('ZERO hat keine gültige WAV-Datei erhalten.');
       }
       if (result.paidFallback !== false || result.costEur !== 0) {
-        throw new Error('Die Antwort erfüllt die ZERO-0-€-Sicherheitsvorgabe nicht. Audio wurde nicht übernommen.');
+        throw new Error('Die Antwort erfüllt die ZERO-Vorgabe für 0 € externe TTS-Anbietergebühr nicht. Audio wurde nicht übernommen.');
       }
       setAudioUrl(result.audioDataUrl);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Die kostenlose Piper-Spracherzeugung ist fehlgeschlagen.');
+      setError(err instanceof Error ? err.message : 'Die Piper-Spracherzeugung ist fehlgeschlagen.');
     } finally {
       setLoading(false);
     }
@@ -58,7 +58,7 @@ export function PiperVoiceStudioView() {
           </div>
         </div>
         <p className="text-sm text-slate-400">
-          Deutsche Sprachgenerierung mit Piper ONNX · Stimme Thorsten · keine kostenpflichtigen Fallbacks
+          Deutsche Sprachgenerierung mit Piper ONNX · Stimme Thorsten · keine externe TTS-API und keine kostenpflichtigen Fallbacks
         </p>
       </header>
 
@@ -66,9 +66,12 @@ export function PiperVoiceStudioView() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-semibold text-white">Deinen Sprechertext</h2>
           <span className="rounded-full border border-teal-500/25 bg-teal-500/10 px-3 py-1 text-xs text-teal-300">
-            0 € · Piper lokal auf ZERO-Worker
+            0 € Anbietergebühr · Piper auf ZERO-Worker
           </span>
         </div>
+        <p className="text-xs leading-relaxed text-slate-500">
+          Keine externe TTS-API-Gebühr pro Anfrage. Mögliche Kosten für Hosting, CPU und Speicher des ZERO-Workers sind nicht enthalten und hängen vom gewählten Hosting-Tarif ab.
+        </p>
 
         <textarea
           value={text}
