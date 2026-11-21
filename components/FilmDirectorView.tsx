@@ -25,10 +25,11 @@ export function FilmDirectorView({
   onOpenVideoStudio,
 }: FilmDirectorViewProps) {
   const [idea, setIdea] = useState(
-    'Ein verlassener Berliner U-Bahn-Schacht sendet jede Nacht um 03:00 Uhr eine verschlüsselte Morse-Melodie.'
+    'PROJECT ZERO – Folge 1: DIE NACHRICHT. Elias erhält um 02:13 Uhr von seiner eigenen Telefonnummer die Nachricht „Du hast mich gestern getötet.“ Sein eigenes Handy ruft ihn an. Um 02:14 Uhr folgt „Dreh dich nicht um.“ Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Acht festgelegte Einstellungen, maximal 60 Sekunden.'
   );
-  const [genre, setGenre] = useState('Neo-Noir Mystery Thriller');
-  const [targetDurationSec, setTargetDurationSec] = useState(58);
+  const [genre, setGenre] = useState('Psychologischer Mystery-Thriller / Neo-Noir');
+  const [episodeOnePreset, setEpisodeOnePreset] = useState(true);
+  const [targetDurationSec, setTargetDurationSec] = useState(60);
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '');
   const [generateImages, setGenerateImages] = useState(false);
   const [directing, setDirecting] = useState(false);
@@ -45,7 +46,7 @@ export function FilmDirectorView({
 
   async function handleCreateFilm(e: React.FormEvent) {
     e.preventDefault();
-    if (!idea.trim() || directing) return;
+    if ((!episodeOnePreset && !idea.trim()) || directing) return;
     setDirecting(true);
     setError(null);
     try {
@@ -57,6 +58,7 @@ export function FilmDirectorView({
           targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
           characterId,
           generateImages,
+          ...(episodeOnePreset ? { episodePreset: 'die-nachricht' } : {}),
         }),
       });
       onProjectCreated(data.project);
@@ -94,14 +96,10 @@ export function FilmDirectorView({
     setTtsSceneId(sceneId);
     setError(null);
     try {
-      const char = characters.find((c) => activeProject.characterIds.includes(c.id));
-      const tts = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts', {
+      // Use ZERO's dedicated free German Piper worker; never route voiceovers through Gemini TTS.
+      const tts = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts/piper', {
         method: 'POST',
-        body: JSON.stringify({
-          text: narrationText,
-          voiceName: char?.voiceName || 'Kore',
-          style: char?.voiceStyle || 'Ruhige deutsche Thriller-Erzählstimme',
-        }),
+        body: JSON.stringify({ text: narrationText, speed: 0.96 }),
       });
       const updatedScenes = activeProject.scenes.map((s) =>
         s.id === sceneId ? { ...s, audioDataUrl: tts.audioDataUrl, status: 'Szenenbereit' as const } : s
@@ -112,13 +110,13 @@ export function FilmDirectorView({
           method: 'PUT',
           body: JSON.stringify({
             scenes: updatedScenes,
-            snapshotNote: `Sprachaufnahme für Szene generiert`,
+            snapshotNote: 'Deutsche Piper-Sprachaufnahme für Szene generiert (ohne externe TTS-Anbietergebühr; Hostingkosten nicht enthalten)',
           }),
         }
       );
       onProjectUpdated(saved.project);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sprachgenerierung fehlgeschlagen');
+      setError(err instanceof Error ? err.message : 'Piper-Sprachgenerierung fehlgeschlagen');
     } finally {
       setTtsSceneId(null);
     }
@@ -131,7 +129,7 @@ export function FilmDirectorView({
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO FILM DIRECTOR</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Vollautomatische 14-Stufen Kurzfilm-Regie (Konzept, Drehbuch, Szenen, Bilder, Voiceover, Untertitel) · Strikt max. 60 Sekunden
+          Erstellt Drehbuch und Szenenplan; Bilder und Voiceover sind optionale, separat ausgelöste Schritte. Der finale Videoschnitt erfolgt im Video Studio · max. 60 Sekunden
         </p>
       </div>
 
@@ -147,11 +145,27 @@ export function FilmDirectorView({
             <label className="text-xs text-slate-400 block mb-1.5">Filmidee / Prämisse</label>
             <textarea
               rows={3}
+              disabled={episodeOnePreset}
               value={idea}
               onChange={(e) => setIdea(e.target.value)}
-              className="w-full bg-[#090B10] border border-white/[0.1] rounded-xl p-3 text-sm text-white focus:outline-none focus:border-[#2563EB]"
+              className="w-full bg-[#090B10] border border-white/[0.1] rounded-xl p-3 text-sm text-white focus:outline-none focus:border-[#2563EB] disabled:cursor-not-allowed disabled:opacity-60"
             />
           </div>
+
+          <label className="flex items-center gap-2 text-xs text-slate-300 min-h-[40px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={episodeOnePreset}
+              onChange={(event) => setEpisodeOnePreset(event.target.checked)}
+              className="rounded bg-[#090B10] border-white/20"
+            />
+            Festes Drehbuch: PROJECT ZERO – DIE NACHRICHT (8 Einstellungen, exakt 60 Sekunden)
+          </label>
+          {episodeOnePreset && (
+            <p className="text-[11px] leading-relaxed text-slate-500">
+              Das feste Preset verwendet ausschließlich das freigegebene Drehbuch mit acht Einstellungen und exakt 60 Sekunden. Die folgenden Eingabefelder sind gesperrt, solange das Preset aktiv ist.
+            </p>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -160,7 +174,8 @@ export function FilmDirectorView({
                 type="text"
                 value={genre}
                 onChange={(e) => setGenre(e.target.value)}
-                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white"
+                disabled={episodeOnePreset}
+                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
 
@@ -172,11 +187,12 @@ export function FilmDirectorView({
                 type="number"
                 min={20}
                 max={60}
+                disabled={episodeOnePreset}
                 value={targetDurationSec}
                 onChange={(e) =>
                   setTargetDurationSec(Math.min(60, Math.max(20, Number(e.target.value))))
                 }
-                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-sm font-mono text-white"
+                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-sm font-mono text-white disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
           </div>
@@ -186,7 +202,8 @@ export function FilmDirectorView({
             <select
               value={characterId}
               onChange={(e) => setCharacterId(e.target.value)}
-              className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white"
+              disabled={episodeOnePreset}
+              className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="">Automatische Figur</option>
               {characters.map((c) => (
@@ -202,9 +219,12 @@ export function FilmDirectorView({
               type="checkbox"
               checked={generateImages}
               onChange={(event) => setGenerateImages(event.target.checked)}
-              className="rounded bg-[#090B10] border-white/20"
+              disabled={episodeOnePreset}
+              className="rounded bg-[#090B10] border-white/20 disabled:opacity-40"
             />
-            Szenenbilder optional mit FLUX.1 Schnell generieren (Cloudflare Free; benötigt aktiviertes FLUX-Modell)
+            {episodeOnePreset
+              ? 'FLUX-Bilder für diese Folge gesperrt, bis 0-€-Nutzung nachgewiesen ist'
+              : 'Szenenbilder mit FLUX.1 Schnell versuchen (nur bei nachgewiesenem 0-€-Kontingent)'}
           </label>
 
           {error && (
@@ -215,7 +235,7 @@ export function FilmDirectorView({
 
           <button
             type="submit"
-            disabled={directing || !idea.trim()}
+            disabled={directing || (!episodeOnePreset && !idea.trim())}
             className="w-full min-h-[46px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors"
           >
             {directing ? (
@@ -223,7 +243,11 @@ export function FilmDirectorView({
             ) : (
               <Clapperboard className="w-4 h-4" />
             )}
-            {directing ? 'Regie-Pipeline arbeitet...' : 'Kurzfilm automatisch produzieren (0 €)'}
+            {directing
+              ? 'Szenenplan wird erstellt...'
+              : episodeOnePreset
+                ? 'Episode 1 – Szenenplan anlegen (0 € Anbietergebühr)'
+                : 'Drehbuch & Szenenplan erstellen (Cloudflare-Free-Gate erforderlich)'}
           </button>
         </form>
 
@@ -302,7 +326,7 @@ export function FilmDirectorView({
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="text-xs text-slate-400">
-                              Szene {sc.index} · {sc.location} · {sc.cameraMovement}
+                              Szene {sc.index} · {sc.location} · {sc.timeOfDay} · {sc.cameraMovement}
                             </p>
                             <h3 className="text-sm font-semibold text-white">{sc.title}</h3>
                           </div>
@@ -347,7 +371,7 @@ export function FilmDirectorView({
                         ) : (
                           <Volume2 className="w-3.5 h-3.5" />
                         )}
-                        Voiceover erzeugen (0 €)
+                        Voiceover erzeugen (ohne externe TTS-Gebühr)
                       </button>
                     </div>
                   </div>

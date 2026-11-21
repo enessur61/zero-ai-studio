@@ -13,6 +13,7 @@ import {
   Mic,
   Music,
   Settings,
+  Volume2,
   Workflow,
   X,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ const ModelHubView = lazy(() => import('./components/ModelHubView.tsx').then((mo
 const ImageStudioView = lazy(() => import('./components/ImageStudioView.tsx').then((module) => ({ default: module.ImageStudioView })));
 const VideoStudioView = lazy(() => import('./components/VideoStudioView.tsx').then((module) => ({ default: module.VideoStudioView })));
 const AudioStudioView = lazy(() => import('./components/AudioStudioView.tsx').then((module) => ({ default: module.AudioStudioView })));
+const PiperVoiceStudioView = lazy(() => import('./components/PiperVoiceStudioView.tsx').then((module) => ({ default: module.PiperVoiceStudioView })));
 const MusicStudioView = lazy(() => import('./components/MusicStudioView.tsx').then((module) => ({ default: module.MusicStudioView })));
 const FilmDirectorView = lazy(() => import('./components/FilmDirectorView.tsx').then((module) => ({ default: module.FilmDirectorView })));
 const ProjectsCharactersView = lazy(() => import('./components/ProjectsCharactersView.tsx').then((module) => ({ default: module.ProjectsCharactersView })));
@@ -85,6 +87,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'image', label: 'IMAGE STUDIO', icon: ImageIcon },
   { id: 'video', label: 'VIDEO STUDIO', icon: Film },
   { id: 'audio', label: 'AUDIO STUDIO', icon: Mic },
+  { id: 'voice', label: 'VOICE STUDIO', icon: Volume2 },
   { id: 'music', label: 'MUSIC STUDIO', icon: Music },
   { id: 'director', label: 'FILM DIRECTOR', icon: Clapperboard },
   { id: 'projects', label: 'PROJECTS', icon: FolderKanban },
@@ -522,6 +525,8 @@ export default function App() {
             <AudioStudioView projects={projects} onProjectUpdated={handleProjectUpdated} />
           )}
 
+          {activeTab === 'voice' && <PiperVoiceStudioView />}
+
           {activeTab === 'music' && (
             <MusicStudioView
               projects={projects}
@@ -588,7 +593,7 @@ export default function App() {
       <nav aria-label="Hauptnavigation" className="lg:hidden fixed bottom-0 left-0 right-0 z-40 min-h-[72px] pb-safe bg-[#090B10]/96 backdrop-blur-xl border-t border-white/[0.10] grid grid-cols-6 items-center px-1">
         {([
           { id: 'home', label: 'Übersicht', icon: LayoutGrid, active: activeTab === 'home' },
-          { id: 'brain', label: 'Erstellen', icon: Brain, active: ['brain','automation','director','image','video','audio','music'].includes(activeTab) },
+          { id: 'brain', label: 'Erstellen', icon: Brain, active: ['brain','automation','director','image','video','audio','voice','music'].includes(activeTab) },
           { id: 'projects', label: 'Projekte', icon: Film, active: activeTab === 'projects' },
           { id: 'models', label: 'Modelle', icon: Cpu, active: activeTab === 'models' },
           { id: 'memory', label: 'Bibliothek', icon: FolderKanban, active: activeTab === 'memory' },

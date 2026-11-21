@@ -80,7 +80,35 @@ jobs:
         with:
           go-version: '1.24.2'
       - name: Scan repository content and git history for leaked secrets
-        run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
+        shell: bash
+        run: |
+          set +e
+          go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner --report-format json --report-path /tmp/gitleaks-report.json .
+          scan_status=$?
+          set -e
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          let findings = [];
+          try {
+            findings = JSON.parse(await readFile('/tmp/gitleaks-report.json', 'utf8'));
+          } catch {
+            console.log('Gitleaks produced no structured report.');
+          }
+          for (const finding of findings) {
+            // Deliberately print metadata only. Never print Secret, Match, or raw finding objects.
+            console.log(JSON.stringify({
+              ruleId: finding.RuleID,
+              file: finding.File,
+              startLine: finding.StartLine,
+              commit: finding.Commit,
+              fingerprint: finding.Fingerprint
+            }));
+          }
+          NODE
+          echo "GITLEAKS_STATUS=$scan_status" >> "$GITHUB_ENV"
+          # Continue with isolated tests even when the historical secret scan fails.
+          # The final gate below still keeps the overall CI result red.
+          exit 0
       - run: npm ci --no-audit --no-fund
       - name: Verify Gemini calls are blocked unless free-only billing is confirmed
         shell: bash
@@ -112,7 +140,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          COMMON_ENV=(NODE_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
+          COMMON_ENV=(NODE_ENV=production ZERO_DEPLOYMENT_ENV=production DATABASE_URL=postgres://zero:zero-test-password@localhost:5432/zero_test GEMINI_API_KEY=ci-dummy-key ZERO_GEMINI_FREE_TIER_ONLY=false ZERO_ADMIN_PASSWORD=zero-ci-password-123 ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789)
           env "${COMMON_ENV[@]}" PORT=4179 npm start > /tmp/zero-server-a.log 2>&1 &
           SERVER_PID_A=$!
           trap 'status=$?; if [ "$status" -ne 0 ]; then echo "--- ZERO SERVER A LOG ---"; cat /tmp/zero-server-a.log; echo "--- ZERO SERVER B LOG ---"; cat /tmp/zero-server-b.log; fi; kill "${SERVER_PID_A:-}" "${SERVER_PID_B:-}" 2>/dev/null || true; exit "$status"' EXIT
@@ -527,3 +555,13 @@ jobs:
           if (afterLogout.status !== 401) throw new Error('Revoked session cookie remained valid after logout');
           console.log('Verified unavailable providers stay disabled; no paid fallback.');
           NODE
+      - name: Enforce Gitleaks result after completing validation
+        if: always()
+        shell: bash
+        run: |
+          if [ "${GITLEAKS_STATUS:-1}" != "0" ]; then
+            echo "Gitleaks detected a finding. Review the redacted metadata above; CI remains blocked."
+            exit 1
+          fi
+          echo "Gitleaks passed."
+

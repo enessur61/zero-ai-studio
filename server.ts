@@ -6,6 +6,8 @@ import { createConcurrencyGate, createPostgresConcurrencyGate } from './server/c
 import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
+import { EPISODE_ONE } from './server/episodeOne.ts';
+import { assertRuntimePreviewIsolation } from './server/security/previewIsolationRuntime.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -21,7 +23,7 @@ import {
   ThinkingLevel,
   Type,
   ZeroQuotaExhaustedError,
-  withTransientRetry,
+  withSingleProviderAttempt,
 } from './server/geminiClient.ts';
 import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
 import {
@@ -29,6 +31,7 @@ import {
   runAllModelTests,
   runLiveModelTest,
 } from './server/adapters.ts';
+import { isCloudflareWorkersAiAllowed } from './server/cloudflareBudgetGate.ts';
 import { analyzeCloudflareImage, generateCloudflareText, isCloudflareWorkersAiConfigured, transcribeCloudflareAudio } from './server/cloudflareWorkersAi.ts';
 import {
   verifyCoreMLAdapterPackage,
@@ -347,7 +350,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: 'Antworte ausschließlich mit: ZERO_CONNECTION_OK',
@@ -404,17 +407,23 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
 app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const configured = isCloudflareWorkersAiConfigured();
+  const freePlanGateOpen = isCloudflareWorkersAiAllowed();
+  const accountIdConfigured = Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim());
+  const apiTokenConfigured = Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim());
   const modelId = '@cf/zai-org/glm-4.7-flash';
   if (!configured) {
     return res.json({
       ok: false,
-      accountIdConfigured: Boolean(process.env.CLOUDFLARE_ACCOUNT_ID?.trim()),
-      apiTokenConfigured: Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim()),
+      accountIdConfigured,
+      apiTokenConfigured,
+      freePlanGateOpen,
       cloudflareConnection: 'NOT_TESTED',
       modelResponse: 'NOT_TESTED',
       modelId,
       paidFallback: false,
-      message: 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
+      message: !freePlanGateOpen
+        ? 'Cloudflare Workers AI ist standardmäßig gesperrt. Vor der Freigabe müssen Workers-Free-Tarif und Ausschluss kostenpflichtiger Nutzung manuell geprüft und beide ZERO-Freigaben gesetzt werden.'
+        : 'CLOUDFLARE_ACCOUNT_ID oder CLOUDFLARE_API_TOKEN fehlt in der Serverumgebung.',
     });
   }
   try {
@@ -427,6 +436,7 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
       ok: true,
       accountIdConfigured: true,
       apiTokenConfigured: true,
+      freePlanGateOpen: true,
       cloudflareConnection: 'CONNECTED',
       modelResponse: 'RECEIVED',
       modelId: result.modelId,
@@ -439,6 +449,7 @@ app.post('/api/system/cloudflare-connection-test', asyncRoute(async (_req, res) 
       ok: false,
       accountIdConfigured: true,
       apiTokenConfigured: true,
+      freePlanGateOpen: true,
       cloudflareConnection: 'FAILED',
       modelResponse: 'NOT_RECEIVED',
       modelId,
@@ -1014,7 +1025,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // then pass the retrieved context to the user's selected reasoning model.
         await reserveZeroBudgetModelAllowed('gemini-web-grounding', 'BRAIN_WEB_SEARCH', database);
         await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
-        const searchResponse = await withTransientRetry(() =>
+        const searchResponse = await withSingleProviderAttempt(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
             contents: `Recherchiere aktuelle Fakten und liefere eine knappe, belegorientierte Zusammenfassung zu dieser Anfrage:\n\n${fullPrompt}`,
@@ -1304,7 +1315,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-2.5-flash-lite',
         contents: `Recherchiere sachlich, strukturiert und auf Deutsch zu folgender Anfrage. Nenne nur belegbare Fakten aus den Suchergebnissen:\n\n${query}`,
@@ -1418,7 +1429,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: {
@@ -1557,7 +1568,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: [
@@ -1686,7 +1697,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: selectedTranscriptionModel,
         contents: [
@@ -2036,23 +2047,49 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
   try {
     const idea = String(req.body?.idea ?? '').trim();
     const genre = String(req.body?.genre ?? 'Thriller / Neo-Noir').trim();
+    const episodeOne = req.body?.episodePreset === 'die-nachricht';
     const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
-    const targetDurationSec = Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
+    const targetDurationSec = episodeOne ? 60 : Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
-    const generateImages = Boolean(req.body?.generateImages);
+    const generateImages = episodeOne ? false : Boolean(req.body?.generateImages);
 
-    if (!idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
+    if (!episodeOne && !idea) return res.status(400).json({ error: 'Filmidee fehlt.' });
 
-    const char = characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0];
+    // Episode 1 has its own established protagonist (Elias); never inherit the unrelated seeded Elena profile.
+    const char = episodeOne ? undefined : (characterId ? db.characters.find((item) => item.id === characterId) : db.characters[0]);
     const charContext = char
       ? `Hauptfigur: ${char.name} (${char.role}). Aussehen für Bildkonsistenz: ${char.consistencyPrompt}.`
       : 'Entwickle eine konsistente Hauptfigur.';
 
-    requireActiveCloudflareTextModel(db);
+    type FilmDirectorDraft = {
+      title: string;
+      logline: string;
+      concept: string;
+      story: string;
+      screenplay: string;
+      scenes: Array<{
+        title: string;
+        location: string;
+        timeOfDay: string;
+        durationSec: number;
+        cameraMovement: string;
+        narrationText: string;
+        subtitleText: string;
+        soundCue: string;
+        imagePrompt: string;
+        videoPrompt: string;
+      }>;
+    };
 
-    const modelResponse = await generateCloudflareText({
-      systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
-      prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
+    let parsed: FilmDirectorDraft;
+    if (episodeOne) {
+      // This is a locked, previously planned episode. Do not ask a text model to invent or alter its plot.
+      parsed = JSON.parse(JSON.stringify(EPISODE_ONE)) as FilmDirectorDraft;
+    } else {
+      requireActiveCloudflareTextModel(db);
+      const modelResponse = await generateCloudflareText({
+        systemPrompt: 'Du bist ZERO FILM DIRECTOR, ein professioneller deutscher Kurzfilm-Regisseur. Antworte ausschließlich mit einem gültigen JSON-Objekt ohne Markdown, Vorrede oder Codeblock. Erfinde keine zusätzlichen Felder. Halte jede Szene filmisch präzise und produktionstauglich.',
+        prompt: `Erstelle eine vollständige Kurzfilm-Produktion auf Deutsch.
 Idee: ${idea}
 Genre: ${genre}
 Ziel-Gesamtdauer: exakt ${targetDurationSec} Sekunden; niemals über 60 Sekunden.
@@ -2083,29 +2120,18 @@ Gib ausschließlich dieses JSON-Schema zurück:
 }
 cameraMovement muss einer dieser Werte sein: Statisch, Langsamer Zoom-In, Sanfter Zoom-Out, Schwenk Links, Schwenk Rechts, Vertikaler Tilt.
 Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
-      maxTokens: 1800,
-    });
-    const parsed = parseCloudflareJsonObject(modelResponse.text) as {
-      title: string;
-      logline: string;
-      concept: string;
-      story: string;
-      screenplay: string;
-      scenes: Array<{
-        title: string;
-        location: string;
-        timeOfDay: string;
-        durationSec: number;
-        cameraMovement: string;
-        narrationText: string;
-        subtitleText: string;
-        soundCue: string;
-        imagePrompt: string;
-        videoPrompt: string;
-      }>;
-    };
-    if (!Array.isArray(parsed.scenes) || parsed.scenes.length < 4) {
-      throw new Error('ZERO FILM DIRECTOR erhielt weniger als vier Szenen. Bitte den Entwurf erneut erstellen.');
+        maxTokens: 1800,
+      });
+      parsed = parseCloudflareJsonObject(modelResponse.text) as FilmDirectorDraft;
+    }
+
+    if (!Array.isArray(parsed.scenes) || parsed.scenes.length !== (episodeOne ? 8 : 4)) {
+      throw new Error(episodeOne
+        ? 'Die gesperrte Pilotfolge muss exakt acht Einstellungen enthalten.'
+        : 'ZERO FILM DIRECTOR muss exakt vier Szenen liefern. Bitte den Entwurf erneut erstellen.');
+    }
+    if (episodeOne && parsed.scenes.reduce((sum, scene) => sum + Number(scene.durationSec), 0) !== 60) {
+      throw new Error('Die acht Einstellungen der Pilotfolge müssen zusammen exakt 60 Sekunden ergeben.');
     }
 
     const validMoves: FilmScene['cameraMovement'][] = [
@@ -2117,13 +2143,15 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       'Vertikaler Tilt',
     ];
 
-    let mappedScenes: FilmScene[] = parsed.scenes.slice(0, 4).map((s, idx) => ({
+    let mappedScenes: FilmScene[] = parsed.scenes.map((s, idx) => ({
       id: `scene-${Date.now()}-${idx + 1}`,
       index: idx + 1,
       title: s.title,
       location: s.location,
       timeOfDay: s.timeOfDay,
-      durationSec: Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
+      durationSec: episodeOne
+        ? Number(s.durationSec)
+        : Math.max(5, Math.min(20, Number(s.durationSec) || 14)),
       cameraMovement: validMoves[idx % validMoves.length],
       characterIds: char ? [char.id] : [],
       narrationText: s.narrationText,
@@ -2135,13 +2163,18 @@ Die vier durationSec-Werte müssen exakt ${targetDurationSec} ergeben.`,
       status: 'Entwurf',
     }));
 
-    // Keep the requested total duration exact and guarantee four valid 5–15-second scenes.
-    const baseSceneDuration = Math.floor(targetDurationSec / 4);
-    const extraSceneSeconds = targetDurationSec % 4;
-    mappedScenes.forEach((scene, idx) => {
-      scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
-    });
+    // Preserve the pilot's authored eight-shot timings; other projects retain the existing four-scene timing normalization.
+    if (!episodeOne) {
+      const baseSceneDuration = Math.floor(targetDurationSec / 4);
+      const extraSceneSeconds = targetDurationSec % 4;
+      mappedScenes.forEach((scene, idx) => {
+        scene.durationSec = baseSceneDuration + (idx < extraSceneSeconds ? 1 : 0);
+      });
+    }
     mappedScenes = clampScenesToMax60Seconds(mappedScenes);
+    if (episodeOne && mappedScenes.reduce((sum, scene) => sum + scene.durationSec, 0) !== 60) {
+      throw new Error('Die Pilotfolge überschreitet nach der Sicherheitsnormalisierung nicht exakt 60 Sekunden.');
+    }
 
     const imageGenerationWarnings: string[] = [];
     if (generateImages) {
@@ -2789,7 +2822,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
-    const planRes = await withTransientRetry(() =>
+    const planRes = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: `Zerlege dieses Produktionsziel in 3 konkrete, ausführbare ZERO AI STUDIO Arbeitsschritte (nur 0 € Module): "${goal}".`,
@@ -2906,6 +2939,8 @@ app.use('/api', (_req, res) => {
 });
 
 async function startServer() {
+  assertRuntimePreviewIsolation(process.env, process.env.NODE_ENV);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await import('vite');
     const viteServer = await vite.createServer({
