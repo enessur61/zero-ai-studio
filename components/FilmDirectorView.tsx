@@ -46,7 +46,7 @@ export function FilmDirectorView({
 
   async function handleCreateFilm(e: React.FormEvent) {
     e.preventDefault();
-    if (!idea.trim() || directing) return;
+    if ((!episodeOnePreset && !idea.trim()) || directing) return;
     setDirecting(true);
     setError(null);
     try {
@@ -145,9 +145,10 @@ export function FilmDirectorView({
             <label className="text-xs text-slate-400 block mb-1.5">Filmidee / Prämisse</label>
             <textarea
               rows={3}
+              disabled={episodeOnePreset}
               value={idea}
               onChange={(e) => setIdea(e.target.value)}
-              className="w-full bg-[#090B10] border border-white/[0.1] rounded-xl p-3 text-sm text-white focus:outline-none focus:border-[#2563EB]"
+              className="w-full bg-[#090B10] border border-white/[0.1] rounded-xl p-3 text-sm text-white focus:outline-none focus:border-[#2563EB] disabled:cursor-not-allowed disabled:opacity-60"
             />
           </div>
 
@@ -160,6 +161,11 @@ export function FilmDirectorView({
             />
             Festes Drehbuch: PROJECT ZERO – DIE NACHRICHT (8 Einstellungen, exakt 60 Sekunden)
           </label>
+          {episodeOnePreset && (
+            <p className="text-[11px] leading-relaxed text-slate-500">
+              Das feste Preset verwendet ausschließlich das freigegebene Drehbuch mit acht Einstellungen und exakt 60 Sekunden. Die folgenden Eingabefelder sind gesperrt, solange das Preset aktiv ist.
+            </p>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -168,7 +174,8 @@ export function FilmDirectorView({
                 type="text"
                 value={genre}
                 onChange={(e) => setGenre(e.target.value)}
-                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white"
+                disabled={episodeOnePreset}
+                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
 
@@ -180,11 +187,12 @@ export function FilmDirectorView({
                 type="number"
                 min={20}
                 max={60}
+                disabled={episodeOnePreset}
                 value={targetDurationSec}
                 onChange={(e) =>
                   setTargetDurationSec(Math.min(60, Math.max(20, Number(e.target.value))))
                 }
-                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-sm font-mono text-white"
+                className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-sm font-mono text-white disabled:cursor-not-allowed disabled:opacity-60"
               />
             </div>
           </div>
@@ -194,7 +202,8 @@ export function FilmDirectorView({
             <select
               value={characterId}
               onChange={(e) => setCharacterId(e.target.value)}
-              className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white"
+              disabled={episodeOnePreset}
+              className="w-full min-h-[42px] bg-[#090B10] border border-white/[0.1] rounded-xl px-3 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="">Automatische Figur</option>
               {characters.map((c) => (
@@ -226,7 +235,7 @@ export function FilmDirectorView({
 
           <button
             type="submit"
-            disabled={directing || !idea.trim()}
+            disabled={directing || (!episodeOnePreset && !idea.trim())}
             className="w-full min-h-[46px] px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50 text-white text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors"
           >
             {directing ? (
