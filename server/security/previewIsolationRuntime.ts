@@ -5,7 +5,12 @@ export type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 
 function requiredEnv(env: RuntimeEnvironment, key: string): string {
   const value = env[key];
-  if (!value || value.trim() !== value) throw new PreviewIsolationError([`PREVIEW_ATTESTATION_INPUT_MISSING:${key}`]);
+  // PEM encodings conventionally end with a newline; preserve that valid
+  // formatting while keeping scalar deployment coordinates whitespace-strict.
+  if (!value || (key !== 'ZERO_PREVIEW_ATTESTATION_PUBLIC_KEY' && value.trim() !== value) ||
+      (key === 'ZERO_PREVIEW_ATTESTATION_PUBLIC_KEY' && !value.trim())) {
+    throw new PreviewIsolationError([`PREVIEW_ATTESTATION_INPUT_MISSING:${key}`]);
+  }
   return value;
 }
 
