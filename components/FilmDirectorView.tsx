@@ -110,13 +110,13 @@ export function FilmDirectorView({
           method: 'PUT',
           body: JSON.stringify({
             scenes: updatedScenes,
-            snapshotNote: 'Kostenlose deutsche Piper-Sprachaufnahme für Szene generiert',
+            snapshotNote: 'Deutsche Piper-Sprachaufnahme für Szene generiert (ohne externe TTS-Anbietergebühr; Hostingkosten nicht enthalten)',
           }),
         }
       );
       onProjectUpdated(saved.project);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Kostenlose Piper-Sprachgenerierung fehlgeschlagen');
+      setError(err instanceof Error ? err.message : 'Piper-Sprachgenerierung fehlgeschlagen');
     } finally {
       setTtsSceneId(null);
     }
@@ -129,7 +129,7 @@ export function FilmDirectorView({
       <div>
         <h1 className="text-2xl font-semibold text-white">ZERO FILM DIRECTOR</h1>
         <p className="text-xs text-slate-400 mt-1">
-          Vollautomatische 14-Stufen Kurzfilm-Regie (Konzept, Drehbuch, Szenen, Bilder, Voiceover, Untertitel) · Strikt max. 60 Sekunden
+          Erstellt Drehbuch und Szenenplan; Bilder und Voiceover sind optionale, separat ausgelöste Schritte. Der finale Videoschnitt erfolgt im Video Studio · max. 60 Sekunden
         </p>
       </div>
 
@@ -243,7 +243,11 @@ export function FilmDirectorView({
             ) : (
               <Clapperboard className="w-4 h-4" />
             )}
-            {directing ? 'Regie-Pipeline arbeitet...' : 'Kurzfilm automatisch produzieren (0 €)'}
+            {directing
+              ? 'Szenenplan wird erstellt...'
+              : episodeOnePreset
+                ? 'Episode 1 – Szenenplan anlegen (0 € Anbietergebühr)'
+                : 'Drehbuch & Szenenplan erstellen (Cloudflare-Free-Gate erforderlich)'}
           </button>
         </form>
 
@@ -367,7 +371,7 @@ export function FilmDirectorView({
                         ) : (
                           <Volume2 className="w-3.5 h-3.5" />
                         )}
-                        Voiceover erzeugen (0 €)
+                        Voiceover erzeugen (ohne externe TTS-Gebühr)
                       </button>
                     </div>
                   </div>

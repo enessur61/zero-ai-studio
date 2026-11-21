@@ -49,7 +49,7 @@ CLOUDFLARE_ACCOUNT_ID="DEINE_ACCOUNT_ID"
 CLOUDFLARE_API_TOKEN="DEIN_WORKERS_AI_API_TOKEN"
 ```
 
-Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pro Tag für Workers AI bereit. Das Kontingent wird von allen verwendeten Workers-AI-Modellen gemeinsam genutzt und providerseitig begrenzt. Bei 429/ausgeschöpftem Kontingent stoppt ZERO; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX und Whisper müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
+Workers AI ist sowohl in Workers Free als auch in Workers Paid verfügbar, aber nicht in jedem Tarif dauerhaft kostenlos: Workers Free umfasst 10.000 Neurons pro Tag für alle Workers-AI-Modelle gemeinsam; Workers Paid startet bei 5 USD pro Monat; zusätzlich wird Nutzung oberhalb dieser Freizuteilung mit 0,011 USD je 1.000 Neurons berechnet. Auf Workers Free schlagen weitere Aufrufe nach Erreichen des Tageslimits fehl. ZERO blockiert Cloudflare standardmäßig, auch wenn Zugangsdaten vorhanden sind. Erst nach manueller Prüfung, dass das Konto tatsächlich Workers Free nutzt und keine kostenpflichtige AI-Nutzung auslösen kann, dürfen beide Flags `ZERO_CLOUDFLARE_AI_ENABLED=true` und `ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED=true` gesetzt werden. Diese Flags sind Betreiberbestätigungen und keine automatische Abrechnungsprüfung. Bei gesperrtem Gate oder ausgeschöpftem Free-Kontingent stoppt ZERO; es gibt keinen kostenpflichtigen Fallback. GLM, FLUX, Whisper und Moondream müssen im Model Hub separat erfolgreich live getestet und aktiviert sein. FLUX.1 Schnell erzeugt zunächst ein quadratisches Bild; ZERO schneidet dieses bei Bedarf lokal auf das gewünschte 16:9-, 9:16- oder 4:3-Format zu.
 
 ### Voraussetzungen
 - **Node.js 22 LTS** (der Server wird mit `tsx` gestartet)
@@ -74,6 +74,8 @@ Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pr
    APP_URL="http://localhost:3000"
    ```
    > **Wichtig für 0 €:** Die kostenlose Gemini-Stufe hat providerseitige Tageslimits. Wenn für das Google-Cloud-Projekt Abrechnung aktiviert ist, können Anfragen nach Erreichen von Freikontingenten kostenpflichtig werden. ZERO kann den Google-Abrechnungsstatus nicht auslesen. Deshalb bleiben alle Gemini-Aufrufe standardmäßig gesperrt, bis du die Abrechnung im Google-Cloud-Projekt deaktiviert und die Einstellung `ZERO_GEMINI_FREE_TIER_ONLY=true` bewusst gesetzt hast. ZERO verwendet keinen kostenpflichtigen Fallback.
+
+> **Datenschutz im Google Free Tier:** Google weist darauf hin, dass Inhalte aus dem kostenlosen Gemini-API-Tarif zur Verbesserung seiner Produkte verwendet werden können. Sende deshalb keine sensiblen personenbezogenen oder vertraulichen Inhalte an diese Modelle. Die ZERO-Oberfläche weist im Model Hub auf diese Einschränkung hin. Ein kostenloser Tarif bedeutet nicht automatisch vertrauliche Verarbeitung.
 
 3. Entwicklungsserver starten (Port 3000):
    ```bash
@@ -154,7 +156,7 @@ Die PWA muss unter HTTPS ausgeliefert werden. Der Hoster muss den Build-Ordner d
 | `POST` | `/api/models/:id/test` | Führt einen echten Live-Funktionstest für das jeweilige Modell aus |
 | `POST` | `/api/models/:id/toggle` | Aktiviert/Deaktiviert freie Adapter (blockiert Paid-Modelle) |
 | `POST` | `/api/brain/chat` | ZERO BRAIN Assistent (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`; Websuche separat über `gemini-2.5-flash-lite`) |
-| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE über Gemini 2.5 Flash-Lite Free Tier + Google Search Grounding |
+| `POST` | `/api/web/research` | ZERO WEB INTELLIGENCE bevorzugt über private SearXNG-Instanz + optionales Cloudflare GLM; Gemini 2.5 Flash-Lite nur für bestehende Projekte mit bestätigtem API-Zugriff, kein kostenpflichtiger Fallback |
 | `POST` | `/api/image/generate` | Text-to-Image über FLUX.1 Schnell auf Cloudflare Workers AI Free; iPhone-Zielformate werden nach lokaler Bildgenerierung zugeschnitten |
 | `POST` | `/api/image/analyze` | Bildanalyse über live-getestetes Cloudflare Moondream 3.1; Gemini Free-Tier bleibt optionaler Weg, wenn Moondream nicht aktiviert ist |
 | `POST` | `/api/audio/tts` | Sprachsynthese (`gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts`, WAV) |
