@@ -1,32 +1,24 @@
-import {
-  assertPreviewIsolation,
-  PreviewIsolationError,
-  type PreviewIsolationInput,
-  type PreviewResourceName,
-} from './previewIsolation.ts';
+import { PreviewIsolationError } from './previewIsolation.ts';
+import { verifyPreviewAttestation, type PreviewAttestationExpectations } from './previewIsolationAttestation.ts';
 
 export type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 
-function parseManifestObject(raw: string | undefined, reason: string): Record<string, unknown> {
-  if (!raw) throw new PreviewIsolationError([reason]);
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid object');
-    return value as Record<string, unknown>;
-  } catch {
-    throw new PreviewIsolationError([reason]);
-  }
+function requiredEnv(env: RuntimeEnvironment, key: string): string {
+  const value = env[key];
+  if (!value || value.trim() !== value) throw new PreviewIsolationError([`PREVIEW_ATTESTATION_INPUT_MISSING:${key}`]);
+  return value;
 }
 
 /**
- * Enforce deployment classification and preview isolation before the HTTP
- * listener starts. Production and preview labels must be injected by the
- * deployment control plane. Preview manifests contain opaque resource
- * identities/fingerprints only, never URLs, connection strings, or credentials.
+ * Verify the signed deployment-control-plane attestation before opening the
+ * HTTP listener. The public key and expected deployment coordinates must be
+ * provisioned by the trusted control plane; a boolean flag is never accepted.
  *
- * The attestation flag is the deployment control plane's assertion that the
- * manifest was assembled from actual bound resources. This process validates
- * that manifest but cannot independently inspect provider dashboards.
+ * This verifier proves that the trusted issuer signed the stated evidence.
+ * The issuer remains responsible for obtaining evidence from provider control
+ * planes. Stateless runtime verification cannot provide global one-time nonce
+ * or replay prevention; deployments must issue a unique deploymentId and short
+ * lived attestation for each preview deployment.
  */
 export function assertRuntimePreviewIsolation(
   env: RuntimeEnvironment,
@@ -40,28 +32,20 @@ export function assertRuntimePreviewIsolation(
   }
   if (deploymentEnvironment === 'production') return;
 
-  if (env.ZERO_PREVIEW_ISOLATION_ATTESTED !== 'true') {
-    throw new PreviewIsolationError(['PREVIEW_ISOLATION_NOT_ATTESTED']);
+  const expected: PreviewAttestationExpectations = {
+    deploymentId: requiredEnv(env, 'ZERO_PREVIEW_DEPLOYMENT_ID'),
+    previewId: requiredEnv(env, 'ZERO_PREVIEW_ID'),
+    pullRequestNumber: Number(requiredEnv(env, 'ZERO_PREVIEW_PULL_REQUEST_NUMBER')),
+    headSha: requiredEnv(env, 'ZERO_PREVIEW_HEAD_SHA'),
+    issuer: requiredEnv(env, 'ZERO_PREVIEW_ATTESTATION_ISSUER'),
+    publicKeyPem: requiredEnv(env, 'ZERO_PREVIEW_ATTESTATION_PUBLIC_KEY'),
+  };
+  if (!Number.isSafeInteger(expected.pullRequestNumber) || expected.pullRequestNumber < 1) {
+    throw new PreviewIsolationError(['PREVIEW_ATTESTATION_PR_NUMBER_INVALID']);
+  }
+  if (expected.pullRequestNumber !== 118) {
+    throw new PreviewIsolationError(['PREVIEW_ATTESTATION_PR_NOT_AUTHORIZED']);
   }
 
-  const resources = parseManifestObject(
-    env.ZERO_PREVIEW_RESOURCES_JSON,
-    'PREVIEW_RESOURCE_MANIFEST_MISSING_OR_INVALID',
-  );
-  const productionResourceIds = parseManifestObject(
-    env.ZERO_PRODUCTION_RESOURCE_IDS_JSON,
-    'PRODUCTION_RESOURCE_FINGERPRINTS_MISSING_OR_INVALID',
-  );
-
-  const input: PreviewIsolationInput = {
-    deployment: {
-      environment: deploymentEnvironment,
-      previewId: env.ZERO_PREVIEW_ID ?? '',
-      expectedPreviewId: env.ZERO_PREVIEW_EXPECTED_ID ?? '',
-    },
-    resources: resources as PreviewIsolationInput['resources'],
-    productionResourceIds: productionResourceIds as Partial<Record<PreviewResourceName, string>>,
-  };
-
-  assertPreviewIsolation(input);
+  verifyPreviewAttestation(env.ZERO_PREVIEW_ATTESTATION_JSON, expected);
 }
