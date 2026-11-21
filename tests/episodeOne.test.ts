@@ -52,6 +52,11 @@ assert.match(server, /if \(episodeOne && mappedScenes\.reduce/);
 const director = await readFile('components/FilmDirectorView.tsx', 'utf8');
 assert.match(director, /episodePreset: 'die-nachricht'/);
 assert.match(director, /DIE NACHRICHT/);
+assert.match(server, /if \(!episodeOne && !idea\)/);
+assert.match(director, /if \(\(!episodeOnePreset && !idea\.trim\(\)\) \|\| directing\) return;/);
+assert.match(director, /disabled=\{directing \|\| \(!episodeOnePreset && !idea\.trim\(\)\)\}/);
+assert.equal((director.match(/disabled=\{episodeOnePreset\}/g) ?? []).length, 5);
+assert.match(director, /Das feste Preset verwendet ausschließlich das freigegebene Drehbuch/);
 assert.match(director, /sc\.timeOfDay/);
 
 console.log('Episode 1 tests passed: original DIE NACHRICHT beats, 02:13/02:14 overlays, Elias black hoodie, eight shots and hard 60-second cap.');
