@@ -1,7 +1,5 @@
 export const EPISODE_ONE_ID = 'die-nachricht';
 
-const ELIAS_LOOK = 'Elias, 23, short dark-brown hair, light beard, black hoodie, consistent face and wardrobe';
-
 export const EPISODE_ONE = {
   title: 'DIE NACHRICHT',
   logline: 'Um 02:13 Uhr erhält Elias eine Nachricht von seiner eigenen Telefonnummer: „Du hast mich gestern getötet.“',
