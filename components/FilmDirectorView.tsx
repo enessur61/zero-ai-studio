@@ -25,7 +25,7 @@ export function FilmDirectorView({
   onOpenVideoStudio,
 }: FilmDirectorViewProps) {
   const [idea, setIdea] = useState(
-    'PROJECT ZERO Staffel 1, Folge 1: DER FEHLENDE TAG. Elias wacht nachts auf und erhält von seiner eigenen Telefonnummer die Nachricht: Du hast mich gestern getötet. Sein eigenes Handy ruft ihn an. Eine Videobotschaft sagt: Du hast es wieder vergessen. Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Ende: Dreh dich nicht um. Acht festgelegte Einstellungen, keine neuen Handlungselemente.'
+    'PROJECT ZERO – Folge 1: DIE NACHRICHT. Elias erhält um 02:13 Uhr von seiner eigenen Telefonnummer die Nachricht „Du hast mich gestern getötet.“ Sein eigenes Handy ruft ihn an. Um 02:14 Uhr folgt „Dreh dich nicht um.“ Im Spiegel bewegt sich eine Silhouette unabhängig von Elias. Acht festgelegte Einstellungen, maximal 60 Sekunden.'
   );
   const [genre, setGenre] = useState('Psychologischer Mystery-Thriller / Neo-Noir');
   const [episodeOnePreset, setEpisodeOnePreset] = useState(true);
@@ -58,7 +58,7 @@ export function FilmDirectorView({
           targetDurationSec: Math.min(60, Math.max(20, targetDurationSec)),
           characterId,
           generateImages,
-          ...(episodeOnePreset ? { episodePreset: 'der-fehlende-tag' } : {}),
+          ...(episodeOnePreset ? { episodePreset: 'die-nachricht' } : {}),
         }),
       });
       onProjectCreated(data.project);
@@ -158,7 +158,7 @@ export function FilmDirectorView({
               onChange={(event) => setEpisodeOnePreset(event.target.checked)}
               className="rounded bg-[#090B10] border-white/20"
             />
-            Festes Drehbuch: PROJECT ZERO – DER FEHLENDE TAG (8 Einstellungen, exakt 60 Sekunden)
+            Festes Drehbuch: PROJECT ZERO – DIE NACHRICHT (8 Einstellungen, exakt 60 Sekunden)
           </label>
 
           <div className="grid grid-cols-2 gap-3">
@@ -313,7 +313,7 @@ export function FilmDirectorView({
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="text-xs text-slate-400">
-                              Szene {sc.index} · {sc.location} · {sc.cameraMovement}
+                              Szene {sc.index} · {sc.location} · {sc.timeOfDay} · {sc.cameraMovement}
                             </p>
                             <h3 className="text-sm font-semibold text-white">{sc.title}</h3>
                           </div>
