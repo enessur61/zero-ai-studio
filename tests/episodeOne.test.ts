@@ -28,7 +28,7 @@ assert.deepEqual(
   ]
 );
 assert.equal(EPISODE_ONE.scenes[1].timeOfDay, '02:13 Uhr');
-assert.equal(EPISODE_ONE.scenes[1].subtitleText, '02:13 · Du hast mich gestern getötet.');
+assert.equal(EPISODE_ONE.scenes[1].subtitleText, '02:13 · EIGENE NUMMER · Du hast mich gestern getötet.');
 assert.equal(EPISODE_ONE.scenes[3].soundCue.includes('eigene Nummer'), true);
 assert.equal(EPISODE_ONE.scenes[4].subtitleText, 'Ich weiß, dass du mich hören kannst.');
 assert.equal(EPISODE_ONE.scenes[5].timeOfDay, '02:14 Uhr');
