@@ -7,6 +7,7 @@ import { BackupCleanupError } from './server/versionedZipBackup.ts';
 import { isSafeProjectAssetUrl, sanitizeProjectAssets, sanitizeProjectScenes, sanitizeProjectSnapshots } from './server/safeProjectAssetUrl.ts';
 import { clampScenesToMax60Seconds } from './server/filmLimits.ts';
 import { EPISODE_ONE } from './server/episodeOne.ts';
+import { assertRuntimePreviewIsolation } from './server/security/previewIsolationRuntime.ts';
 import { pcmBase64ToWavDataUrl } from './server/audioUtils.ts';
 import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -2037,7 +2038,7 @@ app.post('/api/film/direct', asyncRoute(async (req, res) => {
   try {
     const idea = String(req.body?.idea ?? '').trim();
     const genre = String(req.body?.genre ?? 'Thriller / Neo-Noir').trim();
-    const episodeOne = req.body?.episodePreset === 'der-fehlende-tag';
+    const episodeOne = req.body?.episodePreset === 'die-nachricht';
     const rawTargetDurationSec = Number(req.body?.targetDurationSec ?? 58);
     const targetDurationSec = episodeOne ? 60 : Math.min(60, Math.max(20, Number.isFinite(rawTargetDurationSec) ? Math.round(rawTargetDurationSec) : 58));
     const characterId = req.body?.characterId ? String(req.body.characterId) : '';
@@ -2929,6 +2930,8 @@ app.use('/api', (_req, res) => {
 });
 
 async function startServer() {
+  assertRuntimePreviewIsolation(process.env, process.env.NODE_ENV);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await import('vite');
     const viteServer = await vite.createServer({
