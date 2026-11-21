@@ -5,7 +5,7 @@ import {
   getGeminiClient,
   isExhaustedWithinCurrentDay,
   ThinkingLevel,
-  withTransientRetry,
+  withSingleProviderAttempt,
 } from './geminiClient.ts';
 import {
   IOS_SWIFT_ADAPTER_IDS,
@@ -274,7 +274,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: model.id,
@@ -286,8 +286,7 @@ export async function runLiveModelTest(
                   ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
                   : {}),
             },
-          }),
-        1
+          })
       );
       const text = (res.text ?? '').trim();
       model.testPassed = text.length > 0;
@@ -302,7 +301,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: model.id,
@@ -313,8 +312,7 @@ export async function runLiveModelTest(
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
               },
             },
-          }),
-        1
+          })
       );
       const audioPart = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
       const audioB64 = audioPart?.inlineData?.data;
@@ -331,7 +329,7 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       const wavB64 = createSilentWavBase64(0.5, 16000);
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: 'gemini-3.5-transcribe',
@@ -341,8 +339,7 @@ export async function runLiveModelTest(
                 { text: 'Transcribe this audio.' },
               ],
             },
-          }),
-        1
+          })
       );
       const hasCandidate = Boolean(res.candidates?.[0]?.finishReason);
       model.testPassed = hasCandidate;
@@ -357,13 +354,12 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.embedContent({
             model: 'gemini-embedding-2',
             contents: ['ZERO AI STUDIO Test Embedding'],
-          }),
-        1
+          })
       );
       const dims = res.embeddings?.[0]?.values?.length ?? 0;
       model.testPassed = dims > 0;
@@ -379,7 +375,7 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       const ai = getGeminiClient();
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
@@ -387,8 +383,7 @@ export async function runLiveModelTest(
             config: {
               tools: [{ googleSearch: {} }],
             },
-          }),
-        1
+          })
       );
       const chunks = res.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
       model.testPassed = Boolean(res.text);
@@ -409,12 +404,11 @@ export async function runLiveModelTest(
         ? `Live-Bildtest erfolgreich (${result.engine}).`
         : 'Bildendpunkt lieferte kein Bild.';
     } else if (model.id === 'gpt-oss-20b-free') {
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           generateFreeOpenText({
             messages: [{ role: 'user', content: 'Antworte mit genau einem Wort: BEREIT' }],
-          }),
-        1
+          })
       );
       model.testPassed = res.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
