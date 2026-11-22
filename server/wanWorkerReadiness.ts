@@ -140,7 +140,7 @@ export function evaluateWanWorkerReadiness(input: {
       ready: dailyLimitReady,
       detail: dailyLimitReady
         ? `${dailyJobsRemaining} von maximal ${dailyJobLimit} GPU-Aufträgen heute verfügbar.`
-        : dailyJobLimit === null || dailyJobLimit < 1 || dailyJobLimit > 3
+        : dailyJobLimit === null || dailyJobLimit < 1 || dailyJobLimit > 15
           ? 'Tageslimit fehlt, ist ungültig oder überschreitet 15 Aufträge.'
           : 'Das Tageslimit ist ausgeschöpft oder die Restmenge fehlt.',
     },
