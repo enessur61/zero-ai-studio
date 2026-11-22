@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { enrichModelMetadata } from '../server/store.ts';
 import { INITIAL_MODEL_CATALOG } from '../server/modelCatalog.ts';
+import { runAllModelTests } from '../server/adapters.ts';
+import type { ZeroDatabase } from '../server/store.ts';
+import type { ModelDefinition } from '../src/types/zero.ts';
 
 const privacyNotice = /Google kann Inhalte aus dem kostenlosen Gemini-API-Tarif zur Verbesserung seiner Produkte verwenden/;
 const sensitiveDataWarning = /keine sensiblen personenbezogenen oder vertraulichen Daten/i;
@@ -28,5 +31,32 @@ const cloudflareDefinition = INITIAL_MODEL_CATALOG.find((model) => model.id === 
 assert.ok(cloudflareDefinition, 'Cloudflare GLM model must exist');
 const cloudflare = enrichModelMetadata(cloudflareDefinition);
 assert.doesNotMatch(cloudflare.prerequisites ?? '', privacyNotice);
+
+const unavailableCloudModels = ['sd-turbo-free', 'sana-free'].map((id) => ({
+  id,
+  enabled: false,
+  status: 'ADAPTER FEHLT',
+  testPassed: false,
+  hasRealAdapter: false,
+  requiresPaidKey: false,
+  requiresExternalGpu: false,
+  lastTestedAt: null,
+  lastTestLatencyMs: null,
+  lastTestMessage: '',
+}) as ModelDefinition);
+const unavailableCloudResult = await runAllModelTests({
+  models: unavailableCloudModels,
+} as unknown as ZeroDatabase);
+for (const model of unavailableCloudResult.models) {
+  assert.equal(model.enabled, false, model.id);
+  assert.equal(model.testPassed, false, model.id);
+  assert.equal(model.status, 'ADAPTER FEHLT', model.id);
+  assert.equal(
+    model.lastTestMessage,
+    'Sicher deaktiviert: kein verifizierter, dauerhaft kostenloser Provider verfügbar.',
+    model.id,
+  );
+  assert.doesNotMatch(model.lastTestMessage, /Pollinations|bereits verifiziert|Abkühlzeit/, model.id);
+}
 
 console.log('Gemini free-tier privacy and billing disclosures passed.');
