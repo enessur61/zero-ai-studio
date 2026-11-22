@@ -111,7 +111,8 @@ Der Cloudflare Free-Tarif stellt eine gemeinsame Zuteilung von 10.000 Neurons pr
 
 ZERO now includes an optional self-hosted Wan 2.1 T2V-1.3B worker in `gpu-worker/`. The worker accepts authenticated generation jobs and returns short MP4 shots; the ZERO backend proxies job creation, status, and video downloads without exposing the worker token to the browser.
 
-- One worker job produces one 5-second 480p shot; the final ZERO timeline remains hard-capped at 60 seconds.
+- One worker job produces one 5-second 480p shot; each autonomous episode can use at most three Wan shots, and the final ZERO timeline remains hard-capped at 60 seconds.
+- The worker defaults to 3 shots/day; an explicitly configured ceiling of 15 supports up to five episodes with three generated shots each. Inference is serialized, and the ceiling does not guarantee daily throughput.
 - Requires a separate NVIDIA CUDA GPU host. The iPhone and Render web service do not run this model.
 - Model weights download on first inference; no weights or GPU compute are bundled.
 - Configure `ZERO_VIDEO_ENGINE_URL` and the matching `ZERO_VIDEO_ENGINE_TOKEN` on the ZERO server. The worker itself also requires the same token.
