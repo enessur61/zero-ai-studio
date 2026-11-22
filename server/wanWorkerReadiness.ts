@@ -68,7 +68,7 @@ export function evaluateWanWorkerReadiness(input: {
   const modelCachePersistent = payload.model_cache_persistent === true;
   const dailyLimitReady = dailyJobLimit !== null
     && dailyJobLimit >= 1
-    && dailyJobLimit <= 3
+    && dailyJobLimit <= 15
     && dailyJobsRemaining !== null
     && dailyJobsRemaining >= 1
     && dailyJobsRemaining <= dailyJobLimit;
@@ -141,7 +141,7 @@ export function evaluateWanWorkerReadiness(input: {
       detail: dailyLimitReady
         ? `${dailyJobsRemaining} von maximal ${dailyJobLimit} GPU-Aufträgen heute verfügbar.`
         : dailyJobLimit === null || dailyJobLimit < 1 || dailyJobLimit > 3
-          ? 'Tageslimit fehlt, ist ungültig oder überschreitet drei Aufträge.'
+          ? 'Tageslimit fehlt, ist ungültig oder überschreitet 15 Aufträge.'
           : 'Das Tageslimit ist ausgeschöpft oder die Restmenge fehlt.',
     },
   ];
