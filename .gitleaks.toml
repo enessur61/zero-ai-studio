@@ -1,0 +1,15 @@
+title = "ZERO AI STUDIO Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Synthetic idempotency-key fixture in the resource-guard integration test; not a credential."
+condition = "AND"
+commits = ["cead706feccec5a1174cf552c8127fb352ea5e6a"]
+paths = ['''^tests/zeroCostResourceGuard\.integration\.test\.ts$''']
+regexTarget = "line"
+regexes = ['''idempotencyKey: 'principal-b-daily-0001',''']

@@ -5,7 +5,7 @@ import {
   getGeminiClient,
   isExhaustedWithinCurrentDay,
   ThinkingLevel,
-  withTransientRetry,
+  withSingleProviderAttempt,
 } from './geminiClient.ts';
 import {
   IOS_SWIFT_ADAPTER_IDS,
@@ -14,17 +14,8 @@ import {
 import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
+import { CloudflareWorkersAiGateError } from './cloudflareBudgetGate.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
-
-let lastPollinationsImageAt = 0;
-const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
-
-export function getPollinationsCooldownRemainingSec(): number {
-  if (!lastPollinationsImageAt) return 0;
-  const elapsed = Date.now() - lastPollinationsImageAt;
-  if (elapsed >= POLLINATIONS_IMAGE_COOLDOWN_MS) return 0;
-  return Math.ceil((POLLINATIONS_IMAGE_COOLDOWN_MS - elapsed) / 1000);
-}
 
 function createSilentWavBase64(durationSec = 0.5, sampleRate = 16000): string {
   const numSamples = Math.floor(sampleRate * durationSec);
@@ -273,7 +264,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: model.id,
@@ -285,8 +276,7 @@ export async function runLiveModelTest(
                   ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
                   : {}),
             },
-          }),
-        1
+          })
       );
       const text = (res.text ?? '').trim();
       model.testPassed = text.length > 0;
@@ -301,7 +291,7 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: model.id,
@@ -312,8 +302,7 @@ export async function runLiveModelTest(
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
               },
             },
-          }),
-        1
+          })
       );
       const audioPart = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
       const audioB64 = audioPart?.inlineData?.data;
@@ -330,7 +319,7 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       const wavB64 = createSilentWavBase64(0.5, 16000);
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: 'gemini-3.5-transcribe',
@@ -340,8 +329,7 @@ export async function runLiveModelTest(
                 { text: 'Transcribe this audio.' },
               ],
             },
-          }),
-        1
+          })
       );
       const hasCandidate = Boolean(res.candidates?.[0]?.finishReason);
       model.testPassed = hasCandidate;
@@ -356,13 +344,12 @@ export async function runLiveModelTest(
       assertZeroBudgetModelAllowed(model.id, 'MODEL_HEALTH_TEST', db.budgetGuard, (e) =>
         recordBudgetAudit(db, e)
       );
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.embedContent({
             model: 'gemini-embedding-2',
             contents: ['ZERO AI STUDIO Test Embedding'],
-          }),
-        1
+          })
       );
       const dims = res.embeddings?.[0]?.values?.length ?? 0;
       model.testPassed = dims > 0;
@@ -378,7 +365,7 @@ export async function runLiveModelTest(
         recordBudgetAudit(db, e)
       );
       const ai = getGeminiClient();
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
@@ -386,8 +373,7 @@ export async function runLiveModelTest(
             config: {
               tools: [{ googleSearch: {} }],
             },
-          }),
-        1
+          })
       );
       const chunks = res.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
       model.testPassed = Boolean(res.text);
@@ -408,12 +394,11 @@ export async function runLiveModelTest(
         ? `Live-Bildtest erfolgreich (${result.engine}).`
         : 'Bildendpunkt lieferte kein Bild.';
     } else if (model.id === 'gpt-oss-20b-free') {
-      const res = await withTransientRetry(
+      const res = await withSingleProviderAttempt(
         () =>
           generateFreeOpenText({
             messages: [{ role: 'user', content: 'Antworte mit genau einem Wort: BEREIT' }],
-          }),
-        1
+          })
       );
       model.testPassed = res.text.length > 0;
       model.status = model.testPassed ? 'FUNKTIONIERT' : 'ADAPTER FEHLT';
@@ -424,7 +409,20 @@ export async function runLiveModelTest(
   } catch (err) {
     const cleanMsg = formatGermanApiError(err);
     const kind = classifyProviderError(err);
-    if (kind === 'quota-exhausted') {
+    if (err instanceof CloudflareWorkersAiGateError) {
+      model.enabled = false;
+      model.testPassed = false;
+      model.status = 'INSTALLATION ERFORDERLICH';
+      model.lastTestMessage = err.message;
+      recordBudgetAudit(db, {
+        adapterId: 'cloudflare-budget-guard',
+        modelId: model.id,
+        action: 'MODEL_HEALTH_TEST',
+        decision: 'BLOCKIERT_BUDGET_GUARD',
+        reason: 'Cloudflare-Modelltest vor jedem Provider-Aufruf blockiert: Workers-Free-Tarif und Ausschluss kostenpflichtiger Nutzung sind nicht bestätigt.',
+        costEur: 0,
+      });
+    } else if (kind === 'quota-exhausted') {
       // Genuine, provider-confirmed quota exhaustion: persist a durable lock.
       if (db.budgetGuard.freeQuotaUsage[model.id]) {
         db.budgetGuard.freeQuotaUsage[model.id].exhausted = true;
@@ -484,27 +482,9 @@ export async function runAllModelTests(db: ZeroDatabase): Promise<{
   testedCount: number;
   models: ModelDefinition[];
 }> {
-  let pollinationsTestedInBatch = false;
-
   for (const model of db.models) {
-    const isPollinationsImage =
-      model.id === 'sd-turbo-free' ||
-      model.id === 'sana-free';
-
-    if (isPollinationsImage) {
-      const cooldown = getPollinationsCooldownRemainingSec();
-      if (pollinationsTestedInBatch || cooldown > 0) {
-        model.lastTestedAt = new Date().toISOString();
-        model.lastTestLatencyMs = 0;
-        model.lastTestMessage =
-          cooldown > 0
-            ? `Geteilter Pollinations Open-Cloud Bildendpunkt (IP-Abkühlzeit aktiv: noch ${cooldown}s).`
-            : 'Geteilter Pollinations Open-Cloud Bildendpunkt in diesem Durchlauf bereits verifiziert.';
-        continue;
-      }
-      pollinationsTestedInBatch = true;
-    }
-
+    // Unavailable legacy cloud models are evaluated individually and remain
+    // explicitly disabled; never claim a shared Pollinations probe succeeded.
     await runLiveModelTest(model, db);
   }
 
