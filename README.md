@@ -59,6 +59,16 @@ Laufzeitdaten und Backups werden zur Laufzeit erzeugt und gehören nicht in Git.
 
 ZERO AI STUDIO ist als installierbare PWA vorbereitet. Öffne die veröffentlichte HTTPS-Adresse in Safari auf dem iPhone, tippe auf **Teilen → Zum Home-Bildschirm** und bestätige. Die App-Shell kann danach offline angezeigt werden; private API-Daten, Projekte, Chats und Memory werden ausdrücklich nicht im Service Worker zwischengespeichert. KI-Funktionen benötigen weiterhin eine Serververbindung.
 
+### iPhone-first TikTok-Produktion
+
+Das iPhone 16 Pro Max ist die vorgesehene Bedien- und Produktionszentrale: Drehbuch und Episodenplanung, Szenenfreigabe, Warteschlange, Fortschritt, Vorschau, manuelle Korrekturen und MP4-Export müssen über die PWA bzw. die native WKWebView-App bedienbar sein. Die Web-App darf für lange Produktionen nicht voraussetzen, dass Safari dauerhaft im Vordergrund bleibt; langlebige Jobs laufen serverseitig und werden nach Wiederöffnung anhand ihres persistenten Status fortgesetzt.
+
+Die lokale Browser-Compositor-Engine rendert aus verfügbaren Bild-/Videoclips, Voiceover, optionaler Audiospur und Untertiteln ein 9:16-Master. Auf iOS müssen Codec-/MediaRecorder-Unterstützung, Audio-Mix, Speicherplatz, Hintergrundverhalten und Download/Teilen auf einem echten iPhone getestet werden. Ein erfolgreicher Desktop-Build ist kein Nachweis für iPhone-Exportfähigkeit.
+
+Wan 2.1 T2V-1.3B läuft laut GPU-Worker-Dokumentation ausschließlich auf einer NVIDIA-CUDA-GPU; CPU- und iPhone-Ausführung werden nicht unterstützt. Das iPhone steuert daher den optionalen externen Worker über authentifizierte Backend-Aufträge, ohne GPU-Token im Browser offenzulegen. Solange kein nachweislich kostenfreier GPU-Host bereitsteht, bleiben Wan-Generierung und beide Kostensperren deaktiviert.
+
+Die vorhandenen Swift-Adapter sind nicht automatisch produktionsbereit: Piper benötigt noch einen verlinkten ONNX-Runtime-Backend und eSpeak-kompatiblen Phonemizer; Whisper benötigt eine native whisper.cpp-Metal-Bridge und Modellgewichte. Ein iOS-Projekt/Adapter-Symbol allein gilt nicht als erfolgreiches On-Device-Modell. ZERO muss jeden Adapter erst nach erfolgreichem iPhone-Laufzeittest als verfügbar markieren.
+
 ### Cloudflare Workers AI (ZERO Chat, Bildgenerierung & Transkription)
 Für ZERO CORE mit GLM-4.7-Flash, FLUX.1 Schnell und Whisper Large-v3-Turbo müssen diese Variablen serverseitig gesetzt sein:
 
