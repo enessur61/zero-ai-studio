@@ -78,9 +78,17 @@ const exhaustedDailyLimit = evaluateWanWorkerReadiness({
 assert.equal(exhaustedDailyLimit.online, false);
 assert.equal(exhaustedDailyLimit.status, 'WORKER_DAILY_LIMIT_REACHED');
 
+const expandedDailyLimit = evaluateWanWorkerReadiness({
+  ...base,
+  payload: { ...healthy, daily_job_limit: 15, daily_jobs_remaining: 15 },
+});
+assert.equal(expandedDailyLimit.online, true);
+assert.equal(expandedDailyLimit.dailyJobLimit, 15);
+assert.equal(expandedDailyLimit.dailyJobsRemaining, 15);
+
 const invalidDailyLimit = evaluateWanWorkerReadiness({
   ...base,
-  payload: { ...healthy, daily_job_limit: 4 },
+  payload: { ...healthy, daily_job_limit: 16 },
 });
 assert.equal(invalidDailyLimit.online, false);
 assert.equal(invalidDailyLimit.status, 'WORKER_DAILY_LIMIT_REACHED');
