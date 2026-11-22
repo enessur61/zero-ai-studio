@@ -17,16 +17,6 @@ import type { ModelDefinition } from '../src/types/zero.ts';
 import { CloudflareWorkersAiGateError } from './cloudflareBudgetGate.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
-let lastPollinationsImageAt = 0;
-const POLLINATIONS_IMAGE_COOLDOWN_MS = 45_000;
-
-export function getPollinationsCooldownRemainingSec(): number {
-  if (!lastPollinationsImageAt) return 0;
-  const elapsed = Date.now() - lastPollinationsImageAt;
-  if (elapsed >= POLLINATIONS_IMAGE_COOLDOWN_MS) return 0;
-  return Math.ceil((POLLINATIONS_IMAGE_COOLDOWN_MS - elapsed) / 1000);
-}
-
 function createSilentWavBase64(durationSec = 0.5, sampleRate = 16000): string {
   const numSamples = Math.floor(sampleRate * durationSec);
   const dataSize = numSamples * 2;
@@ -492,27 +482,9 @@ export async function runAllModelTests(db: ZeroDatabase): Promise<{
   testedCount: number;
   models: ModelDefinition[];
 }> {
-  let pollinationsTestedInBatch = false;
-
   for (const model of db.models) {
-    const isPollinationsImage =
-      model.id === 'sd-turbo-free' ||
-      model.id === 'sana-free';
-
-    if (isPollinationsImage) {
-      const cooldown = getPollinationsCooldownRemainingSec();
-      if (pollinationsTestedInBatch || cooldown > 0) {
-        model.lastTestedAt = new Date().toISOString();
-        model.lastTestLatencyMs = 0;
-        model.lastTestMessage =
-          cooldown > 0
-            ? `Geteilter Pollinations Open-Cloud Bildendpunkt (IP-Abkühlzeit aktiv: noch ${cooldown}s).`
-            : 'Geteilter Pollinations Open-Cloud Bildendpunkt in diesem Durchlauf bereits verifiziert.';
-        continue;
-      }
-      pollinationsTestedInBatch = true;
-    }
-
+    // Unavailable legacy cloud models are evaluated individually and remain
+    // explicitly disabled; never claim a shared Pollinations probe succeeded.
     await runLiveModelTest(model, db);
   }
 
