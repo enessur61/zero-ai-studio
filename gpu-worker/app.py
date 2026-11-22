@@ -36,8 +36,12 @@ if WAN_REQUIRE_PERSISTENT_STORAGE and not (PERSISTENT_MOUNT_CONFIGURED and MODEL
 
 WAN_GPU_ENABLED = os.environ.get("ZERO_WAN_GPU_ENABLED", "false").lower() == "true"
 WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false").lower() == "true"
+# Up to five 60-second episodes can each use at most three 5-second Wan shots.
+# Keep the conservative default at three jobs; operators may raise it only
+# after verifying their own GPU capacity and non-billable hosting.
+WAN_MAX_DAILY_JOBS = 15
 try:
-    WAN_DAILY_JOB_LIMIT = max(0, min(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), 3))
+    WAN_DAILY_JOB_LIMIT = max(0, min(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), WAN_MAX_DAILY_JOBS))
 except (TypeError, ValueError):
     WAN_DAILY_JOB_LIMIT = 0
 WAN_MAX_CONCURRENT_JOBS = 1
