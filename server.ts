@@ -39,7 +39,7 @@ import {
   ThinkingLevel,
   Type,
   ZeroQuotaExhaustedError,
-  withTransientRetry,
+  withSingleProviderAttempt,
 } from './server/geminiClient.ts';
 import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
 import {
@@ -318,7 +318,7 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
     await reserveZeroBudgetModelAllowed(route.modelId, 'STORY_SUPERVISOR_DRAMATURGY', db);
     try {
       const ai = getGeminiClient();
-      const response = await withTransientRetry(() => ai.models.generateContent({
+      const response = await withSingleProviderAttempt(() => ai.models.generateContent({
         model: route.modelId,
         contents: input.prompt,
         config: { systemInstruction: input.systemPrompt, responseMimeType: 'application/json', maxOutputTokens: 1800, temperature: 0.2 },
@@ -496,7 +496,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: 'Antworte ausschließlich mit: ZERO_CONNECTION_OK',
@@ -1172,7 +1172,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
         await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
-        const searchResponse = await withTransientRetry(() =>
+        const searchResponse = await withSingleProviderAttempt(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
             contents: `Recherchiere aktuelle Fakten und liefere eine knappe, belegorientierte Zusammenfassung zu dieser Anfrage:\n\n${fullPrompt}`,
@@ -1461,7 +1461,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-2.5-flash-lite',
         contents: `Recherchiere sachlich, strukturiert und auf Deutsch zu folgender Anfrage. Nenne nur belegbare Fakten aus den Suchergebnissen:\n\n${query}`,
@@ -1575,7 +1575,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: {
@@ -1823,7 +1823,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: [
@@ -1952,7 +1952,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: selectedTranscriptionModel,
         contents: [
@@ -2444,7 +2444,7 @@ async function generateFreeFilmDirectorText(params: {
   }
 
   await reserveZeroBudgetModelAllowed(decision.modelId, 'FILM_DIRECTOR', params.db);
-  const response = await withTransientRetry(() =>
+  const response = await withSingleProviderAttempt(() =>
     getGeminiClient().models.generateContent({
       model: decision.modelId,
       contents: [{
@@ -3380,7 +3380,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
-    const planRes = await withTransientRetry(() =>
+    const planRes = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: `Zerlege dieses Produktionsziel in 3 konkrete, ausführbare ZERO AI STUDIO Arbeitsschritte (nur 0 € Module): "${goal}".`,

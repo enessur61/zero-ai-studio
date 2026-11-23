@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
-import { assertZeroBudgetModelAllowed } from '../server/geminiClient.ts';
+import { assertZeroBudgetModelAllowed, withSingleProviderAttempt } from '../server/geminiClient.ts';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
 const today = new Date().toISOString().slice(0, 10);
+
+let providerAttempts = 0;
+await assert.rejects(
+  () => withSingleProviderAttempt(async () => {
+    providerAttempts += 1;
+    throw new Error('HTTP 503 Internal server error');
+  }),
+  /HTTP 503/,
+);
+assert.equal(providerAttempts, 1, 'a metered Gemini operation must never retry an ambiguous provider failure');
+
 const base = (): BudgetGuardState => ({
   budgetLimitEur: 0,
   totalSpentEur: 0,
