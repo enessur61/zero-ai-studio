@@ -40,10 +40,19 @@ WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false"
 # Keep the conservative default at three jobs; operators may raise it only
 # after verifying their own GPU capacity and non-billable hosting.
 WAN_MAX_DAILY_JOBS = 15
-try:
-    WAN_DAILY_JOB_LIMIT = max(0, min(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), WAN_MAX_DAILY_JOBS))
-except (TypeError, ValueError):
-    WAN_DAILY_JOB_LIMIT = 0
+
+
+def parse_daily_job_limit(value: str | None) -> int:
+    """Clamp the operator limit to the reviewed ceiling; invalid input disables the worker."""
+    if value is None:
+        value = "3"
+    try:
+        return max(0, min(int(value), WAN_MAX_DAILY_JOBS))
+    except (TypeError, ValueError):
+        return 0
+
+
+WAN_DAILY_JOB_LIMIT = parse_daily_job_limit(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT"))
 WAN_MAX_CONCURRENT_JOBS = 1
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
