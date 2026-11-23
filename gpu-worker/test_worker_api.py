@@ -208,6 +208,17 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         self.assertEqual(recovered[queued["id"]]["status"], "cancelled")
         self.assertEqual(recovered[running["id"]]["status"], "cancelled")
 
+    def test_daily_job_limit_parser_clamps_to_reviewed_ceiling_and_fails_closed(self) -> None:
+        self.assertEqual(worker.WAN_MAX_DAILY_JOBS, 15)
+        self.assertEqual(worker.parse_daily_job_limit(None), 3)
+        self.assertEqual(worker.parse_daily_job_limit("0"), 0)
+        self.assertEqual(worker.parse_daily_job_limit("3"), 3)
+        self.assertEqual(worker.parse_daily_job_limit("15"), 15)
+        self.assertEqual(worker.parse_daily_job_limit("16"), 15)
+        self.assertEqual(worker.parse_daily_job_limit("-1"), 0)
+        self.assertEqual(worker.parse_daily_job_limit("invalid"), 0)
+        self.assertEqual(worker.parse_daily_job_limit(""), 0)
+
     def test_worker_health_reports_free_only_gate_and_sixty_second_cap(self) -> None:
         worker.WAN_DAILY_JOB_LIMIT = 15
         status = worker.health()
