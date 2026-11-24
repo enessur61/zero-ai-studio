@@ -38,7 +38,8 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
 
 /// Lokaler CoreML-Adapter für Meta Llama 3.2 (1B / 3B Instruct, 4-bit quantisiert)
 /// Optimiert für Apple A18 Pro Neural Engine auf iPhone 16 Pro Max (8 GB Unified Memory).
-public final class LlamaCoreMLAdapter: @unchecked Sendable {
+@MainActor
+public final class LlamaCoreMLAdapter {
     private let config: LlamaCoreMLConfig
     private let tokenizer: LlamaTokenizer?
     private var model: MLModel?

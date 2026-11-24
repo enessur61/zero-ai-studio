@@ -34,7 +34,7 @@ public struct KokoroDeploymentDiagnostics: Codable, Sendable {
 }
 
 /// Kokoro-82M (82M Parameter) CoreML / MLX Audio Adapter für iPhone 16 Pro Max (24 kHz WAV).
-public final class KokoroMLXAudioAdapter: @unchecked Sendable {
+public final class KokoroMLXAudioAdapter: Sendable {
     public let modelId = "kokoro-82m"
     public let bundleName = "Kokoro-82M-v1.0.mlmodelc"
     public let estimatedRamGB = 0.80

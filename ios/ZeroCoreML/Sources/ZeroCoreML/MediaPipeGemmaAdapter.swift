@@ -72,7 +72,7 @@ public struct GemmaDeploymentDiagnostics: Codable, Sendable {
 }
 
 /// MediaPipe Tasks GenAI Adapter für Google Gemma 3 4B IT (4-bit Quantized Multimodal) auf iPhone 16 Pro Max.
-public final class MediaPipeGemmaAdapter: @unchecked Sendable {
+public final class MediaPipeGemmaAdapter: Sendable {
     public let config: GemmaMediaPipeConfig
     private let backend: MediaPipeLlmSessionBackend?
 

@@ -42,6 +42,8 @@ jobs:
           VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
           printf '%s\\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
+      - name: Run ZeroCoreML Swift 6 XCTest suite
+        run: swift test --package-path ios/ZeroCoreML
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml
       - name: Build unsigned iOS Simulator app
