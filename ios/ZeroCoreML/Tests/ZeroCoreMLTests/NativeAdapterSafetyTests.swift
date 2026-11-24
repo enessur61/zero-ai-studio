@@ -21,6 +21,30 @@ final class NativeAdapterSafetyTests: XCTestCase {
         XCTAssertEqual(Array(wav[44..<50]), [0x00, 0x80, 0x00, 0x00, 0xff, 0x7f])
     }
 
+    func testKokoroModelLocatorUsesTheCatalogBundleFilename() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-kokoro-model-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let expectedName = "kokoro-v1_0-82m.mlmodelc"
+        let expectedDirectory = root
+            .appendingPathComponent("ZeroModels", isDirectory: true)
+            .appendingPathComponent(expectedName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: expectedDirectory,
+            withIntermediateDirectories: true
+        )
+
+        let adapter = KokoroMLXAudioAdapter()
+        XCTAssertEqual(adapter.bundleName, expectedName)
+        let located = KokoroMLXAudioAdapter.locateModelURL(
+            bundleName: adapter.bundleName,
+            bundle: .main,
+            documentsDirectory: root
+        )
+        XCTAssertEqual(located?.standardizedFileURL, expectedDirectory.standardizedFileURL)
+    }
+
     func testWhisperSegmentFormatsSRTWithMillisecondPrecision() {
         let segment = WhisperSegment(
             index: 1,
