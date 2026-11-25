@@ -120,7 +120,7 @@ try {
   await main.getByPlaceholder('Semantische Suche in allen Erinnerungen...').fill('zero-browser-e2e-local-search-fixture');
   await main.getByRole('button', { name: 'Suchen', exact: true }).click();
   await main.getByRole('heading', { name: memoryTitle, exact: true }).waitFor();
-  await main.getByRole('button', { name: 'Eintrag löschen' }).click();
+  await main.getByRole('heading', { name: memoryTitle, exact: true }).locator('xpath=../..').getByRole('button', { name: 'Eintrag löschen' }).click();
   await main.getByRole('heading', { name: memoryTitle, exact: true }).waitFor({ state: 'detached' });
   createdMemoryId = null;
 
