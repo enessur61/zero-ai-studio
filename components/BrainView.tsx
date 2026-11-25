@@ -12,6 +12,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { getAutomationActionError } from '../lib/automationActionError.ts';
 import { shouldUseZeroLocalFallback } from '../lib/zeroLocalFallback.ts';
 import {
   type NativeIOSTextModelId,
@@ -85,6 +86,7 @@ export function BrainView({
   const [runs, setRuns] = useState<AutomationRun[]>(initialRuns);
   const [autoLoading, setAutoLoading] = useState(false);
   const [autoError, setAutoError] = useState<string | null>(null);
+  const [confirmingRunId, setConfirmingRunId] = useState<string | null>(null);
 
   async function handleLoadWebGPULocalModel() {
     setChatError(null);
@@ -364,10 +366,19 @@ export function BrainView({
   }
 
   async function handleConfirmGate(runId: string) {
-    const data = await apiRequest<{ run: AutomationRun }>(`/api/automation/${runId}/confirm`, {
-      method: 'POST',
-    });
-    setRuns((prev) => prev.map((r) => (r.id === runId ? data.run : r)));
+    if (confirmingRunId) return;
+    setConfirmingRunId(runId);
+    setAutoError(null);
+    try {
+      const data = await apiRequest<{ run: AutomationRun }>(`/api/automation/${runId}/confirm`, {
+        method: 'POST',
+      });
+      setRuns((prev) => prev.map((r) => (r.id === runId ? data.run : r)));
+    } catch (error) {
+      setAutoError(getAutomationActionError(error, 'Freigabe konnte nicht gespeichert werden.'));
+    } finally {
+      setConfirmingRunId(null);
+    }
   }
 
   return (
@@ -787,11 +798,12 @@ export function BrainView({
                         </div>
                         {st.status === 'bestätigung_erforderlich' ? (
                           <button
-                            onClick={() => handleConfirmGate(run.id)}
+                            disabled={confirmingRunId === run.id}
+                            onClick={() => void handleConfirmGate(run.id)}
                             className="min-h-[38px] px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold inline-flex items-center gap-1.5 shrink-0"
                           >
                             <ShieldAlert className="w-3.5 h-3.5" />
-                            Freigabe erteilen
+                            {confirmingRunId === run.id ? 'Speichere...' : 'Freigabe erteilen'}
                           </button>
                         ) : (
                           <span className={`inline-flex items-center gap-1 shrink-0 font-mono ${
