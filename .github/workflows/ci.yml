@@ -105,6 +105,22 @@ jobs:
         run: |
           (cd piper-worker && python3 -m unittest -v test_model_cache)
           python3 piper-worker/test_local_synthesis.py
+      - name: Prepare QEMU for offline ARM64 Piper synthesis
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+        with:
+          platforms: arm64
+      - name: Run real Piper synthesis on ARM64 with network disabled
+        env:
+          PIPER_MODEL_DIR: /tmp/zero-piper-cache-tests
+        run: |
+          docker buildx create --name zero-piper-arm64-offline --driver docker-container --use
+          docker buildx inspect --bootstrap
+          docker buildx build --platform linux/arm64 --load --tag zero-piper-arm64:offline ./piper-worker
+          docker run --rm --platform linux/arm64 --network none \
+            --volume "$PIPER_MODEL_DIR:/var/lib/zero-piper:ro" \
+            --volume "$PWD/piper-worker/test_offline_synthesis.py:/app/test_offline_synthesis.py:ro" \
+            --env PIPER_MODEL_DIR=/var/lib/zero-piper \
+            zero-piper-arm64:offline python -m unittest -v test_offline_synthesis
       - name: Validate Piper and GPU worker Python syntax
         run: python3 -m py_compile piper-worker/app.py piper-worker/voice_assets.py gpu-worker/app.py
       - name: Run PostgreSQL revision and concurrency integration tests
