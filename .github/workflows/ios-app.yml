@@ -21,7 +21,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Native iOS validation is deliberately manual until the web studio is production-ready.
   build-ios-app:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
