@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
+import { ObjectUrlLease } from './lib/objectUrlLease.ts';
 import { readProjectVideoPlaybackSnapshot, shouldOpenVideoStudioForPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
@@ -136,6 +137,17 @@ export default function App() {
   const [videoSoundtrack, setVideoSoundtrack] = useState<{ url: string; title: string } | null>(
     null
   );
+  const videoSoundtrackLeaseRef = useRef(new ObjectUrlLease());
+
+  useEffect(() => {
+    const url = videoSoundtrack?.url;
+    if (!url) return;
+    videoSoundtrackLeaseRef.current.adopt(url);
+    return () => {
+      videoSoundtrackLeaseRef.current.release(url);
+    };
+  }, [videoSoundtrack?.url]);
+
 
   useEffect(() => {
     const onSessionExpired = () => {
