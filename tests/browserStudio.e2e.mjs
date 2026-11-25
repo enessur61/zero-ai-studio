@@ -148,9 +148,16 @@ try {
 
   // A full browser reload must restore both project links and playable audio controls.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.getByLabel('Admin-Passwort').fill(password);
-  await page.getByRole('button', { name: 'Sicher anmelden' }).click();
-  await page.locator('main h1').filter({ hasText: 'BEYOND LIMITS' }).waitFor();
+  const homeHeading = page.locator('main h1').filter({ hasText: 'BEYOND LIMITS' });
+  const postReloadState = await Promise.race([
+    page.getByLabel('Admin-Passwort').waitFor({ state: 'visible' }).then(() => 'login'),
+    homeHeading.waitFor({ state: 'visible' }).then(() => 'authenticated'),
+  ]);
+  if (postReloadState === 'login') {
+    await page.getByLabel('Admin-Passwort').fill(password);
+    await page.getByRole('button', { name: 'Sicher anmelden' }).click();
+  }
+  await homeHeading.waitFor();
   await openStudio('PROJECTS', 'Projekte');
   const persistedAudioPlayers = main.locator('audio[aria-label^="Audio abspielen: Voiceover (Charon): ZERO Browser-Test"]');
   await persistedAudioPlayers.first().waitFor();
