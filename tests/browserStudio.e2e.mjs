@@ -73,7 +73,7 @@ try {
   await openStudio('AUDIO STUDIO', 'ZERO AUDIO STUDIO');
   const voiceover = main.getByPlaceholder('Deutschen oder mehrsprachigen Sprechertext eingeben...');
   await voiceover.fill('ZERO Browser-Test: lokale UI-Eingabe.');
-  await main.getByLabel('Stimmenprofil').selectOption('Charon');
+  await main.locator('select').filter({ has: main.locator('option[value="Charon"]') }).selectOption('Charon');
 
   // Music Studio: render a local on-device SFX through WebAudio, not AI composition.
   await openStudio('MUSIC STUDIO', 'ZERO MUSIC STUDIO');
@@ -136,7 +136,10 @@ try {
 
   // Remove the temporary project through the authenticated same-origin API.
   if (createdProjectId) {
-    const cleanup = await page.evaluate(async (id) => fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }), createdProjectId);
+    const cleanup = await page.evaluate(async (id) => {
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return { ok: response.ok, status: response.status };
+    }, createdProjectId);
     if (!cleanup.ok) throw new Error('Temporary browser E2E project cleanup failed: HTTP ' + cleanup.status);
     createdProjectId = null;
   }
