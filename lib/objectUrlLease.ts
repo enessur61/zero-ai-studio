@@ -8,6 +8,12 @@ export class ObjectUrlLease {
     return url;
   }
 
+  /** Replace an owned URL and adopt the new one as one ownership operation. */
+  replace(previousUrl: string | null | undefined, nextUrl: string): string {
+    this.release(previousUrl);
+    return this.adopt(nextUrl);
+  }
+
   /** Transfer ownership to another component without revoking the URL. */
   transfer(url: string): boolean {
     return this.owned.delete(url);
