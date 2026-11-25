@@ -12,6 +12,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { shouldUseZeroLocalFallback } from '../lib/zeroLocalFallback.ts';
 import {
   type NativeIOSTextModelId,
   runNativeCoreMLPrompt,
@@ -228,6 +229,46 @@ export function BrainView({
         });
         if (!response.ok) {
           const payload = await response.json().catch(() => null);
+          if (shouldUseZeroLocalFallback({
+            responseStatus: response.status,
+            selectedModelId: selectedModel,
+            localWebGPUModelLoaded: isWebGPULocalModelLoaded(),
+          })) {
+            const history = messages
+              .filter((message) => message.role === 'user' || message.role === 'assistant')
+              .slice(-8)
+              .map((message) => ({
+                role: message.role as 'user' | 'assistant',
+                content: message.content,
+              }));
+            const localMessages = [
+              {
+                role: 'system' as const,
+                content: 'Du bist ZERO BRAIN, ein lokaler Assistent. Antworte standardmäßig auf Deutsch, klar und hilfreich. Du hast keinen Webzugriff und darfst keine aktuellen Informationen erfinden. Weise bei komplexen Aufgaben ehrlich auf mögliche Grenzen hin.',
+              },
+              ...history,
+              { role: 'user' as const, content: promptText },
+            ];
+            setInput('');
+            setWebgpuAssistantDraft('');
+            const reply = await generateWebGPULocalChat(localMessages, (token) => {
+              setWebgpuAssistantDraft((previous) => previous + token);
+            });
+            setMessages((previous) => [
+              ...previous.filter((message) => message.id !== pendingId),
+              { id: pendingId, role: 'user', content: promptText, timestamp: pendingTimestamp },
+              {
+                id: `msg-local-fallback-${Date.now()}`,
+                role: 'assistant',
+                content: reply,
+                modelUsed: 'Lokales WebGPU-Modell',
+                routingSteps: ['ZERO CORE -> kostenloser lokaler WebGPU-Fallback · 0,00 €'],
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+            setWebgpuAssistantDraft('');
+            return;
+          }
           throw new Error(payload?.error || 'ZERO-Fehler (HTTP ' + response.status + ')');
         }
         if (!response.body) throw new Error('ZERO-Streaming wird von diesem Browser nicht unterstützt.');
