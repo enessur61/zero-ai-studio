@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from piper import PiperVoice, SynthesisConfig
-from voice_assets import MODEL_SHA256, MODEL_SIZE_BYTES, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
+from voice_assets import MODEL_SHA256, MODEL_SIZE_BYTES, VOICE_CONFIG_SHA256, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
 
 APP_TOKEN=os.environ.get("ZERO_TTS_WORKER_TOKEN","").strip()
 MODEL_DIR=Path(os.environ.get("PIPER_MODEL_DIR","/var/lib/zero-piper"))
@@ -21,7 +21,7 @@ URLS={
 }
 MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"996579e89520190067e25f1699867738"}
 EXPECTED_SIZES={"model":MODEL_SIZE_BYTES,"config":5460}
-SHA256={"model":MODEL_SHA256,"config":None}
+SHA256={"model":MODEL_SHA256,"config":VOICE_CONFIG_SHA256}
 NOISE_SCALE=0.5
 NOISE_W_SCALE=0.333
 MODEL=MODEL_DIR/f"{VOICE}.onnx"; CONFIG=MODEL_DIR/f"{VOICE}.onnx.json"
