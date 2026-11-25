@@ -100,6 +100,8 @@ jobs:
           python3 -c "from piper import PiperVoice, SynthesisConfig; print('Piper runtime API import passed')"
           python3 piper-worker/test_voice_assets.py
       - name: Verify Piper model cache and run real local CPU synthesis without AI providers
+        env:
+          PIPER_MODEL_DIR: /tmp/zero-piper-cache-tests
         run: |
           (cd piper-worker && python3 -m unittest -v test_model_cache)
           python3 piper-worker/test_local_synthesis.py
