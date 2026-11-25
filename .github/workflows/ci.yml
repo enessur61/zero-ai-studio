@@ -505,6 +505,111 @@ jobs:
             body: JSON.stringify({ message: 'smoke test', modelId: 'gpt-oss-20b-free' })
           });
           if (brain.status !== 503) throw new Error('Unverified GPT-OSS route did not fail closed');
+
+          // Safe HTTP end-to-end coverage for every remaining studio surface.
+          // CI has no provider credentials or GPU worker; each provider-backed
+          // route must fail closed without attempting a paid or external fallback.
+          const [audioTts, audioPiper, audioTranscription, musicComposition, filmDraft] = await Promise.all([
+            authFetch('/api/audio/tts', {
+              method: 'POST', body: JSON.stringify({ text: 'ZERO audio workflow smoke test' })
+            }),
+            authFetch('/api/audio/tts/piper', {
+              method: 'POST', body: JSON.stringify({ text: 'ZERO Piper workflow smoke test' })
+            }),
+            authFetch('/api/audio/transcribe', {
+              method: 'POST', body: JSON.stringify({ audioDataUrl: 'data:audio/wav;base64,AAAA' })
+            }),
+            authFetch('/api/music/compose', {
+              method: 'POST', body: JSON.stringify({ prompt: 'ZERO music workflow smoke test', durationSec: 10 })
+            }),
+            authFetch('/api/film/direct', {
+              method: 'POST', body: JSON.stringify({ idea: 'A safe CI-only film director smoke test', targetDurationSec: 20 })
+            })
+          ]);
+          for (const [name, response, expected] of [
+            ['Gemini TTS', audioTts, 503],
+            ['Piper TTS', audioPiper, 503],
+            ['Audio transcription', audioTranscription, 503],
+            ['Music composition', musicComposition, 503],
+            ['Film Director', filmDraft, 400]
+          ]) {
+            if (response.status !== expected) {
+              throw new Error(name + ' did not fail closed without provider credentials: HTTP ' + response.status + ' ' + await response.text());
+            }
+          }
+
+          const videoEngineStatusResponse = await authFetch('/api/video/engine/status');
+          const videoEngineStatus = await videoEngineStatusResponse.json();
+          if (!videoEngineStatusResponse.ok || videoEngineStatus.online !== false ||
+              videoEngineStatus.costFallback !== false) {
+            throw new Error('Video Studio must remain offline without an explicitly approved self-hosted GPU worker: ' + JSON.stringify(videoEngineStatus));
+          }
+          const videoJobWithoutWorker = await authFetch('/api/video/engine/jobs', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': 'ci-no-worker-smoke' },
+            body: JSON.stringify({ prompt: 'CI-only video worker gate', projectId: 'ci-project', sceneId: 'ci-scene' })
+          });
+          if (videoJobWithoutWorker.status !== 503) {
+            throw new Error('Video Studio attempted to submit a job without an approved worker: HTTP ' + videoJobWithoutWorker.status);
+          }
+
+          const memoryFixtureTitle = 'ZERO E2E memory fixture';
+          const memoryCreate = await authFetch('/api/memory', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: memoryFixtureTitle,
+              content: 'zero-e2e-memory-token durable memory create search delete',
+              type: 'knowledge',
+              tags: ['ci', 'e2e']
+            })
+          });
+          if (!memoryCreate.ok) throw new Error('Memory Studio could not persist a memory: ' + memoryCreate.status + ' ' + await memoryCreate.text());
+          const createdMemory = (await memoryCreate.json()).memory;
+          if (!createdMemory?.id || createdMemory.title !== memoryFixtureTitle) {
+            throw new Error('Memory Studio returned an invalid persisted memory record');
+          }
+          const memoryRead = await authFetch('/api/memory');
+          const memoryReadPayload = await memoryRead.json();
+          if (!memoryRead.ok || !memoryReadPayload.memories?.some((entry) => entry.id === createdMemory.id)) {
+            throw new Error('Memory Studio could not read back its persisted memory');
+          }
+          const memorySearch = await authFetch('/api/memory/search', {
+            method: 'POST', body: JSON.stringify({ query: 'zero-e2e-memory-token' })
+          });
+          const memorySearchPayload = await memorySearch.json();
+          if (!memorySearch.ok || !memorySearchPayload.results?.some((entry) => entry.memory?.id === createdMemory.id)) {
+            throw new Error('Memory Studio lexical fallback search did not find the newly saved record');
+          }
+          const memoryDelete = await authFetch('/api/memory/' + createdMemory.id, { method: 'DELETE' });
+          if (!memoryDelete.ok) throw new Error('Memory Studio could not delete its test record');
+          const memoryAfterDelete = await authFetch('/api/memory');
+          if ((await memoryAfterDelete.json()).memories?.some((entry) => entry.id === createdMemory.id)) {
+            throw new Error('Memory Studio delete did not persist');
+          }
+
+          const automationBefore = await authFetch('/api/automation');
+          const automationBeforePayload = await automationBefore.json();
+          if (!automationBefore.ok || !Array.isArray(automationBeforePayload.runs)) {
+            throw new Error('Automation Studio could not load its run history');
+          }
+          const blockedAutomation = await authFetch('/api/automation/run', {
+            method: 'POST',
+            body: JSON.stringify({ goal: 'CI-only plan must not invoke an unapproved AI provider', includeExternalPublishGate: true })
+          });
+          if (blockedAutomation.status !== 400) {
+            throw new Error('Automation Studio did not block planning without an approved free model: HTTP ' + blockedAutomation.status);
+          }
+          const automationAfter = await authFetch('/api/automation');
+          const automationAfterPayload = await automationAfter.json();
+          if (!automationAfter.ok || automationAfterPayload.runs.length !== automationBeforePayload.runs.length) {
+            throw new Error('Blocked automation planning must not persist a partial or falsely completed run');
+          }
+          const unknownAutomationConfirmation = await authFetch('/api/automation/ci-missing-run/confirm', { method: 'POST' });
+          if (unknownAutomationConfirmation.status !== 404) {
+            throw new Error('Automation confirmation accepted an unknown run');
+          }
+          console.log('Verified safe HTTP E2E for Image, Video, Film Director, Audio, Music, Projects, Model Hub, Memory and Automation; unavailable providers and GPU workers fail closed without paid fallbacks.');
+
           const jsonBackupResponse = await authFetch('/api/system/backup', {
             method: 'POST', body: JSON.stringify({ note: 'CI PostgreSQL backup integration test' })
           });
