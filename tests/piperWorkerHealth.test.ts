@@ -9,6 +9,7 @@ const valid = {
   voice: PIPER_WORKER_HEALTH_EXPECTED.modelId,
   engine_version: PIPER_WORKER_HEALTH_EXPECTED.engineVersion,
   model_revision: PIPER_WORKER_HEALTH_EXPECTED.modelRevision,
+  voice_revision: PIPER_WORKER_HEALTH_EXPECTED.voiceRevision,
   engine_license: PIPER_WORKER_HEALTH_EXPECTED.engineLicense,
   voice_dataset_license: PIPER_WORKER_HEALTH_EXPECTED.voiceDatasetLicense,
   voice_training_base: PIPER_WORKER_HEALTH_EXPECTED.voiceTrainingBase,
@@ -23,6 +24,7 @@ assert.equal(isPiperWorkerHealthPayload(valid), true);
 assert.equal(isPiperWorkerHealthPayload(null), false);
 assert.equal(isPiperWorkerHealthPayload([]), false);
 assert.equal(isPiperWorkerHealthPayload({ ...valid, model_sha256: 'wrong' }), false);
+assert.equal(isPiperWorkerHealthPayload({ ...valid, voice_revision: 'un-pinned-revision' }), false);
 assert.equal(isPiperWorkerHealthPayload({ ...valid, engine_version: '1.3.0' }), false);
 assert.equal(isPiperWorkerHealthPayload({ ...valid, engine_license: 'MIT' }), false);
 assert.equal(isPiperWorkerHealthPayload({ ...valid, voice_dataset_license: 'unknown' }), false);
