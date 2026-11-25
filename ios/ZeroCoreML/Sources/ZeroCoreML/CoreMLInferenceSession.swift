@@ -23,7 +23,22 @@ actor CoreMLInferenceSession {
 
     func loadModelIfNeeded() throws {
         guard model == nil else { return }
-        let resolvedURL = modelURL ?? LlamaCoreMLAdapter.locateCompiledModelURL(for: variant)
+        let resolvedURL: URL?
+        if let modelURL {
+            resolvedURL = modelURL
+        } else {
+            let baseName = variant.bundleModelFilename.replacingOccurrences(of: ".mlmodelc", with: "")
+            if let bundled = Bundle.main.url(forResource: baseName, withExtension: "mlmodelc") {
+                resolvedURL = bundled
+            } else if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let candidate = documents
+                    .appendingPathComponent("ZeroModels", isDirectory: true)
+                    .appendingPathComponent(variant.bundleModelFilename, isDirectory: true)
+                resolvedURL = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+            } else {
+                resolvedURL = nil
+            }
+        }
         guard let resolvedURL,
               FileManager.default.fileExists(atPath: resolvedURL.path) else {
             throw CoreMLAdapterError.modelBundleMissing(variant.bundleModelFilename)
