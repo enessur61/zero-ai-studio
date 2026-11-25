@@ -85,8 +85,8 @@ def download(key:str,dest:Path,max_bytes:int):
     md5_digest.update(chunk); sha256_digest.update(chunk); out.write(chunk)
   if total!=expected_size:
    raise RuntimeError(
-    f"Piper voice file size {total} bytes does not match pinned metadata "
-    f"({expected_size} bytes; MD5 {md5_digest.hexdigest()}; expected {MD5[key]})"
+    f"Piper voice file size does not match pinned metadata: received {total} bytes, "
+    f"expected {expected_size} bytes; MD5 {md5_digest.hexdigest()} (expected {MD5[key]})"
    )
   if md5_digest.hexdigest()!=MD5[key]:
    raise RuntimeError("Piper voice failed published MD5 integrity check")
@@ -111,8 +111,10 @@ def synthesize(text:str,speed:float)->bytes:
  if len(clean)>5000: raise ValueError("Maximal 5.000 Zeichen pro WAV-Datei")
  cfg=SynthesisConfig(volume=1.0,length_scale=1.0/min(1.25,max(0.75,speed)),noise_scale=NOISE_SCALE,noise_w_scale=NOISE_W_SCALE,normalize_audio=True)
  buf=io.BytesIO()
- with synth_lock,wave.open(buf,"wb") as wav:
-  get_voice().synthesize_wav(clean,wav,syn_config=cfg)
+ with synth_lock:
+  loaded_voice=get_voice()
+  with wave.open(buf,"wb") as wav:
+   loaded_voice.synthesize_wav(clean,wav,syn_config=cfg)
  audio=buf.getvalue()
  if len(audio)<44 or audio[:4]!=b"RIFF" or audio[8:12]!=b"WAVE": raise RuntimeError("Piper returned invalid WAV")
  if len(audio)>20*1024*1024: raise RuntimeError("Piper WAV exceeded 20-MB limit")
