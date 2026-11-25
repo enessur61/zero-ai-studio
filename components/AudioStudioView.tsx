@@ -58,7 +58,7 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
 
   useEffect(() => {
     if (!assetToLoad || assetToLoad.type !== 'audio') return;
-    const match = /^Voiceover \\(([^)]+)\\):\\s*(.*)$/.exec(assetToLoad.title);
+    const match = /^Voiceover \(([^)]+)\):\s*(.*)$/.exec(assetToLoad.title);
     setAudioUrl(assetToLoad.url);
     setAudioModelId(assetToLoad.modelId);
     setTtsError(null);
