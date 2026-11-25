@@ -24,7 +24,8 @@ actor CoreMLInferenceSession {
     func loadModelIfNeeded() throws {
         guard model == nil else { return }
         let resolvedURL = modelURL ?? LlamaCoreMLAdapter.locateCompiledModelURL(for: variant)
-        guard let resolvedURL else {
+        guard let resolvedURL,
+              FileManager.default.fileExists(atPath: resolvedURL.path) else {
             throw CoreMLAdapterError.modelBundleMissing(variant.bundleModelFilename)
         }
 
@@ -86,6 +87,10 @@ actor CoreMLInferenceSession {
             throw CoreMLAdapterError.missingOutputLogits
         }
 
+        return Self.copyLogits(logits)
+    }
+
+    static func copyLogits(_ logits: MLMultiArray) -> [Float] {
         var values: [Float] = []
         values.reserveCapacity(logits.count)
         for index in 0..<logits.count {
