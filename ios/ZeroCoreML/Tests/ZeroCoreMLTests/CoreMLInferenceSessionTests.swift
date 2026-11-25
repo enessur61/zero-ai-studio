@@ -54,8 +54,10 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
 
-        XCTAssertEqual(await first.activeStateCount(), 0)
-        XCTAssertEqual(await second.activeStateCount(), 0)
+        let firstStateCount = await first.activeStateCount()
+        let secondStateCount = await second.activeStateCount()
+        XCTAssertEqual(firstStateCount, 0)
+        XCTAssertEqual(secondStateCount, 0)
     }
 
     func testConcurrentPredictionRequestsAreActorSerializedAndRejectForeignStates() async {
@@ -90,8 +92,9 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             return count
         }
 
+        let activeStateCount = await session.activeStateCount()
         XCTAssertEqual(rejectedCount, 32)
-        XCTAssertEqual(await session.activeStateCount(), 0)
+        XCTAssertEqual(activeStateCount, 0)
     }
 
     func testLogitsAreCopiedIntoSendableFloatBufferWithoutReordering() throws {
