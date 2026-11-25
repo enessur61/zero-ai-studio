@@ -337,12 +337,23 @@ export function ProjectsCharactersView({
                       {p.assets.slice(0, 4).map((a) => (
                         <div
                           key={a.id}
-                          className="p-2 rounded-lg bg-[#090B10] border border-white/[0.06] text-[11px] flex items-center justify-between gap-2"
+                          className="p-2 rounded-lg bg-[#090B10] border border-white/[0.06] text-[11px] flex flex-col items-stretch gap-2"
                         >
-                          <span className="truncate text-slate-200">
-                            [{a.type.toUpperCase()}] {a.title}
-                          </span>
-                          <span className="font-mono text-slate-500 shrink-0">{a.modelId}</span>
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <span className="truncate text-slate-200">
+                              [{a.type.toUpperCase()}] {a.title}
+                            </span>
+                            <span className="font-mono text-slate-500 shrink-0">{a.modelId}</span>
+                          </div>
+                          {(a.type === 'audio' || a.type === 'music') && (
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={a.url}
+                              aria-label={`Audio abspielen: ${a.title}`}
+                              className="w-full min-w-0"
+                            />
+                          )}
                         </div>
                       ))}
                     </div>

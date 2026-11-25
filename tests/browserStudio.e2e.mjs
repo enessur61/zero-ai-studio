@@ -13,6 +13,7 @@ const pageErrors = [];
 const providerRequests = [];
 let createdMemoryId = null;
 let createdProjectId = null;
+let createdAudioProjectId = null;
 
 try {
   const context = await browser.newContext({
@@ -32,7 +33,7 @@ try {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          audioDataUrl: 'data:audio/wav;base64,UklGRiQAAABX',
+          audioDataUrl: 'data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAADoAw==',
           modelUsed: 'gemini-3.8-flash-lite-tts',
         }),
       });
@@ -81,19 +82,89 @@ try {
   await openStudio('VIDEO STUDIO', 'ZERO VIDEO STUDIO');
   await main.getByRole('heading', { name: 'Video-Export & Qualitätsprüfung' }).waitFor();
 
-  // Audio Studio: exercise editable voiceover controls without submitting provider requests.
+  // Create a second real project first so audio can be saved to a deliberately selected project.
+  await openStudio('PROJECTS', 'Projekte');
+  const initialProjectIds = await page.evaluate(async () => {
+    const response = await fetch('/api/projects');
+    if (!response.ok) throw new Error('Initial project list API failed');
+    return (await response.json()).projects.map((project) => project.id);
+  });
+  assert.ok(initialProjectIds.length > 0, 'The browser fixture needs one existing project for switch testing');
+  const untouchedProjectId = initialProjectIds[0];
+  const audioProjectTitle = `ZERO Audio Integration ${Date.now()}`;
+  await main.getByPlaceholder('Projekttitel').fill(audioProjectTitle);
+  await main.getByPlaceholder('Kurze Logline / Beschreibung').fill('Audio persistence and playback regression fixture; no providers.');
+  await main.getByRole('button', { name: 'Projekt speichern', exact: true }).click();
+  await main.getByRole('heading', { name: audioProjectTitle, exact: true }).waitFor();
+  const audioProject = await page.evaluate(async (title) => {
+    const response = await fetch('/api/projects');
+    if (!response.ok) throw new Error('Audio project list API failed');
+    return (await response.json()).projects.find((project) => project.title === title) ?? null;
+  }, audioProjectTitle);
+  assert.ok(audioProject?.id, 'The audio target project must be persisted before saving audio');
+  createdAudioProjectId = audioProject.id;
+
+  // Audio Studio: generate a local fixture, switch project targets, and save without provider requests.
   await openStudio('AUDIO STUDIO', 'ZERO AUDIO STUDIO');
   const voiceover = main.getByPlaceholder('Deutschen oder mehrsprachigen Sprechertext eingeben...');
   await voiceover.fill('ZERO Browser-Test: lokale UI-Eingabe.');
   await main.locator('select').first().selectOption('Charon');
   await main.getByRole('button', { name: /Gemini WAV/ }).click();
   await main.locator('audio[src^="data:audio/wav"]').waitFor();
+  const projectTarget = main.locator('select').nth(2);
+  await projectTarget.selectOption(createdAudioProjectId);
+  assert.equal(await projectTarget.inputValue(), createdAudioProjectId, 'Audio target switch must select the requested project');
   await main.getByRole('button', { name: 'In Projekt speichern', exact: true }).click();
   const savedAudioStatus = main.getByText(/gespeichert\.$/);
   await savedAudioStatus.waitFor();
-  await voiceover.fill('ZERO Browser-Test: zweite lokale WAV.');
-  await main.getByRole('button', { name: /Gemini WAV/ }).click();
+  const savedAudioProject = await page.evaluate(async (id) => {
+    const response = await fetch('/api/projects');
+    if (!response.ok) throw new Error('Saved audio project list could not be reloaded');
+    return (await response.json()).projects.find((project) => project.id === id) ?? null;
+  }, createdAudioProjectId);
+  assert.equal(savedAudioProject?.assets[0]?.type, 'audio', 'Saved WAV must be linked as a project audio asset');
+  assert.equal(savedAudioProject.assets[0]?.modelId, 'gemini-3.8-flash-lite-tts');
+  assert.ok(savedAudioProject.assets[0]?.url.startsWith('data:audio/wav;base64,'), 'Persisted audio asset must retain its WAV data URL');
+
+  // Switching away from the saved project must clear the old success state.
+  await projectTarget.selectOption(untouchedProjectId);
   await savedAudioStatus.waitFor({ state: 'detached' });
+  const failedSaveRoute = `**/api/projects/${untouchedProjectId}/assets`;
+  await page.route(failedSaveRoute, async (route) => {
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Simulierter lokaler Speicherfehler' }) });
+  });
+  await main.getByRole('button', { name: 'In Projekt speichern', exact: true }).click();
+  await main.getByText('Simulierter lokaler Speicherfehler').waitFor();
+  await page.unroute(failedSaveRoute);
+  await main.getByRole('button', { name: 'In Projekt speichern', exact: true }).click();
+  await main.getByText(/gespeichert\.$/).waitFor();
+  await main.getByText('Simulierter lokaler Speicherfehler').waitFor({ state: 'detached' });
+  const recoveredProject = await page.evaluate(async (id) => {
+    const response = await fetch('/api/projects');
+    if (!response.ok) throw new Error('Recovered project list could not be reloaded');
+    return (await response.json()).projects.find((project) => project.id === id) ?? null;
+  }, untouchedProjectId);
+  assert.equal(recoveredProject?.assets[0]?.type, 'audio', 'Retry after a save failure must persist the audio asset');
+
+  // A full browser reload must restore both project links and playable audio controls.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByLabel('Admin-Passwort').fill(password);
+  await page.getByRole('button', { name: 'Sicher anmelden' }).click();
+  await page.locator('main h1').filter({ hasText: 'BEYOND LIMITS' }).waitFor();
+  await openStudio('PROJECTS', 'Projekte');
+  const persistedAudioPlayers = main.locator('audio[aria-label^="Audio abspielen: Voiceover (Charon): ZERO Browser-Test"]');
+  await persistedAudioPlayers.first().waitFor();
+  assert.equal(await persistedAudioPlayers.count(), 2, 'Both saved project assets must reappear as audio players after reload');
+  const playbackResult = await persistedAudioPlayers.first().evaluate(async (element) => {
+    const player = element;
+    player.muted = true;
+    player.load();
+    await player.play();
+    player.pause();
+    return { hasSource: Boolean(player.currentSrc), error: player.error?.code ?? null };
+  });
+  assert.ok(playbackResult.hasSource, 'Reloaded project audio must have a playable source');
+  assert.equal(playbackResult.error, null, 'Reloaded project audio must not expose a media decode error');
 
   // Music Studio: render a local on-device SFX through WebAudio, not AI composition.
   await openStudio('MUSIC STUDIO', 'ZERO MUSIC STUDIO');
@@ -154,7 +225,15 @@ try {
 
   console.log('ZERO browser E2E passed: Model Hub, local Image Canvas, Video Studio, Audio UI, local Music SFX, Film Director, Projects CRUD, Memory CRUD/search, and Automation UI. External origins were blocked; no AI/provider/GPU generation requests were made.');
 
-  // Remove the temporary project through the authenticated same-origin API.
+  // Remove temporary projects through the authenticated same-origin API.
+  if (createdAudioProjectId) {
+    const cleanup = await page.evaluate(async (id) => {
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return { ok: response.ok, status: response.status };
+    }, createdAudioProjectId);
+    if (!cleanup.ok) throw new Error('Temporary audio project cleanup failed: HTTP ' + cleanup.status);
+    createdAudioProjectId = null;
+  }
   if (createdProjectId) {
     const cleanup = await page.evaluate(async (id) => {
       const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -174,6 +253,11 @@ try {
   try {
     if (createdProjectId) {
       await pageCleanup(baseUrl, password, '/api/projects/' + encodeURIComponent(createdProjectId));
+    }
+  } catch {}
+  try {
+    if (createdAudioProjectId) {
+      await pageCleanup(baseUrl, password, '/api/projects/' + encodeURIComponent(createdAudioProjectId));
     }
   } catch {}
   await browser.close();

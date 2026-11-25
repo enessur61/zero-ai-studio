@@ -384,7 +384,10 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                   <>
                     <select
                       value={targetProjectId || projects[0]?.id || ''}
-                      onChange={(e) => setTargetProjectId(e.target.value)}
+                      onChange={(e) => {
+                        setTargetProjectId(e.target.value);
+                        setSavedAudioMsg(null);
+                      }}
                       className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-xl px-2.5 text-xs text-slate-200"
                     >
                       {projects.map((p) => (
@@ -401,6 +404,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                         if (!pid || !audioUrl) return;
                         setSavingAudio(true);
                         setSavedAudioMsg(null);
+                        setTtsError(null);
                         try {
                           const res = await apiRequest<{ project: StudioProject }>(
                             `/api/projects/${pid}/assets`,
