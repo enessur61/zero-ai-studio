@@ -1,6 +1,7 @@
 name: ZERO Native iOS App Build
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "ios/**"
@@ -21,9 +22,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Native iOS validation is deliberately manual until the web studio is production-ready.
+  # Validate native iOS changes on PRs and allow explicit manual runs.
   build-ios-app:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
