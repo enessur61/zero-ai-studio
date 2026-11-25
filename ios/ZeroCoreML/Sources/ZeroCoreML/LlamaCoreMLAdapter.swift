@@ -38,8 +38,7 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
 
 /// Lokaler CoreML-Adapter für Meta Llama 3.2 (1B / 3B Instruct, 4-bit quantisiert)
 /// Optimiert für Apple A18 Pro Neural Engine auf iPhone 16 Pro Max (8 GB Unified Memory).
-@MainActor
-public final class LlamaCoreMLAdapter {
+public actor LlamaCoreMLAdapter {
     private let config: LlamaCoreMLConfig
     private let tokenizer: LlamaTokenizer?
     private var model: MLModel?
@@ -191,7 +190,10 @@ public final class LlamaCoreMLAdapter {
             "causalMask": MLFeatureValue(multiArray: maskArray)
         ])
 
-        let output = try await model.prediction(from: provider, using: state)
+        // Use Core ML's synchronous stateful API while the adapter actor owns the model.
+        // This avoids sending the non-Sendable MLModel across actor boundaries; the actor
+        // also serializes access to the mutable MLState used by autoregressive decoding.
+        let output = try model.prediction(from: provider, using: state)
         guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
             throw CoreMLAdapterError.missingOutputLogits
         }
