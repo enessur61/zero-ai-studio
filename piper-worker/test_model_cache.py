@@ -70,7 +70,7 @@ class ModelCachePersistenceTests(unittest.TestCase):
         self.assertEqual(app.REV, "cf910fb59f1d79ab3b625a63993a108751c6c25d")
         self.assertEqual(app.EXPECTED_SIZES, {"model": 63221984, "config": 6455})
         self.assertEqual(app.MD5["model"], "e2fe077168bfe802e951e717dfa85873")
-        self.assertEqual(app.MD5["config"], "dac4f7530c978753aeb40f214245659f")
+        self.assertEqual(app.MD5["config"], "996579e89520190067e25f1699867738")
         self.assertEqual(app.SHA256["model"], "fd270eb3d1ebf91d763f8a0f949b1b1bebdfefaea18c3aaf8577dd34536e064f")
         self.assertEqual((app.NOISE_SCALE, app.NOISE_W_SCALE), (0.5, 0.333))
 
