@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix="zero-piper-local-synthesis-") as cache_
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
     import app
-    from voice_assets import validate_model_file, validate_voice_config
+    from voice_assets import sha256_file, validate_model_file, validate_voice_config
 
     first_audio = app.synthesize("ZERO lokaler Piper-Test. Dies ist eine lokale deutsche Sprachsynthese.", 1.0)
     assert app.voice is not None, "Piper ONNX voice must be loaded by local CPU inference"
@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory(prefix="zero-piper-local-synthesis-") as cache_
         assert audio.getnframes() > 0
         assert audio.getframerate() == 22050
 
+    print(f"Piper pinned voice config SHA-256: {sha256_file(app.CONFIG)}")
     print(
         "Piper local CPU synthesis passed: pinned model/config verified, "
         "22.05-kHz mono PCM WAV emitted, and second inference reloaded "
