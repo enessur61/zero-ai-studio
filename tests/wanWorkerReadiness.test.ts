@@ -116,11 +116,11 @@ for (const [name, payload, expectedStatus] of [
   ['persistent model cache', { ...healthy, model_cache_persistent: false }, 'WORKER_MODEL_CACHE_NOT_PERSISTENT'],
   ['GPU VRAM', { ...healthy, gpu_vram_total_mb: 8192 }, 'WORKER_GPU_VRAM_INSUFFICIENT'],
 ]) {
-  const status = createWanWorkerStatusPayload({ ...base, payload });
+  const status = createWanWorkerStatusPayload({ ...base, payload, env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' } });
   assert.equal(status.online, false, `Video Studio must not enable Wan when ${name} is unavailable`);
   assert.equal(status.status, expectedStatus);
 }
-const offlineStatus = createWanWorkerStatusPayload({ ...base, workerReachable: false });
+const offlineStatus = createWanWorkerStatusPayload({ ...base, workerReachable: false, env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' } });
 assert.equal(offlineStatus.online, false);
 assert.equal(offlineStatus.status, 'WORKER_OFFLINE');
 
