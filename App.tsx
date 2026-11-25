@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import {
   Brain,
   Clapperboard,
