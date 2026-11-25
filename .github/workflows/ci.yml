@@ -99,6 +99,10 @@ jobs:
           python3 -m pip install --disable-pip-version-check --no-cache-dir -r piper-worker/requirements.txt
           python3 -c "from piper import PiperVoice, SynthesisConfig; print('Piper runtime API import passed')"
           python3 piper-worker/test_voice_assets.py
+      - name: Verify Piper model cache and run real local CPU synthesis without AI providers
+        run: |
+          (cd piper-worker && python3 -m unittest -v test_model_cache)
+          python3 piper-worker/test_local_synthesis.py
       - name: Validate Piper and GPU worker Python syntax
         run: python3 -m py_compile piper-worker/app.py piper-worker/voice_assets.py gpu-worker/app.py
       - name: Run PostgreSQL revision and concurrency integration tests
