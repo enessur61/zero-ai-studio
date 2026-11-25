@@ -23,7 +23,7 @@ import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } f
 import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
 import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
-import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
+import { createWanWorkerStatusPayload, isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
@@ -2153,35 +2153,32 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       redirect: 'error',
     });
     if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
-    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean; tts_available?: boolean; tts_voice_downloaded?: boolean };
-    const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
-    const online = payload.ok === true && payload.cuda_available === true && engineMatches;
+    const payload = await response.json() as {
+      ok?: unknown; engine?: unknown; model?: unknown; cuda_available?: unknown;
+      gpu_name?: unknown; gpu_vram_total_mb?: unknown; gpu_vram_free_mb?: unknown;
+      model_cache_persistent?: unknown; persistent_storage_configured?: unknown;
+      cost_gate_open?: unknown; daily_job_limit?: unknown; daily_jobs_remaining?: unknown;
+      max_concurrent_jobs?: unknown; tts_available?: unknown; tts_voice_downloaded?: unknown;
+    };
+    const readiness = createWanWorkerStatusPayload({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: true,
+      zeroCostGateOpen: true,
+      payload,
+    });
     return res.json({
-      configured: true,
-      online,
-      gpuAvailable: payload.cuda_available === true,
+      ...readiness,
       ttsAvailable: payload.tts_available === true,
       ttsVoiceDownloaded: payload.tts_voice_downloaded === true,
-      engine: 'Wan 2.1',
-      status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
-      message: online
-        ? 'Wan-Worker und CUDA-GPU erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
-        : payload.cuda_available === false
-          ? 'Worker erreichbar, aber keine CUDA-GPU verfügbar. Wan-Inferenz ist nicht startbereit.'
-          : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
-      maxDurationSec: 60,
-      costFallback: false,
     });
   } catch {
-    return res.json({
-      configured: true,
-      online: false,
-      engine: 'Wan 2.1',
-      status: 'WORKER_OFFLINE',
-      message: 'Wan-GPU-Worker ist derzeit nicht erreichbar. Es wird kein kostenpflichtiger Ersatzdienst verwendet.',
-      maxDurationSec: 60,
-      costFallback: false,
-    });
+    return res.json(createWanWorkerStatusPayload({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: false,
+      zeroCostGateOpen: true,
+    }));
   } finally {
     clearTimeout(timeout);
   }
