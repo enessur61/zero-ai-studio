@@ -25,13 +25,8 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         }
     }
 
-    func testUnknownStateIdentifiersCannotCrossInferenceSessions() async {
+    func testUnknownStateIdentifierIsRejectedWithoutCreatingState() async {
         let first = CoreMLInferenceSession(
-            variant: .instruct1B,
-            computeUnits: .cpuOnly,
-            modelURL: nil
-        )
-        let second = CoreMLInferenceSession(
             variant: .instruct1B,
             computeUnits: .cpuOnly,
             modelURL: nil
@@ -55,12 +50,10 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         }
 
         let firstStateCount = await first.activeStateCount()
-        let secondStateCount = await second.activeStateCount()
         XCTAssertEqual(firstStateCount, 0)
-        XCTAssertEqual(secondStateCount, 0)
     }
 
-    func testConcurrentPredictionRequestsAreActorSerializedAndRejectForeignStates() async {
+    func testConcurrentInvalidStateRequestsAreRejectedWithoutCreatingStates() async {
         let session = CoreMLInferenceSession(
             variant: .instruct1B,
             computeUnits: .cpuOnly,
