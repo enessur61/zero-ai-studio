@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Check, Download, FolderPlus, Loader2, Mic, Square, Upload, Volume2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { resolveAudioModelId } from '../lib/audioModelMetadata.ts';
 import {
   isNativeIOSCoreMLAvailable,
   runNativeIOSSynthesize,
@@ -59,12 +60,12 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     setTtsLoading(true);
     setTtsError(null);
     try {
-      const data = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts', {
+      const data = await apiRequest<{ audioDataUrl: string; modelUsed?: string }>('/api/audio/tts', {
         method: 'POST',
         body: JSON.stringify({ text, voiceName, style, expressive }),
       });
       setAudioUrl(data.audioDataUrl);
-      setAudioModelId(expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts');
+      setAudioModelId(resolveAudioModelId(data.modelUsed, expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts'));
       setAudioVoiceLabel(voiceName);
     } catch (err) {
       setTtsError(err instanceof Error ? err.message : 'TTS fehlgeschlagen');
@@ -83,7 +84,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         body: JSON.stringify({ text, speed: 0.96 }),
       });
       setAudioUrl(data.audioDataUrl);
-      setAudioModelId('piper-tts-de-worker');
+      setAudioModelId(resolveAudioModelId(data.modelUsed, 'piper-tts-de-worker'));
       setAudioVoiceLabel('Thorsten Deutsch');
       setSavedAudioMsg(null);
     } catch (err) {
