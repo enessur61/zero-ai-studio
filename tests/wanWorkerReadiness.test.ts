@@ -89,8 +89,23 @@ assert.equal(expandedDailyLimit.dailyJobsRemaining, 15);
 
 // Regression: the actual Video Studio status payload must use all readiness gates,
 // not merely a reachable HTTP endpoint and a CUDA device.
-const healthyStatus = createWanWorkerStatusPayload(base);
+const healthyStatus = createWanWorkerStatusPayload({
+  workerUrlConfigured: base.workerUrlConfigured,
+  workerTokenConfigured: base.workerTokenConfigured,
+  workerReachable: base.workerReachable,
+  payload: healthy,
+  env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' },
+});
 assert.equal(healthyStatus.online, true);
+const closedStatusGate = createWanWorkerStatusPayload({
+  workerUrlConfigured: base.workerUrlConfigured,
+  workerTokenConfigured: base.workerTokenConfigured,
+  workerReachable: base.workerReachable,
+  payload: healthy,
+  env: {},
+});
+assert.equal(closedStatusGate.online, false);
+assert.equal(closedStatusGate.status, 'ZERO_COST_GATE_CLOSED');
 assert.equal(healthyStatus.maxDurationSec, 60);
 assert.equal(healthyStatus.costFallback, false);
 
