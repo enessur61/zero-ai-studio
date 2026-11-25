@@ -16,6 +16,18 @@ import { ObjectUrlLease } from '../lib/objectUrlLease.ts';
 {
   const revoked: string[] = [];
   const lease = new ObjectUrlLease((url) => revoked.push(url));
+  lease.adopt('blob:track-old');
+  assert.equal(lease.replace('blob:track-old', 'blob:track-new'), 'blob:track-new');
+  assert.equal(lease.has('blob:track-old'), false, 'replacing a track releases the previous blob URL');
+  assert.equal(lease.has('blob:track-new'), true, 'the replacement track remains owned until cleanup');
+  assert.deepEqual(revoked, ['blob:track-old']);
+  assert.deepEqual(lease.releaseAll(), ['blob:track-new']);
+  assert.deepEqual(revoked, ['blob:track-old', 'blob:track-new']);
+}
+
+{
+  const revoked: string[] = [];
+  const lease = new ObjectUrlLease((url) => revoked.push(url));
   lease.adopt('blob:music-to-video');
   assert.equal(lease.transfer('blob:music-to-video'), true);
   assert.equal(lease.has('blob:music-to-video'), false);
