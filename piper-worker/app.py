@@ -84,7 +84,10 @@ def download(key:str,dest:Path,max_bytes:int):
      raise RuntimeError("Piper voice file exceeded its pinned size limit")
     md5_digest.update(chunk); sha256_digest.update(chunk); out.write(chunk)
   if total!=expected_size:
-   raise RuntimeError("Piper voice file size does not match pinned metadata")
+   raise RuntimeError(
+    f"Piper voice file size {total} bytes does not match pinned metadata "
+    f"({expected_size} bytes; MD5 {md5_digest.hexdigest()}; expected {MD5[key]})"
+   )
   if md5_digest.hexdigest()!=MD5[key]:
    raise RuntimeError("Piper voice failed published MD5 integrity check")
   if expected_sha256 is not None and sha256_digest.hexdigest()!=expected_sha256:
