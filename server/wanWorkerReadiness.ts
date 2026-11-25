@@ -179,3 +179,54 @@ export function evaluateWanWorkerReadiness(input: {
     readiness,
   };
 }
+
+
+/** Build the exact status payload consumed by Video Studio, using every readiness gate. */
+export function createWanWorkerStatusPayload(input: {
+  workerUrlConfigured: boolean;
+  workerTokenConfigured: boolean;
+  workerReachable: boolean;
+  zeroCostGateOpen: boolean;
+  payload?: WanWorkerHealthPayload | null;
+}): {
+  configured: boolean;
+  online: boolean;
+  engine: 'Wan 2.1';
+  status: string;
+  message: string;
+  gpuAvailable: boolean;
+  gpuName: string | null;
+  gpuVramTotalMb: number | null;
+  gpuVramFreeMb: number | null;
+  modelCachePersistent: boolean;
+  persistentStorageConfigured: boolean;
+  costGateOpen: boolean;
+  dailyJobLimit: number | null;
+  dailyJobsRemaining: number | null;
+  maxConcurrentJobs: number | null;
+  readiness: WanReadinessCriterion[];
+  maxDurationSec: 60;
+  costFallback: false;
+} {
+  const readiness = evaluateWanWorkerReadiness(input);
+  return {
+    configured: input.workerUrlConfigured,
+    online: readiness.online,
+    engine: 'Wan 2.1',
+    status: readiness.status,
+    message: readiness.message,
+    gpuAvailable: readiness.gpuAvailable,
+    gpuName: readiness.gpuName,
+    gpuVramTotalMb: readiness.gpuVramTotalMb,
+    gpuVramFreeMb: readiness.gpuVramFreeMb,
+    modelCachePersistent: readiness.modelCachePersistent,
+    persistentStorageConfigured: readiness.persistentStorageConfigured,
+    costGateOpen: readiness.costGateOpen,
+    dailyJobLimit: readiness.dailyJobLimit,
+    dailyJobsRemaining: readiness.dailyJobsRemaining,
+    maxConcurrentJobs: readiness.maxConcurrentJobs,
+    readiness: readiness.readiness,
+    maxDurationSec: 60,
+    costFallback: false,
+  };
+}
