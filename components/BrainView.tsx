@@ -233,6 +233,7 @@ export function BrainView({
             responseStatus: response.status,
             selectedModelId: selectedModel,
             localWebGPUModelLoaded: isWebGPULocalModelLoaded(),
+            requiresServerContext: useWebSearch || Boolean(selectedProjectId),
           })) {
             const history = messages
               .filter((message) => message.role === 'user' || message.role === 'assistant')
