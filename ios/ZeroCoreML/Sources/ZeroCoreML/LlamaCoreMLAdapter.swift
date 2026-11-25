@@ -107,6 +107,7 @@ public final class LlamaCoreMLAdapter {
         onToken: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         try await loadModelIfNeeded()
+        try Task.checkCancellation()
         guard let tokenizer else {
             throw CoreMLAdapterError.invalidInputTensor("Tokenizer-Implementierung nicht initialisiert.")
         }
@@ -123,6 +124,7 @@ public final class LlamaCoreMLAdapter {
         let stateID = try await inferenceSession.makeState()
         do {
             var generatedIds: [Int32] = []
+            try await inferenceSession.cancellationCheckpoint()
             var nextLogits = try await inferenceSession.predictStep(
                 inputIds: promptTokens,
                 startPosition: 0,
@@ -131,7 +133,7 @@ public final class LlamaCoreMLAdapter {
 
             var cursor = promptTokens.count
             for _ in 0..<config.maxNewTokens {
-                try Task.checkCancellation()
+                try await inferenceSession.cancellationCheckpoint()
                 let nextID = sampleTopP(
                     logits: nextLogits,
                     temperature: config.temperature,
@@ -143,7 +145,7 @@ public final class LlamaCoreMLAdapter {
                 onToken?(tokenizer.decode([nextID]))
                 if cursor >= config.variant.contextLength - 1 { break }
 
-                try Task.checkCancellation()
+                try await inferenceSession.cancellationCheckpoint()
                 nextLogits = try await inferenceSession.predictStep(
                     inputIds: [nextID],
                     startPosition: cursor,
