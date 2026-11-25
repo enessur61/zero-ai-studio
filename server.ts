@@ -2164,7 +2164,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       workerUrlConfigured: true,
       workerTokenConfigured: true,
       workerReachable: true,
-      ,
+
       payload,
     });
     return res.json({
@@ -2177,7 +2177,7 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       workerUrlConfigured: true,
       workerTokenConfigured: true,
       workerReachable: false,
-      ,
+
     }));
   } finally {
     clearTimeout(timeout);
