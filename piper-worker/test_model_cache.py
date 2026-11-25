@@ -86,6 +86,12 @@ class ModelCachePersistenceTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(self.path.with_suffix(".onnx.part").exists())
 
+    def test_synthesize_preserves_voice_load_failure_without_wave_error_masking(self):
+        with patch("app.get_voice", side_effect=RuntimeError("pinned voice config mismatch")):
+            with self.assertRaisesRegex(RuntimeError, "pinned voice config mismatch"):
+                app.synthesize("ZERO lokaler Regressionstest.", 1.0)
+
+
 
     def test_health_payload_matches_server_readiness_contract(self):
         with patch.object(app, "APP_TOKEN", "zero-ci-worker-token-with-at-least-32-characters"):
