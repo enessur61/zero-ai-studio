@@ -19,8 +19,8 @@ URLS={
  "model":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx",
  "config":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx.json",
 }
-MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"dac4f7530c978753aeb40f214245659f"}
-EXPECTED_SIZES={"model":MODEL_SIZE_BYTES,"config":6455}
+MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"996579e89520190067e25f1699867738"}
+EXPECTED_SIZES={"model":MODEL_SIZE_BYTES,"config":5460}
 SHA256={"model":MODEL_SHA256,"config":None}
 NOISE_SCALE=0.5
 NOISE_W_SCALE=0.333
