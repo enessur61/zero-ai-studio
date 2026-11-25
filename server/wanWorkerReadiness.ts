@@ -186,7 +186,7 @@ export function createWanWorkerStatusPayload(input: {
   workerUrlConfigured: boolean;
   workerTokenConfigured: boolean;
   workerReachable: boolean;
-  zeroCostGateOpen: boolean;
+  env?: Record<string, string | undefined>;
   payload?: WanWorkerHealthPayload | null;
 }): {
   configured: boolean;
@@ -208,7 +208,10 @@ export function createWanWorkerStatusPayload(input: {
   maxDurationSec: 60;
   costFallback: false;
 } {
-  const readiness = evaluateWanWorkerReadiness(input);
+  const readiness = evaluateWanWorkerReadiness({
+    ...input,
+    zeroCostGateOpen: isWanGpuAllowed(input.env),
+  });
   return {
     configured: input.workerUrlConfigured,
     online: readiness.online,
