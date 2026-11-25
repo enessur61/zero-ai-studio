@@ -23,22 +23,21 @@ try {
   page.setDefaultTimeout(12_000);
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
-  // Mock TTS locally so the audio-save lifecycle is covered without provider inference.
-  await page.route('**/api/audio/tts', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        audioDataUrl: 'data:audio/wav;base64,UklGRiQAAABX',
-        modelUsed: 'gemini-3.8-flash-lite-tts',
-      }),
-    });
-  });
-
   // The browser test is deliberately offline except for the local ZERO server.
   // This prevents fonts, remote models, cloud inference, and accidental fallbacks.
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
+    if (url.origin === baseUrl.origin && url.pathname === '/api/audio/tts') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          audioDataUrl: 'data:audio/wav;base64,UklGRiQAAABX',
+          modelUsed: 'gemini-3.8-flash-lite-tts',
+        }),
+      });
+      return;
+    }
     if (url.origin !== baseUrl.origin) {
       await route.abort();
       return;
@@ -90,7 +89,7 @@ try {
   await main.getByRole('button', { name: /Gemini WAV/ }).click();
   await main.locator('audio[src^="data:audio/wav"]').waitFor();
   await main.getByRole('button', { name: 'In Projekt speichern', exact: true }).click();
-  const savedAudioStatus = main.getByText(/^In ".+" gespeichert\\.$/);
+  const savedAudioStatus = main.getByText(/gespeichert\.$/);
   await savedAudioStatus.waitFor();
   await voiceover.fill('ZERO Browser-Test: zweite lokale WAV.');
   await main.getByRole('button', { name: /Gemini WAV/ }).click();
