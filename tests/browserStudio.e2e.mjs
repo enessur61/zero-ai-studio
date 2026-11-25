@@ -23,6 +23,18 @@ try {
   page.setDefaultTimeout(12_000);
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
+  // Mock TTS locally so the audio-save lifecycle is covered without provider inference.
+  await page.route('**/api/audio/tts', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        audioDataUrl: 'data:audio/wav;base64,UklGRiQAAABX',
+        modelUsed: 'gemini-3.8-flash-lite-tts',
+      }),
+    });
+  });
+
   // The browser test is deliberately offline except for the local ZERO server.
   // This prevents fonts, remote models, cloud inference, and accidental fallbacks.
   await page.route('**/*', async (route) => {
@@ -36,6 +48,7 @@ try {
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (url.origin === baseUrl.origin &&
+        url.pathname !== '/api/audio/tts' && // locally fulfilled fixture; no provider request
         request.method() !== 'GET' &&
         /^\/api\/(image\/generate|audio\/tts|audio\/transcribe|music\/compose|film\/direct|brain\/chat|automation\/run|video\/engine\/jobs)$/.test(url.pathname)) {
       providerRequests.push({ method: request.method(), path: url.pathname });
@@ -74,6 +87,14 @@ try {
   const voiceover = main.getByPlaceholder('Deutschen oder mehrsprachigen Sprechertext eingeben...');
   await voiceover.fill('ZERO Browser-Test: lokale UI-Eingabe.');
   await main.locator('select').first().selectOption('Charon');
+  await main.getByRole('button', { name: /Gemini WAV/ }).click();
+  await main.locator('audio[src^="data:audio/wav"]').waitFor();
+  await main.getByRole('button', { name: 'In Projekt speichern', exact: true }).click();
+  const savedAudioStatus = main.getByText(/^In ".+" gespeichert\\.$/);
+  await savedAudioStatus.waitFor();
+  await voiceover.fill('ZERO Browser-Test: zweite lokale WAV.');
+  await main.getByRole('button', { name: /Gemini WAV/ }).click();
+  await savedAudioStatus.waitFor({ state: 'detached' });
 
   // Music Studio: render a local on-device SFX through WebAudio, not AI composition.
   await openStudio('MUSIC STUDIO', 'ZERO MUSIC STUDIO');

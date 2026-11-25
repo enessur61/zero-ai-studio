@@ -65,6 +65,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         body: JSON.stringify({ text, voiceName, style, expressive }),
       });
       setAudioUrl(data.audioDataUrl);
+      setSavedAudioMsg(null);
       setAudioModelId(resolveAudioModelId(data.modelUsed, expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts'));
       setAudioVoiceLabel(voiceName);
     } catch (err) {
