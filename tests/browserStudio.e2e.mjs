@@ -173,6 +173,14 @@ try {
   assert.ok(playbackResult.hasSource, 'Reloaded project audio must have a playable source');
   assert.equal(playbackResult.error, null, 'Reloaded project audio must not expose a media decode error');
 
+  // Restore the persisted voiceover back into Audio Studio without another TTS request.
+  await persistedAudioPlayers.first().locator('xpath=..').getByRole('button', { name: 'Im Audio Studio öffnen' }).click();
+  await main.getByRole('heading', { name: 'ZERO AUDIO STUDIO', exact: true }).waitFor();
+  await main.locator('audio[src^="data:audio/wav"]').waitFor();
+  assert.ok((await main.locator('textarea').first().inputValue()).startsWith('ZERO Browser-Test:'), 'Restored audio should repopulate the saved voiceover text snippet');
+  assert.equal(await main.locator('select').first().inputValue(), 'Charon', 'Restored audio should restore its voice profile');
+  assert.deepEqual(providerRequests, [], 'Restoring an audio asset must not call any provider');
+
   // Music Studio: render a local on-device SFX through WebAudio, not AI composition.
   await openStudio('MUSIC STUDIO', 'ZERO MUSIC STUDIO');
   await main.getByRole('button', { name: 'Sub-Bass Impact', exact: true }).click();

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Download, FolderPlus, Loader2, Mic, Square, Upload, Volume2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
 import { resolveAudioModelId } from '../lib/audioModelMetadata.ts';
@@ -6,7 +6,7 @@ import {
   isNativeIOSCoreMLAvailable,
   runNativeIOSSynthesize,
 } from '../lib/iosCoreMLBridge.ts';
-import type { StudioProject } from '../types/zero.ts';
+import type { ProjectAsset, StudioProject } from '../types/zero.ts';
 
 interface SpeechRecognitionInstance {
   lang: string;
@@ -22,9 +22,11 @@ interface SpeechRecognitionInstance {
 interface AudioStudioViewProps {
   projects: StudioProject[];
   onProjectUpdated: (p: StudioProject) => void;
+  assetToLoad?: ProjectAsset | null;
+  onAudioAssetLoaded?: () => void;
 }
 
-export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewProps) {
+export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAudioAssetLoaded }: AudioStudioViewProps) {
   const [text, setText] = useState(
     'Nichts im Rauschen passiert ohne Grund. Bei exakt vierhundertdreißig Hertz löste sich die Verzerrung.'
   );
@@ -53,6 +55,24 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const nativeIOSActive = isNativeIOSCoreMLAvailable();
+
+  useEffect(() => {
+    if (!assetToLoad || assetToLoad.type !== 'audio') return;
+    const match = /^Voiceover \\(([^)]+)\\):\\s*(.*)$/.exec(assetToLoad.title);
+    setAudioUrl(assetToLoad.url);
+    setAudioModelId(assetToLoad.modelId);
+    setTtsError(null);
+    setSavedAudioMsg(null);
+    if (match) {
+      const restoredVoice = match[1];
+      if (['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].includes(restoredVoice)) {
+        setVoiceName(restoredVoice as typeof voiceName);
+      }
+      setAudioVoiceLabel(restoredVoice);
+      if (match[2]) setText(match[2]);
+    }
+    onAudioAssetLoaded?.();
+  }, [assetToLoad, onAudioAssetLoaded]);
 
   async function handleGenerateTts(e: React.FormEvent) {
     e.preventDefault();

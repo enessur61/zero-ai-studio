@@ -3,7 +3,7 @@ import { Download, FolderPlus, Loader2, RotateCcw, Search, Trash2, UserPlus } fr
 import { apiRequest } from '../lib/api.ts';
 import { deleteProjectSceneVideos } from '../lib/sceneVideoStore.ts';
 import { getProjectActionError } from '../lib/projectActionError.ts';
-import type { CharacterProfile, StudioProject } from '../types/zero.ts';
+import type { CharacterProfile, ProjectAsset, StudioProject } from '../types/zero.ts';
 
 interface ProjectsCharactersViewProps {
   projects: StudioProject[];
@@ -13,6 +13,7 @@ interface ProjectsCharactersViewProps {
   onProjectUpdated: (p: StudioProject) => void;
   onCharacterCreated: (c: CharacterProfile) => void;
   onOpenDirector: () => void;
+  onLoadAudioAsset: (asset: ProjectAsset) => void;
 }
 
 export function ProjectsCharactersView({
@@ -23,6 +24,7 @@ export function ProjectsCharactersView({
   onProjectUpdated,
   onCharacterCreated,
   onOpenDirector,
+  onLoadAudioAsset,
 }: ProjectsCharactersViewProps) {
   const [tab, setTab] = useState<'projects' | 'characters'>('projects');
   const [deletingProjId, setDeletingProjId] = useState<string | null>(null);
@@ -353,6 +355,16 @@ export function ProjectsCharactersView({
                               aria-label={`Audio abspielen: ${a.title}`}
                               className="w-full min-w-0"
                             />
+                          )}
+                          {a.type === 'audio' && (
+                            <button
+                              type="button"
+                              onClick={() => onLoadAudioAsset(a)}
+                              className="min-h-[36px] rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+                              aria-label={`Audio im Audio Studio öffnen: ${a.title}`}
+                            >
+                              Im Audio Studio öffnen
+                            </button>
                           )}
                         </div>
                       ))}
