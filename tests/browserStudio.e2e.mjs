@@ -73,7 +73,7 @@ try {
   await openStudio('AUDIO STUDIO', 'ZERO AUDIO STUDIO');
   const voiceover = main.getByPlaceholder('Deutschen oder mehrsprachigen Sprechertext eingeben...');
   await voiceover.fill('ZERO Browser-Test: lokale UI-Eingabe.');
-  await main.locator('select').filter({ has: main.locator('option[value="Charon"]') }).selectOption('Charon');
+  await main.locator('select').first().selectOption('Charon');
 
   // Music Studio: render a local on-device SFX through WebAudio, not AI composition.
   await openStudio('MUSIC STUDIO', 'ZERO MUSIC STUDIO');
