@@ -60,15 +60,13 @@ export function MusicStudioView({
   }, []);
 
   function replaceTrackUrl(url: string) {
-    objectUrlLeaseRef.current.release(trackUrlRef.current);
-    objectUrlLeaseRef.current.adopt(url);
+    objectUrlLeaseRef.current.replace(trackUrlRef.current, url);
     trackUrlRef.current = url;
     setTrackUrl(url);
   }
 
   function replaceSfxUrl(next: { label: string; url: string }) {
-    objectUrlLeaseRef.current.release(sfxUrlRef.current);
-    objectUrlLeaseRef.current.adopt(next.url);
+    objectUrlLeaseRef.current.replace(sfxUrlRef.current, next.url);
     sfxUrlRef.current = next.url;
     setSfxUrl(next);
   }
@@ -106,7 +104,7 @@ export function MusicStudioView({
     setError(null);
     try {
       const rendered = await renderMusicToWavUrl({ ...params, durationSec });
-      setTrackUrl(rendered.url);
+      replaceTrackUrl(rendered.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Synthese fehlgeschlagen');
     } finally {
