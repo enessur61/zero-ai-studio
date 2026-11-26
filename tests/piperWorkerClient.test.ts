@@ -40,6 +40,7 @@ try {
     headers: { Authorization: 'Bearer local-test-secret' },
     text: 'ZERO lokaler Mock-Worker-Test',
     speed: 0.96,
+    idempotencyKey: 'worker-client-test-001',
     signal: controller.signal,
   });
   assert.equal(response.status, 200);
