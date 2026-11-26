@@ -171,7 +171,10 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                 "status": d.status,
                 "runtime": d.runtime,
                 "deviceModel": d.deviceModel,
-                "compiledModelPresent": d.weightsPresent,
+                "compiledModelPresent": d.weightsPresent && d.runtimeLinked,
+                "weightsPresent": d.weightsPresent,
+                "runtimeLinked": d.runtimeLinked,
+                "available": d.weightsPresent && d.runtimeLinked,
                 "estimatedRamGB": d.estimatedRamGB
             ])
         } else if modelId == "piper-tts-de" {
