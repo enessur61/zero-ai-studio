@@ -22,7 +22,7 @@ export type VerifiedZipRestoreDependencies = {
   getZipBackupRevision: (backup: ZipBackupVersion) => number;
   saveDb: (db: ZeroDatabase, options: RestoreOptions) => Promise<void>;
   enrichModelMetadata: (model: ZeroDatabase['models'][number]) => ZeroDatabase['models'][number];
-  getRestorePrincipalHash: () => string;
+  getRestorePrincipalHash?: () => string;
 };
 
 /**
@@ -133,6 +133,9 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
         }
         if (mediaEntries.length !== seenPaths.size || mediaEntries.some((name) => !seenPaths.has(name))) {
           throw new Error('ZIP enthält nicht referenzierte oder zusätzliche Projektvideodateien.');
+        }
+        if (!dependencies.getRestorePrincipalHash) {
+          throw new Error('Authentifizierter Principal fehlt für die Video-Wiederherstellung.');
         }
         projectVideoRestore = { principalHash: dependencies.getRestorePrincipalHash(), assets };
       } catch (error) {
