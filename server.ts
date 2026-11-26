@@ -1828,7 +1828,7 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     controller = new AbortController();
     timeout = setTimeout(() => controller?.abort(), 150000);
     const response = await postPiperWorkerTts({
-      baseUrl: worker.baseUrl,
+      baseUrl: worker.baseUrl.toString(),
       headers: worker.headers,
       text,
       speed,
