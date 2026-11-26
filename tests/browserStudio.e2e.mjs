@@ -124,6 +124,8 @@ try {
   }, createdAudioProjectId);
   assert.equal(savedAudioProject?.assets[0]?.type, 'audio', 'Saved WAV must be linked as a project audio asset');
   assert.equal(savedAudioProject.assets[0]?.modelId, 'gemini-3.8-flash-lite-tts');
+  assert.equal(savedAudioProject.assets[0]?.sourceText, 'ZERO Browser-Test: lokale UI-Eingabe.', 'Audio asset must retain the complete source text');
+  assert.equal(savedAudioProject.assets[0]?.voiceLabel, 'Charon', 'Audio asset must retain its voice provenance');
   assert.ok(savedAudioProject.assets[0]?.url.startsWith('data:audio/wav;base64,'), 'Persisted audio asset must retain its WAV data URL');
 
   // Switching away from the saved project must clear the old success state.
@@ -177,7 +179,7 @@ try {
   await persistedAudioPlayers.first().locator('xpath=..').getByRole('button', { name: 'Im Audio Studio öffnen' }).click();
   await main.getByRole('heading', { name: 'ZERO AUDIO STUDIO', exact: true }).waitFor();
   await main.locator('audio[src^="data:audio/wav"]').waitFor();
-  assert.ok((await main.locator('textarea').first().inputValue()).startsWith('ZERO Browser-Test:'), 'Restored audio should repopulate the saved voiceover text snippet');
+  assert.equal(await main.locator('textarea').first().inputValue(), 'ZERO Browser-Test: lokale UI-Eingabe.', 'Restored audio must repopulate the complete saved voiceover text');
   assert.equal(await main.locator('select').first().inputValue(), 'Charon', 'Restored audio should restore its voice profile');
   assert.deepEqual(providerRequests, [], 'Restoring an audio asset must not call any provider');
 
