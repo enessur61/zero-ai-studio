@@ -79,7 +79,7 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
           version?: unknown;
           assets?: unknown;
         };
-        if (manifest.version !== 1 || !Array.isArray(manifest.assets) || manifest.assets.length > 50) {
+        if (manifest.version !== 1 || !Array.isArray(manifest.assets) || manifest.assets.length > 10_000) {
           throw new Error('Unbekannte Manifest-Version oder ungültige Asset-Liste.');
         }
         const projects = new Set(parsedRestoredDb.projects.map((project) => project.id));
@@ -101,7 +101,7 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
           const extension = contentType === 'video/mp4' ? 'mp4' : contentType === 'video/webm' ? 'webm' : null;
           const expectedPath = typeof id === 'string' && extension
             ? `media/project-videos/${id}.${extension}` : null;
-          if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id) || seenIds.has(id) ||
+          if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) || seenIds.has(id) ||
               typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !projects.has(projectId) ||
               typeof sceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sceneId) ||
               !(jobId === null || (typeof jobId === 'string' && /^[0-9a-f-]{36}$/i.test(jobId))) ||
