@@ -204,7 +204,8 @@ final class NativeAdapterSafetyTests: XCTestCase {
         let secondStore = try NativeAudioImportStore()
         defer { firstStore.remove(importId) }
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try firstStore.resolve(importId).path),
+        let resolved = try firstStore.resolve(importId)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resolved.path),
                       "Creating another WKWebView bridge must not delete an active audio import.")
         XCTAssertThrowsError(try secondStore.resolve(importId),
                              "Import identifiers must remain scoped to the store that issued them.")
