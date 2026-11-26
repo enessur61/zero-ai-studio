@@ -80,7 +80,7 @@ public struct WhisperDeploymentDiagnostics: Codable, Sendable {
     public let estimatedRamGB: Double
 }
 
-/// Native iOS whisper.cpp (small.q5_1 Metal + CoreML Encoder) Adapter für iPhone 16 Pro Max.
+/// Whisper audio preparation and guarded bridge adapter. No concrete whisper.cpp runtime is bundled or linked by this package.
 public final class WhisperMetalAdapter: Sendable {
     public let modelId = "whisper-cpp-small"
     public let weightsFilename = "ggml-small.q5_1.bin"
