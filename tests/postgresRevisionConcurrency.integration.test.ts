@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import express from 'express';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRestoreHandlers } from '../server/restoreHandlers.ts';
 import { asyncRoute } from '../server/asyncRoute.ts';
 import { createPostgresConcurrencyGate } from '../server/concurrencyGate.ts';
@@ -1190,6 +1190,356 @@ try {
     'restore must abort when mandatory safety backup publication fails'
   );
   assert.deepEqual(await storeA.read(), beforeSafetyFailure, 'failed safety backup must leave live state untouched');
+
+  // End-to-end ZIP video restore: use actual ZIP bytes, the production verifier,
+  // the production restore orchestration, and PostgreSQL state/video stores on
+  // two independent pools. Every malformed archive must leave both stores intact.
+  const restoreProjectId = 'restore-video-project';
+  const restoreSceneId = 'restore-video-scene';
+  const makeVideoRestoreDb = (title: string): ZeroDatabase => ({
+    ...makeRestoreDb(title),
+    projects: [{
+      id: restoreProjectId,
+      title,
+      scenes: [{ id: restoreSceneId, title: 'Restore scene', status: 'draft' }],
+      assets: [],
+      characterIds: [],
+    }],
+  } as unknown as ZeroDatabase);
+  const videoRestoreLiveDb = makeVideoRestoreDb('live-video-state-before-restore');
+  const videoRestoreInitialState = await storeA.read();
+  assert.ok(videoRestoreInitialState);
+  const videoRestoreInitialRevision = await storeA.write(videoRestoreLiveDb, videoRestoreInitialState.revision);
+  const oldVideoId = randomUUID();
+  const oldVideoPayload = Buffer.alloc(2048, 0x31);
+  oldVideoPayload.write('ftyp', 4, 'ascii');
+  await projectVideoStore.put({
+    id: oldVideoId,
+    projectId: restoreProjectId,
+    sceneId: restoreSceneId,
+    principalHash: videoPrincipal,
+    jobId: randomUUID(),
+    contentType: 'video/mp4',
+    payload: oldVideoPayload,
+  });
+  const baselineVideoRestoreState = await storeA.read();
+  assert.ok(baselineVideoRestoreState);
+  assert.equal(baselineVideoRestoreState.revision, videoRestoreInitialRevision);
+  const baselineOldVideo = await projectVideoStoreB.get(oldVideoId, restoreProjectId, videoPrincipal);
+  assert.deepEqual(baselineOldVideo?.payload, oldVideoPayload);
+
+  const makeVideoArchiveFixture = async (suffix: string) => {
+    const mp4Id = randomUUID();
+    const webmId = randomUUID();
+    const mp4 = Buffer.alloc(3072, 0x41);
+    mp4.write('ftyp', 4, 'ascii');
+    const webm = Buffer.alloc(4096, 0x42);
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).copy(webm, 0);
+    const createdAt = new Date().toISOString();
+    const assets = [
+      {
+        id: mp4Id, projectId: restoreProjectId, sceneId: restoreSceneId, jobId: randomUUID(),
+        contentType: 'video/mp4' as const, sizeBytes: mp4.length,
+        sha256: createHash('sha256').update(mp4).digest('hex'), createdAt,
+        path: `media/project-videos/${mp4Id}.mp4`, payload: mp4,
+      },
+      {
+        id: webmId, projectId: restoreProjectId, sceneId: restoreSceneId, jobId: randomUUID(),
+        contentType: 'video/webm' as const, sizeBytes: webm.length,
+        sha256: createHash('sha256').update(webm).digest('hex'), createdAt,
+        path: `media/project-videos/${webmId}.webm`, payload: webm,
+      },
+    ];
+    const manifest = {
+      version: 1,
+      assets: assets.map(({ payload: _payload, ...metadata }) => metadata),
+    };
+    const entries: Record<string, Buffer> = {
+      'data/zero-studio-db.json': Buffer.from(JSON.stringify(makeVideoRestoreDb(`restored-from-${suffix}`))),
+      'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)),
+    };
+    for (const asset of assets) entries[asset.path] = asset.payload;
+    const archiveResult = await buildFullProjectZip(process.cwd(), entries);
+    assert.equal(verifyZipBuffer(archiveResult.buffer).result.valid, true);
+    return { archive: archiveResult.buffer, assets, manifest, entries };
+  };
+
+  const createVideoRestoreService = (
+    zipId: string,
+    archiveBuffer: Buffer,
+    afterSafetyBackup?: (revision: number) => Promise<void>,
+  ) => {
+    const record = {
+      id: zipId,
+      version: '1.2.5',
+      filename: `${zipId}.zip`,
+      createdAt: new Date().toISOString(),
+      changelog: 'PostgreSQL video restore integration',
+      trigger: 'manual',
+      fileCount: verifyZipBuffer(archiveBuffer).extractedFiles.size,
+      sizeBytes: archiveBuffer.length,
+      verified: true,
+      protected: true,
+      excludedSecrets: [],
+    } as unknown as ZipBackupVersion;
+    const safetyRevisions = new WeakMap<ZipBackupVersion, number>();
+    const service = createVerifiedZipRestoreService({
+      getZipBackupFilePath: async (requestedId) => {
+        assert.equal(requestedId, zipId);
+        return { record, buffer: archiveBuffer };
+      },
+      verifyZipBuffer,
+      assertRestorableDatabase,
+      createSafetyBackup: async () => {
+        const before = await storeB.read();
+        assert.ok(before);
+        const safetyZip = await buildFullProjectZip(process.cwd(), {
+          'data/zero-studio-db.json': Buffer.from(JSON.stringify(before.payload)),
+        });
+        const safetyRecord = {
+          id: `${zipId}-safety`,
+          version: '1.2.6',
+          filename: `${zipId}-safety.zip`,
+          createdAt: new Date().toISOString(),
+          changelog: 'Safety backup for video restore integration',
+          trigger: 'pre_restore',
+          fileCount: safetyZip.fileCount,
+          sizeBytes: safetyZip.buffer.length,
+          verified: true,
+          protected: true,
+          excludedSecrets: [],
+        } as unknown as ZipBackupVersion;
+        const nextDb = {
+          ...before.payload,
+          backupConfig: {
+            ...before.payload.backupConfig,
+            zipBackups: [safetyRecord, ...before.payload.backupConfig.zipBackups],
+          },
+        } as ZeroDatabase;
+        const revision = await storeB.writeWithBackup(nextDb, before.revision, {
+          id: safetyRecord.id,
+          filename: safetyRecord.filename,
+          contentType: 'application/zip',
+          payload: safetyZip.buffer,
+        });
+        safetyRevisions.set(safetyRecord, revision);
+        await afterSafetyBackup?.(revision);
+        return safetyRecord;
+      },
+      loadDb: async () => {
+        const state = await storeA.read();
+        assert.ok(state);
+        return state.payload as ZeroDatabase;
+      },
+      getZipBackupRevision: (safetyRecord) => {
+        const revision = safetyRevisions.get(safetyRecord);
+        if (revision === undefined) throw new Error('Video restore safety revision missing');
+        return revision;
+      },
+      saveDb: async (db, options) => {
+        assert.notEqual(options.expectedRevision, undefined);
+        await storeA.write(db, options.expectedRevision!, undefined, false, options.projectVideoRestore);
+      },
+      enrichModelMetadata: (model) => model,
+      getRestorePrincipalHash: () => videoPrincipal,
+    });
+    return { service, record };
+  };
+
+  const validVideoFixture = await makeVideoArchiveFixture('valid-video-zip');
+  const validVideoRestore = createVideoRestoreService('valid-video-zip', validVideoFixture.archive);
+  const successfulVideoRestore = await validVideoRestore.service('valid-video-zip');
+  assert.equal(successfulVideoRestore.db.projects[0]?.title, 'restored-from-valid-video-zip');
+  const stateAfterVideoRestore = await storeB.read();
+  assert.ok(stateAfterVideoRestore);
+  assert.equal(
+    (stateAfterVideoRestore.payload as ZeroDatabase).projects[0]?.title,
+    'restored-from-valid-video-zip',
+    'the archived JSONB project state must be restored through the second pool',
+  );
+  const restoredVideoRows = await projectVideoStoreB.list(restoreProjectId, videoPrincipal);
+  assert.deepEqual(
+    restoredVideoRows.map((asset) => asset.id).sort(),
+    validVideoFixture.assets.map((asset) => asset.id).sort(),
+    'the manifest must replace the previous project clips with both archived MP4 and WebM assets',
+  );
+  for (const expected of validVideoFixture.assets) {
+    const restored = await projectVideoStoreB.get(expected.id, restoreProjectId, videoPrincipal);
+    assert.ok(restored, `restored ${expected.contentType} must be visible through the second pool`);
+    assert.deepEqual(restored.payload, expected.payload, `restored ${expected.contentType} bytes must match exactly`);
+    assert.equal(restored.sha256, expected.sha256);
+  }
+  assert.equal(
+    await projectVideoStoreB.get(oldVideoId, restoreProjectId, videoPrincipal),
+    null,
+    'successful manifest restore must remove the replaced prior clip',
+  );
+
+  const malformedVideoCases: Array<{ name: string; mutate: (fixture: Awaited<ReturnType<typeof makeVideoArchiveFixture>>) => Record<string, Buffer> }> = [
+    {
+      name: 'unsupported manifest version',
+      mutate: (fixture) => ({
+        ...fixture.entries,
+        'data/project-video-manifest.json': Buffer.from(JSON.stringify({ ...fixture.manifest, version: 99 })),
+      }),
+    },
+    {
+      name: 'unknown project ownership',
+      mutate: (fixture) => {
+        const manifest = structuredClone(fixture.manifest);
+        manifest.assets[0].projectId = 'project-not-in-archive';
+        return { ...fixture.entries, 'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)) };
+      },
+    },
+    {
+      name: 'scene does not belong to project',
+      mutate: (fixture) => {
+        const manifest = structuredClone(fixture.manifest);
+        manifest.assets[0].sceneId = 'scene-not-in-project';
+        return { ...fixture.entries, 'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)) };
+      },
+    },
+    {
+      name: 'manipulated asset path',
+      mutate: (fixture) => {
+        const manifest = structuredClone(fixture.manifest);
+        manifest.assets[0].path = 'media/project-videos/../outside.mp4';
+        return { ...fixture.entries, 'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)) };
+      },
+    },
+    {
+      name: 'declared size mismatch',
+      mutate: (fixture) => {
+        const manifest = structuredClone(fixture.manifest);
+        manifest.assets[0].sizeBytes += 1;
+        return { ...fixture.entries, 'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)) };
+      },
+    },
+    {
+      name: 'SHA-256 mismatch',
+      mutate: (fixture) => {
+        const manifest = structuredClone(fixture.manifest);
+        manifest.assets[0].sha256 = '0'.repeat(64);
+        return { ...fixture.entries, 'data/project-video-manifest.json': Buffer.from(JSON.stringify(manifest)) };
+      },
+    },
+    {
+      name: 'missing media payload',
+      mutate: (fixture) => {
+        const entries = { ...fixture.entries };
+        delete entries[fixture.manifest.assets[0].path];
+        return entries;
+      },
+    },
+    {
+      name: 'unreferenced extra media payload',
+      mutate: (fixture) => ({
+        ...fixture.entries,
+        'media/project-videos/unreferenced.mp4': Buffer.alloc(2048, 0x55),
+      }),
+    },
+  ];
+
+  for (const [index, testCase] of malformedVideoCases.entries()) {
+    const fixture = await makeVideoArchiveFixture(`invalid-${index}`);
+    const entries = testCase.mutate(fixture);
+    const malformedZip = await buildFullProjectZip(process.cwd(), entries);
+    const invalidId = `invalid-video-restore-${index}`;
+    let invalidSafetyBackupCalls = 0;
+    const invalidRestore = createVideoRestoreService(invalidId, malformedZip.buffer);
+    // Replace the service's safety boundary with a counter: validation must fail
+    // before any safety backup or PostgreSQL write is attempted.
+    const serviceWithNoSafetyBackup = createVerifiedZipRestoreService({
+      getZipBackupFilePath: async () => ({
+        record: {
+          id: invalidId, version: '1.2.5', filename: `${invalidId}.zip`,
+          createdAt: new Date().toISOString(), changelog: 'Invalid video fixture',
+          trigger: 'manual', fileCount: malformedZip.fileCount, sizeBytes: malformedZip.buffer.length,
+          verified: true, protected: true, excludedSecrets: [],
+        } as unknown as ZipBackupVersion,
+        buffer: malformedZip.buffer,
+      }),
+      verifyZipBuffer,
+      assertRestorableDatabase,
+      createSafetyBackup: async () => {
+        invalidSafetyBackupCalls += 1;
+        throw new Error('Invalid manifest must fail before safety backup');
+      },
+      loadDb: async () => { throw new Error('Invalid manifest must not load live state'); },
+      getZipBackupRevision: () => { throw new Error('Invalid manifest must not request a revision'); },
+      saveDb: async () => { throw new Error('Invalid manifest must not persist'); },
+      enrichModelMetadata: (model) => model,
+      getRestorePrincipalHash: () => videoPrincipal,
+    });
+    await assert.rejects(
+      () => serviceWithNoSafetyBackup(invalidId),
+      /Projektvideo-Backup ungültig/,
+      `${testCase.name} must be rejected by production ZIP restore`,
+    );
+    assert.equal(invalidSafetyBackupCalls, 0, `${testCase.name} must fail before safety backup`);
+    assert.deepEqual(await storeA.read(), stateAfterVideoRestore, `${testCase.name} must not change JSONB state or revision`);
+    const preservedClip = await projectVideoStoreB.get(
+      validVideoFixture.assets[0].id, restoreProjectId, videoPrincipal,
+    );
+    assert.deepEqual(preservedClip?.payload, validVideoFixture.assets[0].payload, `${testCase.name} must preserve prior clip bytes`);
+    assert.deepEqual(
+      (await projectVideoStoreB.list(restoreProjectId, videoPrincipal)).map((asset) => asset.id).sort(),
+      validVideoFixture.assets.map((asset) => asset.id).sort(),
+      `${testCase.name} must preserve the entire prior clip set`,
+    );
+  }
+
+  // A revision race after the safety snapshot must reject the restore without
+  // changing either the winning JSONB state or the existing project video rows.
+  const conflictLiveDb = makeVideoRestoreDb('live-before-video-restore-conflict');
+  const conflictState = await storeA.read();
+  assert.ok(conflictState);
+  await storeA.write(conflictLiveDb, conflictState.revision);
+  const conflictOldVideoId = randomUUID();
+  const conflictOldVideo = Buffer.alloc(2048, 0x33);
+  conflictOldVideo.write('ftyp', 4, 'ascii');
+  await projectVideoStore.put({
+    id: conflictOldVideoId, projectId: restoreProjectId, sceneId: restoreSceneId,
+    principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: conflictOldVideo,
+  });
+  const conflictFixture = await makeVideoArchiveFixture('revision-conflict');
+  let concurrentWinnerSnapshot: Awaited<ReturnType<typeof storeA.read>> | null = null;
+  const conflictRestore = createVideoRestoreService(
+    'video-restore-revision-conflict',
+    conflictFixture.archive,
+    async (safetyRevision) => {
+      const concurrentDbState = await storeB.read();
+      assert.ok(concurrentDbState);
+      const concurrentDb = {
+        ...concurrentDbState.payload,
+        projects: concurrentDbState.payload.projects.map((project) => ({
+          ...project,
+          title: 'newer-concurrent-writer-wins',
+        })),
+      } as ZeroDatabase;
+      const winnerRevision = await storeB.write(concurrentDb, safetyRevision);
+      concurrentWinnerSnapshot = await storeB.read();
+      assert.ok(concurrentWinnerSnapshot);
+      assert.equal(concurrentWinnerSnapshot.revision, winnerRevision);
+    },
+  );
+  await assert.rejects(
+    () => conflictRestore.service('video-restore-revision-conflict'),
+    (error) => error instanceof PersistentStateConflictError,
+    'production ZIP restore must reject the stale safety-backup revision',
+  );
+  assert.ok(concurrentWinnerSnapshot);
+  assert.deepEqual(await storeA.read(), concurrentWinnerSnapshot, 'revision conflict must preserve the concurrent JSONB winner exactly');
+  assert.deepEqual(
+    (await projectVideoStoreB.get(conflictOldVideoId, restoreProjectId, videoPrincipal))?.payload,
+    conflictOldVideo,
+    'revision conflict must leave prior clip bytes unchanged',
+  );
+  assert.deepEqual(
+    (await projectVideoStoreB.list(restoreProjectId, videoPrincipal)).map((asset) => asset.id).sort(),
+    [conflictOldVideoId],
+    'revision conflict must not partially replace the existing clip set',
+  );
 
   // The successful restore-race fixture above left its safety ZIP blob behind;
   // this next fixture replaces the metadata state, so remove that test-only blob first.
