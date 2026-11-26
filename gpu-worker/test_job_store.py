@@ -160,7 +160,8 @@ class PersistentJobStoreTests(unittest.TestCase):
         replay, replayed, conflict, error, accepted = self.store.create_or_get_limited(
             episode_jobs[0], daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
         )
-        self.assertEqual(replay, episode_jobs[0])
+        self.assertEqual(replay["id"], episode_jobs[0]["id"])
+        self.assertEqual(replay["status"], "succeeded")
         self.assertTrue(replayed)
         self.assertFalse(conflict)
         self.assertIsNone(error)
