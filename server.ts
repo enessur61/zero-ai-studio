@@ -29,6 +29,7 @@ import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
 import { isPiperWorkerHealthPayload } from './server/piperWorkerHealth.ts';
 import { postPiperWorkerTts, resolvePiperReplay } from './server/piperWorkerClient.ts';
+import { createPiperTtsHandler, type PiperCachedResult } from './server/piperTtsHandler.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -1694,15 +1695,6 @@ async function readWorkerBodyLimited(response: Response, maxBytes: number): Prom
   return Buffer.concat(chunks, total);
 }
 
-type PiperCachedResult = {
-  audioDataUrl: string;
-  modelUsed: string;
-  voice: string;
-  costEur: 0;
-  paidFallback: false;
-  resourceReservation: string;
-};
-
 let piperResultSchemaReady: Promise<void> | null = null;
 async function ensurePiperResultSchema(): Promise<void> {
   if (!piperResultSchemaReady) {
@@ -1755,135 +1747,25 @@ async function savePiperCachedResult(principalId: string, reservationId: string,
   );
 }
 
-app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
-  const principal = getZeroPrincipal(res.locals);
-  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  const worker = getPiperTtsWorkerConfig();
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-  const rawSpeed = Number(req.body?.speed ?? 1);
-  const speed = Number.isFinite(rawSpeed) ? Math.min(1.25, Math.max(0.75, rawSpeed)) : 1;
-  if (!text) return res.status(400).json({ error: 'Text für Piper fehlt.' });
-  if (text.length > 5000) return res.status(400).json({ error: 'Piper unterstützt maximal 5.000 Zeichen pro WAV-Datei.' });
-  const suppliedKey = req.get('Idempotency-Key')?.trim();
-  if (!suppliedKey || !/^[A-Za-z0-9._:-]{8,200}$/.test(suppliedKey)) {
-    return res.status(400).json({ error: 'Ungültiger Idempotency-Key.' });
-  }
-  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
-  try {
-    reservation = await reserveZeroResource({
-      principalId: principal.id, resourceId: 'piper-tts',
-      idempotencyKey: suppliedKey, units: text.length,
-      requestFingerprint: createHash('sha256').update(JSON.stringify({ text, speed })).digest('hex'),
-    });
-  } catch (error) {
-    const status = error instanceof ZeroResourceLimitError ? 429
-      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
-    return res.status(status).json({ error: error instanceof Error ? error.message : 'ZERO RESOURCE GUARD hat Piper gesperrt.', costEur: 0, paidFallback: false });
-  }
-  if (reservation.duplicate) {
-    // A completed response is replayed from the principal-bound result cache.
-    // This closes the lost-response gap without invoking the worker a second time.
-    const cached = await getPiperCachedResult(principal.id, reservation.reservationId);
-    const replay = resolvePiperReplay(reservation.status, cached);
-    if (replay.kind === 'replay') {
-      if (reservation.status === 'reserved') {
-        await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
-      }
-      return res.json(replay.payload);
-    }
-    if (replay.kind === 'processing') {
-      return res.status(202).json({
-        status: 'processing', reservationId: reservation.reservationId,
-        retryAfterSeconds: 2, costEur: 0, paidFallback: false,
-      });
-    }
-    return res.status(409).json({
-      status: reservation.status,
-      error: replay.kind === 'completed_without_result'
-        ? 'Piper-Auftrag ist abgeschlossen, aber das Ergebnis ist nicht mehr im Wiederherstellungscache vorhanden. Bitte mit neuem Idempotency-Key erneut starten.'
-        : 'Piper-Auftrag wurde freigegeben. Bitte mit neuem Idempotency-Key erneut starten.',
-      reservationId: reservation.reservationId, costEur: 0, paidFallback: false,
-    });
-  }
-
-  if (!worker) {
-    return res.status(503).json({
-      error: 'Der Piper-Worker ist standardmäßig gesperrt. Erst nach bestätigter kostenloser Eigenhost-Bereitstellung beide ZERO_PIPER_WORKER-Freigaben setzen und ZERO_TTS_WORKER_URL sowie ZERO_TTS_WORKER_TOKEN konfigurieren. iPhone-Web-Speech bleibt lokal verfügbar.',
-      costEur: 0, paidFallback: false,
-    });
-  }
-
-  let controller: AbortController | null = null;
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let completed = false;
-  let safeToRelease = true;
-  try {
-    if (!(await verifyPiperWorkerHealth(worker))) {
-      return res.status(503).json({
-        error: 'Piper-Worker-Health, Modellrevision, Lizenz oder Kostenmetadaten stimmen nicht mit dem freigegebenen kostenlosen Worker überein. Kein kostenpflichtiger Fallback.',
-        costEur: 0, paidFallback: false,
-      });
-    }
-    safeToRelease = false;
-    controller = new AbortController();
-    timeout = setTimeout(() => controller?.abort(), 150000);
-    const response = await postPiperWorkerTts({
+app.post('/api/audio/tts/piper', createPiperTtsHandler({
+  getPrincipal: (response) => getZeroPrincipal(response.locals),
+  getWorker: getPiperTtsWorkerConfig,
+  reserve: (input) => reserveZeroResource({ ...input, resourceId: 'piper-tts' }),
+  getCached: getPiperCachedResult,
+  saveCached: savePiperCachedResult,
+  settle: (principalId, reservationId, outcome) =>
+    settleZeroResourceReservation({ principalId, reservationId, outcome }),
+  verifyHealth: verifyPiperWorkerHealth,
+  synthesize: ({ worker, text, speed, idempotencyKey, signal }) =>
+    postPiperWorkerTts({
       baseUrl: worker.baseUrl.toString(),
       headers: worker.headers,
       text,
       speed,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      // Only a definitive 4xx rejection proves the worker did not accept work.
-      // A 5xx may follow partial processing, so keep the reservation until TTL.
-      safeToRelease = response.status >= 400 && response.status < 500;
-      const payload = await response.json().catch(() => ({})) as { detail?: unknown };
-      const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
-      const message = safeToRelease
-        ? `Piper hat den Auftrag vor der Verarbeitung abgewiesen: ${detail.slice(0, 320)}`
-        : detail.slice(0, 400);
-      return res.status(response.status === 400 ? 400 : 503).json({ error: message, costEur: 0, paidFallback: false });
-    }
-    let bytes: Buffer;
-    try {
-      bytes = await readWorkerBodyLimited(response, 20 * 1024 * 1024);
-    } catch (error) {
-      if (error instanceof WorkerPayloadTooLargeError) {
-        safeToRelease = true;
-        return res.status(413).json({ error: 'Piper-WAV überschreitet das 20-MB-Limit.' });
-      }
-      throw error;
-    }
-    if (bytes.length < 44 || bytes.length > 20 * 1024 * 1024 ||
-        bytes.subarray(0, 4).toString('ascii') !== 'RIFF' ||
-        bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
-      safeToRelease = true;
-      return res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
-    }
-    const replayPayload: PiperCachedResult = {
-      audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}`,
-      modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
-      voice: 'Thorsten · Deutsch', costEur: 0, paidFallback: false,
-      resourceReservation: reservation.reservationId,
-    };
-    // Persist the exact response before marking the reservation completed.
-    // A client retry after a lost HTTP response can then replay audio byte-for-byte.
-    await savePiperCachedResult(principal.id, reservation.reservationId, replayPayload);
-    await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
-    completed = true;
-    return res.json(replayPayload);
-  } catch (error) {
-    const message = error instanceof Error && error.name === 'AbortError'
-      ? 'Piper-Spracherzeugung dauerte länger als 150 Sekunden und wurde abgebrochen.'
-      : 'Der eigene Piper-Sprachworker ist nicht erreichbar. Kein kostenpflichtiger Fallback wurde gestartet.';
-    return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
-  } finally {
-    if (timeout) clearTimeout(timeout);
-    if (!completed && safeToRelease) {
-      await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'released' }).catch(() => undefined);
-    }
-  }
+      idempotencyKey,
+      signal,
+    }),
+  readBody: readWorkerBodyLimited,
 }));
 
 // === ZERO AUDIO STUDIO ===
