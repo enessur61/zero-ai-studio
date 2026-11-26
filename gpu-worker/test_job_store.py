@@ -140,6 +140,70 @@ class PersistentJobStoreTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(accepted, 3)
 
+    def test_project_daily_shot_limit_is_atomic_and_survives_job_pruning(self) -> None:
+        day = "2026-11-20"
+        episode_jobs = [
+            self._job(f"episode-{index}", key=f"episode-key-{index}", project_id="episode-a")
+            for index in range(3)
+        ]
+        for job in episode_jobs:
+            created, replayed, conflict, error, accepted = self.store.create_or_get_limited(
+                job, daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
+            )
+            self.assertEqual(created, job)
+            self.assertFalse(replayed)
+            self.assertFalse(conflict)
+            self.assertIsNone(error)
+            self.assertGreaterEqual(accepted, 1)
+            self.store.save(dict(job, status="succeeded"))
+
+        replay, replayed, conflict, error, accepted = self.store.create_or_get_limited(
+            episode_jobs[0], daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
+        )
+        self.assertEqual(replay, episode_jobs[0])
+        self.assertTrue(replayed)
+        self.assertFalse(conflict)
+        self.assertIsNone(error)
+        self.assertEqual(accepted, 3)
+
+        # Removing old completed job rows must not reset the durable episode quota.
+        self.store.prune_completed(max_jobs=3, retain_jobs=1)
+        blocked = self._job("episode-over-limit", key="episode-key-4", project_id="episode-a")
+        result, replayed, conflict, error, accepted = self.store.create_or_get_limited(
+            blocked, daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
+        )
+        self.assertIsNone(result)
+        self.assertFalse(replayed)
+        self.assertFalse(conflict)
+        self.assertEqual(error, "project_limit")
+        self.assertEqual(accepted, 3)
+
+        # A different project and a different principal have independent limits.
+        other_project = self._job("episode-b", key="episode-b-key", project_id="episode-b")
+        created, _, _, error, _ = self.store.create_or_get_limited(
+            other_project, daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
+        )
+        self.assertEqual(created, other_project)
+        self.assertIsNone(error)
+
+        other_principal = self._job(
+            "episode-a-other-principal", principal="principal-b",
+            key="episode-a-other-principal-key", project_id="episode-a"
+        )
+        created, _, _, error, _ = self.store.create_or_get_limited(
+            other_principal, daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day=day
+        )
+        self.assertEqual(created, other_principal)
+        self.assertIsNone(error)
+
+        # The daily project allowance resets only on the next UTC day.
+        next_day = self._job("episode-a-next-day", key="episode-a-next-day-key", project_id="episode-a")
+        created, _, _, error, _ = self.store.create_or_get_limited(
+            next_day, daily_limit=15, max_concurrent=10, max_project_jobs=3, utc_day="2026-11-21"
+        )
+        self.assertEqual(created, next_day)
+        self.assertIsNone(error)
+
     def test_cancel_requires_matching_principal(self) -> None:
         queued = self._job("queued-job")
         self.store.save(queued)
