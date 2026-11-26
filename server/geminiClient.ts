@@ -82,7 +82,7 @@ export function getGeminiClient(): GoogleGenAI {
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey() },
+          idempotencyKey: createZeroIdempotencyKey(`gemini.generateContent:${modelId}:${payload}`) },
         () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
@@ -100,7 +100,7 @@ export function getGeminiClient(): GoogleGenAI {
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey() },
+          idempotencyKey: createZeroIdempotencyKey(`gemini.embedContent:${modelId}:${payload}`) },
         () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
