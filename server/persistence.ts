@@ -402,8 +402,8 @@ export async function readPersistentState<T>(): Promise<VersionedPersistentState
   return getStateStore().read<T>();
 }
 
-export async function writePersistentState<T>(payload: T, expectedRevision: number): Promise<number> {
-  return getStateStore().write(payload, expectedRevision);
+export async function writePersistentState<T>(payload: T, expectedRevision: number, projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }): Promise<number> {
+  return getStateStore().write(payload, expectedRevision, undefined, false, projectVideoRestore);
 }
 
 export async function writePersistentStateWithBackupFile<T>(
