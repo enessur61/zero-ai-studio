@@ -65,6 +65,7 @@ public final class NativeAudioImportStore: @unchecked Sendable {
 
     @discardableResult
     public func importAudio(from sourceURL: URL) throws -> String {
+        _ = cleanupExpired()
         let ext = sourceURL.pathExtension.lowercased()
         guard Self.allowedExtensions.contains(ext),
               let values = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
