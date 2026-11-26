@@ -17,6 +17,8 @@ import { shouldUseZeroLocalFallback } from '../lib/zeroLocalFallback.ts';
 import {
   type NativeIOSTextModelId,
   runNativeCoreMLPrompt,
+  runNativeIOSDiagnostics,
+  type CoreMLBridgeResponse,
 } from '../lib/iosCoreMLBridge.ts';
 import type { AutomationRun, ChatMessage, StudioProject } from '../types/zero.ts';
 import {
@@ -63,6 +65,8 @@ export function BrainView({
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [nativeDiagnostics, setNativeDiagnostics] = useState<CoreMLBridgeResponse | null>(null);
+  const [nativeDiagnosticsLoading, setNativeDiagnosticsLoading] = useState(false);
   const [webgpuModelLoaded, setWebgpuModelLoaded] = useState(isWebGPULocalModelLoaded());
   const [webgpuModelLoading, setWebgpuModelLoading] = useState(false);
   const [webgpuProgress, setWebgpuProgress] = useState<WebGPULocalModelProgress | null>(null);
@@ -87,6 +91,26 @@ export function BrainView({
   const [autoLoading, setAutoLoading] = useState(false);
   const [autoError, setAutoError] = useState<string | null>(null);
   const [confirmingRunId, setConfirmingRunId] = useState<string | null>(null);
+
+  async function handleNativeDiagnostics() {
+    if (selectedModel !== 'apple-foundation-model' || nativeDiagnosticsLoading) return;
+    setNativeDiagnosticsLoading(true);
+    setNativeDiagnostics(null);
+    try {
+      const result = await runNativeIOSDiagnostics(selectedModel);
+      setNativeDiagnostics(result);
+    } catch (err) {
+      setNativeDiagnostics({
+        ok: false,
+        available: false,
+        readyForGerman: false,
+        status: 'NATIVE iOS NICHT ERREICHBAR',
+        error: err instanceof Error ? err.message : 'Native Diagnostik fehlgeschlagen.',
+      });
+    } finally {
+      setNativeDiagnosticsLoading(false);
+    }
+  }
 
   async function handleLoadWebGPULocalModel() {
     setChatError(null);
@@ -515,6 +539,40 @@ export function BrainView({
               Verlauf leeren
             </button>
           </div>
+
+          {selectedModel === 'apple-foundation-model' && (
+            <div className="mx-4 mt-4 rounded-xl border border-white/[0.08] bg-[#090B10] p-3.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-slate-200">Apple Foundation Models · Geräteprüfung</div>
+                <button
+                  type="button"
+                  onClick={() => void handleNativeDiagnostics()}
+                  disabled={nativeDiagnosticsLoading}
+                  className="min-h-[34px] rounded-lg border border-white/[0.12] px-3 text-[11px] font-medium text-slate-200 disabled:opacity-50"
+                >
+                  {nativeDiagnosticsLoading ? 'Prüfe …' : 'Verfügbarkeit prüfen'}
+                </button>
+              </div>
+              {nativeDiagnostics && (
+                <div className="space-y-1 text-[11px]">
+                  <div className={nativeDiagnostics.readyForGerman ? 'text-emerald-300' : 'text-amber-300'}>
+                    {nativeDiagnostics.status || (nativeDiagnostics.ok ? 'STATUS UNBEKANNT' : 'PRÜFUNG FEHLGESCHLAGEN')}
+                  </div>
+                  <p className="text-slate-400">
+                    {nativeDiagnostics.message || nativeDiagnostics.error || 'Keine Diagnosedetails verfügbar.'}
+                  </p>
+                  {nativeDiagnostics.available && nativeDiagnostics.contextSize && (
+                    <p className="text-slate-500">Kontextlimit: {nativeDiagnostics.contextSize.toLocaleString('de-DE')} Tokens</p>
+                  )}
+                </div>
+              )}
+              {!nativeDiagnostics && (
+                <p className="text-[11px] text-slate-500">
+                  Verfügbarkeit wird erst auf der nativen ZERO-iOS-App geprüft. iOS-Version allein garantiert keine Modellbereitschaft.
+                </p>
+              )}
+            </div>
+          )}
 
           {selectedModel === 'webgpu-llama-3.2-1b' && (
             <div className="mx-4 mt-4 p-3.5 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] space-y-3">

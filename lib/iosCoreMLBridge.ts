@@ -12,7 +12,10 @@ export interface CoreMLBridgeResponse {
   estimatedRamGB?: number;
   compiledModelPresent?: boolean;
   available?: boolean;
+  readyForGerman?: boolean;
   germanSupported?: boolean;
+  availabilityReason?: string | null;
+  contextSize?: number;
   message?: string;
   error?: string;
 }

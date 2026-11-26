@@ -87,7 +87,10 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                     "status": diagnostics.status,
                     "runtime": diagnostics.runtime,
                     "available": diagnostics.available,
+                    "readyForGerman": diagnostics.readyForGerman,
                     "germanSupported": diagnostics.germanSupported,
+                    "availabilityReason": diagnostics.availabilityReason as Any? ?? NSNull(),
+                    "contextSize": diagnostics.contextSize,
                     "message": diagnostics.message
                 ])
             } else {
