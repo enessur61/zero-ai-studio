@@ -103,7 +103,7 @@ jobs:
         env:
           PIPER_MODEL_DIR: /tmp/zero-piper-cache-tests
         run: |
-          (cd piper-worker && python3 -m unittest -v test_model_cache)
+          (cd piper-worker && python3 -m unittest -v test_model_cache test_idempotency)
           python3 piper-worker/test_local_synthesis.py
       - name: Prepare QEMU for offline ARM64 Piper synthesis
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
