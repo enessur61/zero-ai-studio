@@ -1210,11 +1210,9 @@ try {
   const videoRestoreInitialState = await storeA.read();
   assert.ok(videoRestoreInitialState);
   const videoRestoreInitialRevision = await storeA.write(videoRestoreLiveDb, videoRestoreInitialState.revision);
-  const oldVideoId = randomUUID();
   const oldVideoPayload = Buffer.alloc(2048, 0x31);
   oldVideoPayload.write('ftyp', 4, 'ascii');
-  await projectVideoStore.put({
-    id: oldVideoId,
+  const oldVideo = await projectVideoStore.put({
     projectId: restoreProjectId,
     sceneId: restoreSceneId,
     principalHash: videoPrincipal,
@@ -1222,6 +1220,7 @@ try {
     contentType: 'video/mp4',
     payload: oldVideoPayload,
   });
+  const oldVideoId = oldVideo.id;
   const baselineVideoRestoreState = await storeA.read();
   assert.ok(baselineVideoRestoreState);
   assert.equal(baselineVideoRestoreState.revision, videoRestoreInitialRevision);
@@ -1446,7 +1445,6 @@ try {
     const malformedZip = await buildFullProjectZip(process.cwd(), entries);
     const invalidId = `invalid-video-restore-${index}`;
     let invalidSafetyBackupCalls = 0;
-    const invalidRestore = createVideoRestoreService(invalidId, malformedZip.buffer);
     // Replace the service's safety boundary with a counter: validation must fail
     // before any safety backup or PostgreSQL write is attempted.
     const serviceWithNoSafetyBackup = createVerifiedZipRestoreService({
@@ -1495,13 +1493,13 @@ try {
   const conflictState = await storeA.read();
   assert.ok(conflictState);
   await storeA.write(conflictLiveDb, conflictState.revision);
-  const conflictOldVideoId = randomUUID();
   const conflictOldVideo = Buffer.alloc(2048, 0x33);
   conflictOldVideo.write('ftyp', 4, 'ascii');
-  await projectVideoStore.put({
-    id: conflictOldVideoId, projectId: restoreProjectId, sceneId: restoreSceneId,
+  const conflictOldVideoAsset = await projectVideoStore.put({
+    projectId: restoreProjectId, sceneId: restoreSceneId,
     principalHash: videoPrincipal, jobId: randomUUID(), contentType: 'video/mp4', payload: conflictOldVideo,
   });
+  const conflictOldVideoId = conflictOldVideoAsset.id;
   const conflictFixture = await makeVideoArchiveFixture('revision-conflict');
   let concurrentWinnerSnapshot: Awaited<ReturnType<typeof storeA.read>> | null = null;
   const conflictRestore = createVideoRestoreService(
