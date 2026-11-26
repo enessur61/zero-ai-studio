@@ -1067,9 +1067,10 @@ try {
     },
     saveDb: async (db, options) => {
       assert.notEqual(options.expectedRevision, undefined);
-      await storeA.write(db, options.expectedRevision!);
+      await storeA.write(db, options.expectedRevision!, undefined, false, options.projectVideoRestore);
     },
     enrichModelMetadata: (model) => model,
+    getRestorePrincipalHash: () => videoPrincipal,
   });
 
   const completeRestoreHandlers = createRestoreHandlers({
