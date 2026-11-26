@@ -72,7 +72,21 @@ export function createPostgresStateStore(database: Pool) {
             asset_id UUID PRIMARY KEY,
             project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 128),
             scene_id TEXT NOT NULL CHECK (length(scene_id) BETWEEN 1 AND 128),
-            principal_hash CHAR(64) NOT NULL CHECK (principal_hash ~ '^[a-f0-9]{64}
+            principal_hash CHAR(64) NOT NULL CHECK (principal_hash ~ '^[a-f0-9]{64}$'),
+            job_id UUID,
+            content_type TEXT NOT NULL CHECK (content_type IN ('video/mp4', 'video/webm')),
+            size_bytes BIGINT NOT NULL CHECK (size_bytes BETWEEN 1024 AND 104857600),
+            sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
+            payload BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (principal_hash, job_id)
+          )
+        `);
+        await database.query(`
+          CREATE INDEX IF NOT EXISTS zero_project_video_assets_project_idx
+          ON zero_project_video_assets (principal_hash, project_id, created_at DESC)
+        `);
+      })().catch((error) => {
         schemaReady = null;
         throw error;
       });
