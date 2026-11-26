@@ -52,7 +52,7 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
               message.frameInfo.securityOrigin.port == trustedPort,
               let body = message.body as? [String: Any],
               let requestId = body["requestId"] as? String,
-              !requestId.isEmpty,
+              requestId.range(of: #"^ios-[0-9]{1,20}-[a-z0-9]{5}$"#, options: .regularExpression) != nil,
               let action = body["action"] as? String
         else { return }
 
