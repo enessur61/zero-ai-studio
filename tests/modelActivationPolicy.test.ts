@@ -163,4 +163,4 @@ for (const model of webGpuCatalog) {
   }
 }
 
-console.log('Model activation policy tests passed: 48 unique catalog entries, 12 gated free-cloud models, 24h freshness, provider/cost gates, no unverified activation, and WebLLM runtime/catalog parity.');
+console.log('Model activation policy tests passed: 49 unique catalog entries, 12 gated free-cloud models, 24h freshness, provider/cost gates, no unverified activation, and WebLLM runtime/catalog parity.');
