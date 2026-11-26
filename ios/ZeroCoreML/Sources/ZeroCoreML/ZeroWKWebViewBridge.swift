@@ -161,15 +161,14 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
                 "estimatedRamGB": d.estimatedRamGB
             ])
         } else if modelId == "piper-tts-de" {
-            let d = piperAdapter.deploymentDiagnostics()
             emitToJS(requestId: requestId, payload: [
-                "ok": true,
-                "modelId": d.modelId,
-                "status": d.status,
-                "runtime": d.runtime,
-                "deviceModel": d.deviceModel,
-                "compiledModelPresent": d.voicePresent,
-                "estimatedRamGB": d.estimatedRamGB
+                "ok": false,
+                "modelId": modelId,
+                "status": "NOT_AVAILABLE",
+                "runtime": "ONNX Runtime und eSpeak-ng sind nicht in das iOS-App-Target integriert",
+                "available": false,
+                "compiledModelPresent": false,
+                "error": "Piper auf iOS ist deaktiviert, bis ONNX Runtime und ein kompatibler eSpeak-ng-Phonemizer integriert und mit echter Synthese getestet sind."
             ])
         } else if modelId == "kokoro-82m" {
             let d = kokoroAdapter.deploymentDiagnostics()
@@ -294,6 +293,15 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func handleSynthesize(requestId: String, modelId: String, text: String, voice: String) {
+        guard modelId != "piper-tts-de" else {
+            emitToJS(requestId: requestId, payload: [
+                "ok": false,
+                "type": "error",
+                "modelId": modelId,
+                "error": "Piper auf iOS ist bis zur Integration von ONNX Runtime und eSpeak-ng deaktiviert."
+            ])
+            return
+        }
         Task {
             do {
                 let wavData: Data
