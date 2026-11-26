@@ -1,6 +1,31 @@
 import assert from 'node:assert/strict';
 import { assertZeroBudgetModelAllowed, withSingleProviderAttempt } from '../server/geminiClient.ts';
 import type { BudgetGuardState } from '../src/types/zero.ts';
+import { createZeroIdempotencyKey, runWithZeroPrincipal } from '../server/zeroPrincipalContext.ts';
+
+// Multiple Gemini operations in one authenticated request must not collide.
+// An identical operation retry must retain its original key.
+const operationKeys = await runWithZeroPrincipal('test-principal', 'request-key-1', async () => {
+  const generateA = createZeroIdempotencyKey('gemini.generateContent:gemini-3.8-flash:payload-a');
+  const generateARetry = createZeroIdempotencyKey('gemini.generateContent:gemini-3.8-flash:payload-a');
+  const generateB = createZeroIdempotencyKey('gemini.generateContent:gemini-2.5-flash-lite:payload-b');
+  const embedA = createZeroIdempotencyKey('gemini.embedContent:gemini-3.8-flash:payload-a');
+  assert.equal(generateA, generateARetry, 'identical operation retries must map to the same idempotency key');
+  assert.notEqual(generateA, generateB, 'different models/payloads in one request must not collide');
+  assert.notEqual(generateA, embedA, 'generate and embed operations must have separate idempotency scopes');
+  assert.equal(createZeroIdempotencyKey(), createZeroIdempotencyKey(), 'legacy unscoped worker keys remain stable within a request');
+  return [generateA, generateB, embedA];
+});
+const nextRequestKey = await runWithZeroPrincipal('test-principal', 'request-key-2', async () =>
+  createZeroIdempotencyKey('gemini.generateContent:gemini-3.8-flash:payload-a')
+);
+assert.notEqual(operationKeys[0], nextRequestKey, 'the same operation in a distinct HTTP request must receive a distinct key');
+await assert.rejects(
+  () => runWithZeroPrincipal('test-principal', 'request-key-1', async () => createZeroIdempotencyKey('   ')),
+  /scope is incomplete/,
+);
+
+
 
 const today = new Date().toISOString().slice(0, 10);
 
