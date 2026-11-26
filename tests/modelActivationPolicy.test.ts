@@ -23,8 +23,8 @@ const env = {
   GEMINI_API_KEY: 'test-gemini-key',
 };
 
-assert.equal(INITIAL_MODEL_CATALOG.length, 48, 'catalog audit must cover all 48 definitions');
-assert.equal(new Set(INITIAL_MODEL_CATALOG.map((model) => model.id)).size, 48, 'catalog IDs must be unique');
+assert.equal(INITIAL_MODEL_CATALOG.length, 49, 'catalog audit must cover all 49 definitions after Piper worker separation');
+assert.equal(new Set(INITIAL_MODEL_CATALOG.map((model) => model.id)).size, 49, 'catalog IDs must be unique');
 assert.equal(getAutomaticFreeCloudModelIds().length, 12, 'only the explicit 12-model free-cloud allowlist is auto-managed');
 
 const byId = (id: string) => {
@@ -121,6 +121,37 @@ const localCreative = { ...byId('zero-canvas-img2img'), enabled: true };
 assert.equal(reconcileAutomaticModelActivation(localCreative, now, env).managed, false);
 assert.equal(localCreative.enabled, true, 'local browser availability remains separately user/runtime controlled');
 
+const llamaPreset = WEBGPU_LOCAL_MODELS.find((entry) => entry.id === 'webgpu-llama-3.2-1b');
+const smollmPreset = WEBGPU_LOCAL_MODELS.find((entry) => entry.id === 'smollm2-360m-webgpu');
+assert.ok(llamaPreset, 'Llama 3.2 1B must have an explicit runtime preset');
+assert.equal(llamaPreset.modelId, 'Llama-3.2-1B-Instruct-q4f16_1-MLC');
+assert.equal(llamaPreset.downloadMB, 705);
+assert.equal(llamaPreset.vramMB, 879);
+assert.ok(smollmPreset, 'SmolLM2 360M must have an explicit runtime preset');
+assert.equal(smollmPreset.modelId, 'SmolLM2-360M-Instruct-q4f32_1-MLC');
+assert.equal(smollmPreset.vramMB, 580);
+for (const id of ['webgpu-llama-3.2-1b', 'smollm2-360m-webgpu']) {
+  const catalogModel = byId(id);
+  assert.equal(catalogModel.adapterId, 'webllm');
+  assert.equal(catalogModel.hasRealAdapter, true);
+  assert.equal(catalogModel.status, 'BROWSER TEST ERFORDERLICH');
+  assert.equal(catalogModel.testPassed, false, 'runtime presence is not a successful device inference test');
+}
+const iosPiper = byId('piper-tts-de');
+const workerPiper = byId('piper-tts-de-worker');
+assert.equal(iosPiper.adapterId, 'ios-piper-onnx');
+assert.equal(iosPiper.executionMode, 'LOCAL ON-DEVICE');
+assert.equal(iosPiper.hasRealAdapter, false, 'iOS model weights and runtime remain unverified');
+assert.match(iosPiper.license, /GPL-3\.0-or-later/);
+assert.match(iosPiper.license, /NOT VERIFIED/);
+assert.equal(workerPiper.adapterId, 'piper-cpu-worker');
+assert.equal(workerPiper.executionMode, 'SELF-HOSTED');
+assert.equal(workerPiper.hasRealAdapter, true);
+assert.equal(workerPiper.enabled, false);
+assert.equal(workerPiper.testPassed, false, 'CI worker test is not production worker activation');
+assert.match(workerPiper.license, /GPL-3\.0-or-later/);
+assert.match(workerPiper.license, /CC0/);
+assert.match(workerPiper.commercialUse, /commercial_use_confirmed=false/);
 const implementedWebGpuIds = new Set(WEBGPU_LOCAL_MODELS.map((entry) => entry.id));
 assert.deepEqual([...implementedWebGpuIds].sort(), ['smollm2-360m-webgpu', 'webgpu-llama-3.2-1b'].sort());
 const webGpuCatalog = INITIAL_MODEL_CATALOG.filter((model) => model.adapterId === 'webllm');
