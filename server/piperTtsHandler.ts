@@ -39,7 +39,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
     void handle(req, res).catch(next);
   };
 
-  async function handle(req: Request, res: Response): Promise<void> {
+  async function handle(req: Request, res: ExpressResponse): Promise<void> {
     const principal = deps.getPrincipal(res);
     if (!principal) { res.status(401).json({ error: 'Anmeldung erforderlich.' }); return; }
     const worker = deps.getWorker();
