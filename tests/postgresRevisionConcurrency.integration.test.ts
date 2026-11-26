@@ -645,6 +645,46 @@ try {
   const initialRevision = await storeA.write({ value: 0 }, 0);
   assert.equal(initialRevision, 1, 'initial insert must create revision 1');
 
+  const restoreAssets = backupVideoAssets.map((asset) => ({
+    id: asset.id, projectId: asset.projectId, sceneId: asset.sceneId, jobId: asset.jobId,
+    contentType: asset.contentType, payload: asset.payload, sha256: asset.sha256, createdAt: asset.createdAt,
+  }));
+  const restoredRevision = await storeA.write(
+    { value: 'restored-with-video' }, initialRevision, undefined, false,
+    { principalHash: videoPrincipal, assets: restoreAssets },
+  );
+  assert.equal(restoredRevision, 2);
+  assert.deepEqual(
+    (await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal))?.payload,
+    mp4Payload,
+    'video rows and JSONB revision become visible together through another pool',
+  );
+  await assert.rejects(
+    () => storeA.write(
+      { value: 'must-not-commit' }, restoredRevision - 1, undefined, false,
+      { principalHash: videoPrincipal, assets: [] },
+    ),
+    (error) => error instanceof PersistentStateConflictError,
+    'revision conflict must roll back the video replacement too',
+  );
+  assert.ok(
+    await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal),
+    'failed JSONB restore must leave prior video rows untouched',
+  );
+  await storeA.write(
+    { value: 'restore-empty-manifest' }, restoredRevision, undefined, false,
+    { principalHash: videoPrincipal, assets: [] },
+  );
+  assert.equal(
+    (await projectVideoStoreB.list('project-video-integration', videoPrincipal)).length,
+    0,
+    'an explicit empty manifest atomically removes all clips for that principal',
+  );
+  await projectVideoStore.put({
+    projectId: 'project-video-integration', sceneId: 'scene-video-integration',
+    principalHash: videoPrincipal, jobId: videoJobId, contentType: 'video/mp4', payload: mp4Payload,
+  });
+
   const [snapshotA, snapshotB] = await Promise.all([storeA.read(), storeB.read()]);
   assert.ok(snapshotA);
   assert.ok(snapshotB);
