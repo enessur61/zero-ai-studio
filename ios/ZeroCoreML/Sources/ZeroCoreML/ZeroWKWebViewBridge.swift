@@ -113,16 +113,18 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         } else if let llamaVariant = Llama32Variant(rawValue: modelId) {
             let adapter = llamaAdapters[llamaVariant] ?? LlamaCoreMLAdapter(config: LlamaCoreMLConfig(variant: llamaVariant))
             llamaAdapters[llamaVariant] = adapter
-            let d = adapter.deploymentDiagnostics()
-            emitToJS(requestId: requestId, payload: [
-                "ok": true,
-                "modelId": d.modelId,
-                "status": d.status,
-                "runtime": d.runtime,
-                "deviceModel": d.deviceModel,
-                "compiledModelPresent": d.compiledModelPresent,
-                "estimatedRamGB": d.estimatedRamGB
-            ])
+            Task {
+                let d = await adapter.deploymentDiagnostics()
+                self.emitToJS(requestId: requestId, payload: [
+                    "ok": true,
+                    "modelId": d.modelId,
+                    "status": d.status,
+                    "runtime": d.runtime,
+                    "deviceModel": d.deviceModel,
+                    "compiledModelPresent": d.compiledModelPresent,
+                    "estimatedRamGB": d.estimatedRamGB
+                ])
+            }
         } else if let mlxVariant = MLXTextVariant(rawValue: modelId) {
             let adapter = mlxAdapters[mlxVariant] ?? MLXSwiftTextAdapter(variant: mlxVariant)
             mlxAdapters[mlxVariant] = adapter
