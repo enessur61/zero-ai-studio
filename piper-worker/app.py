@@ -71,7 +71,9 @@ def mark_tts_idempotency_unknown(key:str,db_path:Path=IDEMPOTENCY_DB):
   db.execute("UPDATE tts_idempotency SET status='unknown',audio=NULL WHERE idempotency_key=? AND status='processing'",(key,))
   db.commit()
 
-initialize_idempotency_store()
+@app.on_event("startup")
+def startup_initialize_idempotency_store():
+ initialize_idempotency_store()
 
 class Request(BaseModel):
  text:str=Field(min_length=1,max_length=5000)
