@@ -82,7 +82,7 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
         if (manifest.version !== 1 || !Array.isArray(manifest.assets) || manifest.assets.length > 10_000) {
           throw new Error('Unbekannte Manifest-Version oder ungültige Asset-Liste.');
         }
-        const projects = new Set(parsedRestoredDb.projects.map((project) => project.id));
+        const projects = new Map(parsedRestoredDb.projects.map((project) => [project.id, project]));
         const seenIds = new Set<string>();
         const seenPaths = new Set<string>();
         const assets: RestoredProjectVideo[] = [];
@@ -104,6 +104,7 @@ export function createVerifiedZipRestoreService(dependencies: VerifiedZipRestore
           if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) || seenIds.has(id) ||
               typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !projects.has(projectId) ||
               typeof sceneId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sceneId) ||
+              !projects.get(projectId)?.scenes?.some((scene) => scene.id === sceneId) ||
               !(jobId === null || (typeof jobId === 'string' && /^[0-9a-f-]{36}$/i.test(jobId))) ||
               !extension || typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) ||
               sizeBytes < 1024 || sizeBytes > 32 * 1024 * 1024 ||
