@@ -18,6 +18,8 @@ export interface CoreMLBridgeResponse {
   contextSize?: number;
   message?: string;
   error?: string;
+  importId?: string;
+  expiresInSeconds?: number;
 }
 
 export type NativeIOSTextModelId =
@@ -141,15 +143,26 @@ export async function runNativeIOSSynthesize(params: {
   );
 }
 
+export async function pickNativeIOSAudio(): Promise<CoreMLBridgeResponse> {
+  return dispatchBridgeAction(
+    { action: 'pickAudio' },
+    undefined,
+    'Der native Audio-Dateiimport erfordert die ZERO-iOS-App mit UIDocumentPicker.'
+  );
+}
+
 export async function runNativeIOSTranscribe(params: {
-  audioPath: string;
+  importId: string;
   language?: string;
 }): Promise<CoreMLBridgeResponse> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(params.importId)) {
+    return Promise.reject(new Error('Ungültige native Audio-Import-ID.'));
+  }
   return dispatchBridgeAction(
     {
       action: 'transcribe',
       modelId: 'whisper-cpp-small',
-      audioPath: params.audioPath,
+      importId: params.importId,
       language: params.language ?? 'de',
     },
     undefined,
