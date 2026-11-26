@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// - llama-3.2-1b-coreml & llama-3.2-3b-coreml (CoreML MLState)
 /// - qwen-2.5-3b-coreml & deepseek-r1-distill-1.5b (Apple MLX Swift)
 /// - gemma-3-4b-it (MediaPipe Tasks GenAI)
-/// - whisper-cpp-small (whisper.cpp Metal/CoreML)
+/// - whisper-cpp-small (Audioimport und Adapter vorbereitet; Runtime/XCFramework und Gewichte separat erforderlich)
 /// - piper-tts-de (ONNX Runtime DE)
 /// - kokoro-82m (CoreML/MLX Audio)
 ///
