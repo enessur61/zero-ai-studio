@@ -19,20 +19,19 @@ Object.assign(globalThis, {
 });
 
 const bridgeActions = [];
-const nativeResponses = [];
+let whisperAvailable = true;
 window.webkit = {
   messageHandlers: {
     zeroCoreML: {
       postMessage(payload) {
         bridgeActions.push(payload);
         const response = payload.action === 'diagnostics'
-          ? { ok: true, available: true, runtime: 'whisper.cpp test runtime', weightsPresent: true, runtimeLinked: true }
+          ? { ok: true, available: whisperAvailable, runtime: whisperAvailable ? 'whisper.cpp test runtime' : 'Whisper runtime not linked', weightsPresent: whisperAvailable, runtimeLinked: whisperAvailable }
           : payload.action === 'pickAudio'
             ? { ok: true, importId: '123e4567-e89b-42d3-a456-426614174000' }
             : payload.action === 'transcribe'
               ? { ok: true, text: 'Lokales Testtranskript', srt: '1\\n00:00:00,000 --> 00:00:01,000\\nLokales Testtranskript' }
               : { ok: false, error: `Unexpected native action: ${payload.action}` };
-        nativeResponses.push({ requestId: payload.requestId, response });
         queueMicrotask(() => window.__zeroCoreMLReceive?.(payload.requestId, response));
       },
     },
@@ -71,6 +70,16 @@ try {
   assert.equal(bridgeActions[2].importId, '123e4567-e89b-42d3-a456-426614174000');
   assert.match(window.document.body.textContent, /Lokales Testtranskript/);
   assert.deepEqual(apiCalls, [], 'Native file import and transcription must never call provider/server APIs.');
+
+  // Missing runtime/weights must stop before opening the picker and must not use a cloud fallback.
+  whisperAvailable = false;
+  await act(async () => { importButton.click(); });
+  for (let i = 0; i < 10 && !window.document.body.textContent.includes('Lokale Whisper-Transkription ist nicht verfügbar'); i += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+  }
+  assert.deepEqual(bridgeActions.map((item) => item.action), ['diagnostics', 'pickAudio', 'transcribe', 'diagnostics']);
+  assert.match(window.document.body.textContent, /Lokale Whisper-Transkription ist nicht verfügbar/);
+  assert.deepEqual(apiCalls, [], 'Unavailable native Whisper must not trigger a provider/server fallback.');
   console.log('AudioStudioView native iOS audio import/transcription end-to-end test passed.');
 } finally {
   await act(async () => { root.unmount(); });
