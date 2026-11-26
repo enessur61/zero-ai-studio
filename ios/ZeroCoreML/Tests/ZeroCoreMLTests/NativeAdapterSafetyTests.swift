@@ -104,6 +104,102 @@ final class NativeAdapterSafetyTests: XCTestCase {
         }
     }
 
+    func testNativeAudioImportUsesOpaqueUUIDAndPrivateCanonicalPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-import-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NativeAudioImportStore(baseDirectory: root, lifetime: 60)
+        let source = root.deletingLastPathComponent().appendingPathComponent("zero-valid-\\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try makeValidWAV(at: source)
+
+        let importId = try store.importAudio(from: source)
+        XCTAssertNotNil(UUID(uuidString: importId))
+        let resolved = try store.resolve(importId)
+        XCTAssertEqual(resolved.deletingLastPathComponent().standardizedFileURL, root.standardizedFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resolved.path))
+
+        store.remove(importId)
+        XCTAssertThrowsError(try store.resolve(importId))
+    }
+
+    func testNativeAudioImportRejectsPathTraversalAndMalformedIdentifiers() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-path-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NativeAudioImportStore(baseDirectory: root)
+
+        XCTAssertThrowsError(try store.resolve("../../Documents/private.wav")) { error in
+            guard case NativeAudioImportError.invalidIdentifier = error else {
+                XCTFail("Expected invalidIdentifier, received: \\(error)")
+                return
+            }
+        }
+    }
+
+    func testNativeAudioImportRejectsExpiredIdentifiers() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-expiry-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = try NativeAudioImportStore(baseDirectory: root, lifetime: 5, now: { clock })
+        let source = root.deletingLastPathComponent().appendingPathComponent("zero-expiring-\\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try makeValidWAV(at: source)
+        let importId = try store.importAudio(from: source)
+
+        clock = clock.addingTimeInterval(6)
+        XCTAssertThrowsError(try store.resolve(importId)) { error in
+            guard case NativeAudioImportError.expiredOrMissing = error else {
+                XCTFail("Expected expiredOrMissing, received: \\(error)")
+                return
+            }
+        }
+    }
+
+    func testNativeAudioImportRejectsInvalidAudioFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-invalid-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("invalid.wav")
+        try Data("not audio".utf8).write(to: source)
+        let store = try NativeAudioImportStore(baseDirectory: root.appendingPathComponent("imports"))
+
+        XCTAssertThrowsError(try store.importAudio(from: source)) { error in
+            guard case NativeAudioImportError.invalidAudioFile = error else {
+                XCTFail("Expected invalidAudioFile, received: \\(error)")
+                return
+            }
+        }
+    }
+
+    func testNativeAudioImportCleanupRemovesExpiredFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-cleanup-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var clock = Date(timeIntervalSince1970: 1_800_000_100)
+        let store = try NativeAudioImportStore(baseDirectory: root, lifetime: 2, now: { clock })
+        let source = root.deletingLastPathComponent().appendingPathComponent("zero-cleanup-\\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try makeValidWAV(at: source)
+        let importId = try store.importAudio(from: source)
+        let importedURL = try store.resolve(importId)
+
+        clock = clock.addingTimeInterval(3)
+        XCTAssertEqual(store.cleanupExpired(), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: importedURL.path))
+        XCTAssertThrowsError(try store.resolve(importId))
+    }
+
+    private func makeValidWAV(at url: URL) throws {
+        let data = PiperONNXAdapter.encodeWavRIFF(
+            samples: Array(repeating: 0.1, count: 1_600),
+            sampleRate: 16_000
+        )
+        try data.write(to: url)
+    }
+
     private func readUInt16LE(_ data: Data, at offset: Int) -> UInt16 {
         UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
     }
