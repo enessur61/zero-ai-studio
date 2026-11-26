@@ -176,7 +176,7 @@ final class NativeAdapterSafetyTests: XCTestCase {
 
     func testNativeAudioImportRejectsSymbolicLinks() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("zero-audio-symlink-test-\\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("zero-audio-symlink-test-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appendingPathComponent("valid.wav")
@@ -187,7 +187,7 @@ final class NativeAdapterSafetyTests: XCTestCase {
 
         XCTAssertThrowsError(try store.importAudio(from: link)) { error in
             guard case NativeAudioImportError.invalidAudioFile = error else {
-                XCTFail("Expected invalidAudioFile for symbolic link, received: \\(error)")
+                XCTFail("Expected invalidAudioFile for symbolic link, received: \(error)")
                 return
             }
         }
@@ -195,7 +195,7 @@ final class NativeAdapterSafetyTests: XCTestCase {
 
     func testSeparateNativeAudioImportStoresDoNotInvalidateEachOther() throws {
         let source = FileManager.default.temporaryDirectory
-            .appendingPathComponent("zero-audio-multi-store-\\(UUID().uuidString).wav")
+            .appendingPathComponent("zero-audio-multi-store-\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: source) }
         try makeValidWAV(at: source)
 
