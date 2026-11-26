@@ -102,6 +102,22 @@ function getProjectVideoAssetStore() {
   return projectVideoAssetStore;
 }
 
+async function getProjectVideoBackupFiles(): Promise<Record<string, Buffer>> {
+  const assets = await getProjectVideoAssetStore().listForBackup(createZeroPrincipalHash());
+  const manifest = assets.map(({ payload, ...asset }) => ({
+    ...asset,
+    path: `media/project-videos/${asset.id}.${asset.contentType === 'video/mp4' ? 'mp4' : 'webm'}`,
+  }));
+  const files: Record<string, Buffer> = {
+    'data/project-video-manifest.json': Buffer.from(JSON.stringify({ version: 1, assets: manifest }, null, 2), 'utf8'),
+  };
+  for (let index = 0; index < assets.length; index += 1) {
+    const asset = assets[index];
+    files[manifest[index].path] = asset.payload;
+  }
+  return files;
+}
+
 async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () => Promise<T>): Promise<T> {
   const client = await getPostgresPool().connect();
   try {
@@ -667,8 +683,10 @@ app.post('/api/system/restore', restoreHandlers.json);
 app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
+    const mediaFiles = await getProjectVideoBackupFiles();
     const result = await buildFullProjectZip(process.cwd(), {
       'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+      ...mediaFiles,
     });
     const verification = verifyZipBuffer(result.buffer);
     res.json({
@@ -687,8 +705,10 @@ app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(a
 app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
+    const mediaFiles = await getProjectVideoBackupFiles();
     const result = await buildFullProjectZip(process.cwd(), {
       'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+      ...mediaFiles,
     });
     const verification = verifyZipBuffer(result.buffer);
     if (!verification.result.valid) {
