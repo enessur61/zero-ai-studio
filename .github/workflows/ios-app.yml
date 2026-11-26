@@ -71,6 +71,15 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           build
+      - name: Verify ZERO_APP_URL is embedded in the native app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
+          test -d "$APP_PATH"
+          APP_URL="$(/usr/libexec/PlistBuddy -c 'Print :ZERO_APP_URL' "$APP_PATH/Info.plist")"
+          [[ "$APP_URL" == "https://zero-ai-studio.onrender.com" ]]
+          printf 'Verified ZERO_APP_URL in app bundle.\n'
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
