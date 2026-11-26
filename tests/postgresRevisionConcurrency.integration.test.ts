@@ -671,6 +671,18 @@ try {
     await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal),
     'failed JSONB restore must leave prior video rows untouched',
   );
+  await assert.rejects(
+    () => storeA.write(
+      { value: 'bad-video-digest' }, restoredRevision, undefined, false,
+      { principalHash: videoPrincipal, assets: [{ ...restoreAssets[0], sha256: '0'.repeat(64) }] },
+    ),
+    /Projektvideo-Backup enthält ungültige oder beschädigte Daten/,
+    'invalid media digest must abort the transaction before replacing state or clips',
+  );
+  assert.ok(
+    await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal),
+    'invalid media digest must preserve the existing clip',
+  );
   await storeA.write(
     { value: 'restore-empty-manifest' }, restoredRevision, undefined, false,
     { principalHash: videoPrincipal, assets: [] },
