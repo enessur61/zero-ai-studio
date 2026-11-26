@@ -23,6 +23,7 @@ export async function postPiperWorkerTts(input: {
   headers: Record<string, string>;
   text: string;
   speed: number;
+  idempotencyKey: string;
   signal: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<Response> {
@@ -34,6 +35,7 @@ export async function postPiperWorkerTts(input: {
       ...input.headers,
       'Content-Type': 'application/json',
       Accept: 'audio/wav',
+      'Idempotency-Key': input.idempotencyKey,
     },
     body: JSON.stringify({ text: input.text, speed: input.speed }),
     signal: input.signal,
