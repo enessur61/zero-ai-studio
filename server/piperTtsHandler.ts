@@ -53,6 +53,10 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       res.status(400).json({ error: 'Ungültiger Idempotency-Key.' }); return;
     }
 
+    const workerIdempotencyKey = createHash('sha256')
+      .update(`${principal.id}\0${suppliedKey}`)
+      .digest('hex');
+
     let reservation: PiperReservation;
     try {
       reservation = await deps.reserve({
@@ -86,7 +90,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
         const recoveryController = new AbortController();
         const recoveryTimeout = setTimeout(() => recoveryController.abort(), 150000);
         try {
-          const recovered = await deps.synthesize({ worker, text, speed, idempotencyKey: suppliedKey, signal: recoveryController.signal });
+          const recovered = await deps.synthesize({ worker, text, speed, idempotencyKey: workerIdempotencyKey, signal: recoveryController.signal });
           if (recovered.status === 202) {
             res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 2, costEur: 0, paidFallback: false });
             return;
@@ -153,7 +157,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       safeToRelease = false;
       const controller = new AbortController();
       timeout = setTimeout(() => controller.abort(), 150000);
-      const response = await deps.synthesize({ worker, text, speed, idempotencyKey: suppliedKey, signal: controller.signal });
+      const response = await deps.synthesize({ worker, text, speed, idempotencyKey: workerIdempotencyKey, signal: controller.signal });
       if (!response.ok) {
         safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 409;
         const payload = await response.json().catch(() => ({})) as { detail?: unknown };
