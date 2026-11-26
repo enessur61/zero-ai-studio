@@ -1,5 +1,9 @@
 import Foundation
 import WebKit
+#if os(iOS)
+import UIKit
+import UniformTypeIdentifiers
+#endif
 
 /// Vereinheitlichte WKWebView JS-zu-Native-iOS Bridge für ZERO AI STUDIO auf iPhone 16 Pro Max.
 /// Unterstützt alle 8 lokalen On-Device iOS-Modelle:
@@ -23,6 +27,10 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
     private lazy var whisperAdapter = WhisperMetalAdapter()
     private lazy var piperAdapter = PiperONNXAdapter()
     private lazy var kokoroAdapter = KokoroMLXAudioAdapter()
+    private lazy var audioImportStore = try? NativeAudioImportStore()
+#if os(iOS)
+    private var pendingAudioPickerRequestId: String?
+#endif
 
     public init(webView: WKWebView, trustedHost: String, trustedPort: Int) {
         self.webView = webView
@@ -63,10 +71,13 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
             let voice = (body["voiceName"] as? String) ?? "af_heart"
             handleSynthesize(requestId: requestId, modelId: modelId, text: text, voice: voice)
 
+        case "pickAudio":
+            handlePickAudio(requestId: requestId)
+
         case "transcribe":
-            let audioPath = (body["audioPath"] as? String) ?? ""
+            let importId = (body["importId"] as? String) ?? ""
             let language = (body["language"] as? String) ?? "de"
-            handleTranscribe(requestId: requestId, audioPath: audioPath, language: language)
+            handleTranscribe(requestId: requestId, importId: importId, language: language)
 
         default:
             emitToJS(requestId: requestId, payload: [
@@ -329,11 +340,18 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func handleTranscribe(requestId: String, audioPath: String, language: String) {
-        let url = URL(fileURLWithPath: audioPath)
+    private func handleTranscribe(requestId: String, importId: String, language: String) {
+        guard let audioImportStore,
+              let audioURL = try? audioImportStore.resolve(importId) else {
+            emitToJS(requestId: requestId, payload: [
+                "ok": false, "type": "error", "error": "Audio-Import-ID ist ungültig, abgelaufen oder nicht mehr verfügbar."
+            ])
+            return
+        }
         Task {
+            defer { audioImportStore.remove(importId) }
             do {
-                let res = try await whisperAdapter.transcribe(audioURL: url, languageCode: language)
+                let res = try await whisperAdapter.transcribe(audioURL: audioURL, languageCode: language)
                 self.emitToJS(requestId: requestId, payload: [
                     "ok": true,
                     "type": "done",
@@ -350,6 +368,42 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    private func handlePickAudio(requestId: String) {
+#if os(iOS)
+        guard pendingAudioPickerRequestId == nil,
+              let presenter = topViewController(from: webView?.window?.rootViewController) else {
+            emitToJS(requestId: requestId, payload: [
+                "ok": false, "type": "error", "error": "Der native Audio-Dateiauswahldialog ist momentan nicht verfügbar."
+            ])
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.audio], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        pendingAudioPickerRequestId = requestId
+        presenter.present(picker, animated: true)
+#else
+        emitToJS(requestId: requestId, payload: [
+            "ok": false, "type": "error", "error": "UIDocumentPicker ist nur in der nativen iOS-App verfügbar."
+        ])
+#endif
+    }
+
+#if os(iOS)
+    private func topViewController(from root: UIViewController?) -> UIViewController? {
+        if let presented = root?.presentedViewController {
+            return topViewController(from: presented)
+        }
+        if let navigation = root as? UINavigationController {
+            return topViewController(from: navigation.visibleViewController)
+        }
+        if let tabs = root as? UITabBarController {
+            return topViewController(from: tabs.selectedViewController)
+        }
+        return root
+    }
+#endif
+
     private func emitToJS(requestId: String, payload: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8)
@@ -358,3 +412,46 @@ public final class ZeroWKWebViewBridge: NSObject, WKScriptMessageHandler {
         webView?.evaluateJavaScript(js, completionHandler: nil)
     }
 }
+
+
+#if os(iOS)
+extension ZeroWKWebViewBridge: UIDocumentPickerDelegate {
+    public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let requestId = pendingAudioPickerRequestId else { return }
+        pendingAudioPickerRequestId = nil
+        guard let selectedURL = urls.first,
+              let audioImportStore else {
+            emitToJS(requestId: requestId, payload: [
+                "ok": false, "type": "error", "error": "Keine Audiodatei ausgewählt."
+            ])
+            return
+        }
+
+        let didAccess = selectedURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess { selectedURL.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let importId = try audioImportStore.importAudio(from: selectedURL)
+            emitToJS(requestId: requestId, payload: [
+                "ok": true,
+                "type": "done",
+                "importId": importId,
+                "expiresInSeconds": Int(NativeAudioImportStore.defaultLifetime)
+            ])
+        } catch {
+            emitToJS(requestId: requestId, payload: [
+                "ok": false, "type": "error", "error": error.localizedDescription
+            ])
+        }
+    }
+
+    public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        guard let requestId = pendingAudioPickerRequestId else { return }
+        pendingAudioPickerRequestId = nil
+        emitToJS(requestId: requestId, payload: [
+            "ok": false, "type": "error", "error": "Audioauswahl abgebrochen."
+        ])
+    }
+}
+#endif
