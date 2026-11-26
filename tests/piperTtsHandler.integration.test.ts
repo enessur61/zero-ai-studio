@@ -14,6 +14,7 @@ wav.writeUInt16LE(1, 22); wav.writeUInt32LE(22050, 24); wav.writeUInt32LE(44100,
 wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36, 'ascii'); wav.writeUInt32LE(8, 40);
 
 let workerMode: 'ok' | 'unhealthy' | 'server-error' | 'reject' = 'ok';
+let workerEnabled = true;
 let synthCalls = 0;
 const workerServer = createServer(async (req, res) => {
   if (req.url === '/health') {
@@ -60,7 +61,7 @@ app.use('/api', createApiAuthMiddleware({
 }));
 app.post('/api/audio/tts/piper', createPiperTtsHandler({
   getPrincipal: (res) => res.locals.zeroPrincipal ?? null,
-  getWorker: () => ({ baseUrl: new URL(workerUrl), headers: { Authorization: 'Bearer local-only-test-token' } }),
+  getWorker: () => workerEnabled ? ({ baseUrl: new URL(workerUrl), headers: { Authorization: 'Bearer local-only-test-token' } }) : null,
   reserve: async ({ idempotencyKey, requestFingerprint }) => {
     const existing = reservations.get(idempotencyKey);
     if (existing) {
@@ -116,6 +117,11 @@ try {
   assert.deepEqual(await replay.json(), payload);
   assert.equal(synthCalls, 1, 'completed idempotency replay must not synthesize twice');
   assert.equal((await send('piper-test-key-001', 'different text')).status, 409);
+
+  workerEnabled = false;
+  assert.equal((await send('piper-disabled-key-01', 'disabled worker')).status, 503);
+  assert.equal(reservations.get('piper-disabled-key-01')?.status, 'released');
+  workerEnabled = true;
 
   workerMode = 'unhealthy';
   assert.equal((await send('piper-health-key-01', 'health failure')).status, 503);
