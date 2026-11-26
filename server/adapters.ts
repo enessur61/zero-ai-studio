@@ -15,6 +15,7 @@ import type { ZeroDatabase } from './store.ts';
 import { recordBudgetAudit } from './store.ts';
 import type { ModelDefinition } from '../src/types/zero.ts';
 import { CloudflareWorkersAiGateError } from './cloudflareBudgetGate.ts';
+import { reconcileAutomaticModelActivation } from './modelActivationPolicy.ts';
 import { analyzeCloudflareImage, generateCloudflareImage, generateCloudflareText, transcribeCloudflareAudio } from './cloudflareWorkersAi.ts';
 
 let lastPollinationsImageAt = 0;
@@ -473,18 +474,13 @@ export async function runLiveModelTest(
     }
   }
 
-  // Automatically enable only models that passed a real live probe and have a real adapter.
-  // A source-code stub, local model without weights, paid model, or failed/quota-limited endpoint stays disabled.
-  const verifiedRunnable =
-    model.testPassed &&
-    model.hasRealAdapter &&
-    !model.requiresPaidKey &&
-    !model.requiresExternalGpu &&
-    (model.status === 'FUNKTIONIERT' || model.status === 'LOKAL INSTALLIERT');
-  model.enabled = verifiedRunnable;
-
   model.lastTestedAt = now;
   model.lastTestLatencyMs = Date.now() - started;
+
+  // Only the audited free-cloud allowlist can be auto-activated. The policy
+  // also re-checks current PostgreSQL/cost gates and requires a fresh live test.
+  // It is pure and never makes a provider request or reserves compute.
+  reconcileAutomaticModelActivation(model, new Date(now), process.env);
   return model;
 }
 
