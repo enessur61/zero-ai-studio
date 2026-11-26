@@ -1493,6 +1493,27 @@ try {
   const conflictState = await storeA.read();
   assert.ok(conflictState);
   await storeA.write(conflictLiveDb, conflictState.revision);
+  // Start the conflict scenario with a deliberately empty clip set. Use a
+  // transaction so the fixture cannot expose a partially-cleared baseline.
+  const clearConflictClips = await poolA.connect();
+  try {
+    await clearConflictClips.query('BEGIN');
+    await clearConflictClips.query(
+      'DELETE FROM zero_project_video_assets WHERE principal_hash = $1 AND project_id = $2',
+      [videoPrincipal, restoreProjectId],
+    );
+    await clearConflictClips.query('COMMIT');
+  } catch (error) {
+    await clearConflictClips.query('ROLLBACK');
+    throw error;
+  } finally {
+    clearConflictClips.release();
+  }
+  assert.deepEqual(
+    await projectVideoStoreB.list(restoreProjectId, videoPrincipal),
+    [],
+    'revision-conflict fixture must begin with no previous project clips',
+  );
   const conflictOldVideo = Buffer.alloc(2048, 0x33);
   conflictOldVideo.write('ftyp', 4, 'ascii');
   const conflictOldVideoAsset = await projectVideoStore.put({
