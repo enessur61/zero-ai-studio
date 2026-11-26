@@ -63,14 +63,15 @@ const app = express();
 app.use(express.json());
 app.use('/api', createApiAuthMiddleware({
   isProduction: true, adminPassword: 'not-used-test-password', sessionSecret: 'x'.repeat(40),
-  hasValidSession: async (req) => req.headers.cookie === 'zero_session=valid',
-  onAuthenticated: (_req, res, next) => { res.locals.zeroPrincipal = { id: 'admin:primary' }; next(); },
+  hasValidSession: async (req) => ['zero_session=valid', 'zero_session=other'].includes(String(req.headers.cookie ?? '')),
+  onAuthenticated: (req, res, next) => { res.locals.zeroPrincipal = { id: req.headers.cookie === 'zero_session=other' ? 'admin:secondary' : 'admin:primary' }; next(); },
 }));
 app.post('/api/audio/tts/piper', createPiperTtsHandler({
   getPrincipal: (res) => res.locals.zeroPrincipal ?? null,
   getWorker: () => workerEnabled ? ({ baseUrl: new URL(workerUrl), headers: { Authorization: 'Bearer local-only-test-token' } }) : null,
-  reserve: async ({ idempotencyKey, requestFingerprint }) => {
-    const existing = reservations.get(idempotencyKey);
+  reserve: async ({ principalId, idempotencyKey, requestFingerprint }) => {
+    const scopedKey = `${principalId}:${idempotencyKey}`;
+    const existing = reservations.get(scopedKey);
     if (existing) {
       if (existing.fingerprint !== requestFingerprint) {
         const error = new Error('idempotency conflict'); error.name = 'ZeroResourceIdempotencyError'; throw error;
@@ -78,7 +79,7 @@ app.post('/api/audio/tts/piper', createPiperTtsHandler({
       return { reservationId: existing.reservationId, status: existing.status, duplicate: true };
     }
     const row = { reservationId: `reservation-${++reservationCount}`, status: 'reserved' as const, fingerprint: requestFingerprint };
-    reservations.set(idempotencyKey, row);
+    reservations.set(scopedKey, row);
     return { reservationId: row.reservationId, status: row.status, duplicate: false };
   },
   getCached: async (_principal, id) => results.get(id) ?? null,
@@ -105,9 +106,9 @@ await once(http, 'listening');
 const httpAddress = http.address();
 assert.ok(httpAddress && typeof httpAddress === 'object');
 const apiUrl = `http://127.0.0.1:${httpAddress.port}/api/audio/tts/piper`;
-const send = (key: string, text: string, authenticated = true) => fetch(apiUrl, {
+const send = (key: string, text: string, authenticated = true, cookie = 'zero_session=valid') => fetch(apiUrl, {
   method: 'POST',
-  headers: { 'content-type': 'application/json', 'idempotency-key': key, ...(authenticated ? { cookie: 'zero_session=valid' } : {}) },
+  headers: { 'content-type': 'application/json', 'idempotency-key': key, ...(authenticated ? { cookie } : {}) },
   body: JSON.stringify({ text }),
 });
 
@@ -124,26 +125,30 @@ try {
   assert.deepEqual(await replay.json(), payload);
   assert.equal(synthCalls, 1, 'completed idempotency replay must not synthesize twice');
   assert.equal((await send('piper-test-key-001', 'different text')).status, 409);
+  const otherPrincipal = await send('piper-test-key-001', 'Hallo ZERO', true, 'zero_session=other');
+  assert.equal(otherPrincipal.status, 200, 'the same client key must be isolated between authenticated principals');
+  assert.equal(synthCalls, 2);
+  assert.equal(workerIdempotency.size, 2, 'worker idempotency keys must be principal-scoped');
 
   workerEnabled = false;
   assert.equal((await send('piper-disabled-key-01', 'disabled worker')).status, 503);
-  assert.equal(reservations.get('piper-disabled-key-01')?.status, 'released');
+  assert.equal(reservations.get('admin:primary:piper-disabled-key-01')?.status, 'released');
   workerEnabled = true;
 
   workerMode = 'unhealthy';
   assert.equal((await send('piper-health-key-01', 'health failure')).status, 503);
-  assert.equal(reservations.get('piper-health-key-01')?.status, 'released');
+  assert.equal(reservations.get('admin:primary:piper-health-key-01')?.status, 'released');
 
   workerMode = 'server-error';
   assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 503);
-  assert.equal(reservations.get('piper-5xx-key-0001')?.status, 'reserved');
+  assert.equal(reservations.get('admin:primary:piper-5xx-key-0001')?.status, 'reserved');
   assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 409);
   assert.equal(reservations.get('piper-5xx-key-0001')?.status, 'reserved');
-  assert.equal(synthCalls, 2, 'uncertain worker result must not be submitted twice');
+  assert.equal(synthCalls, 3, 'uncertain worker result must not be submitted twice');
 
   workerMode = 'reject';
   assert.equal((await send('piper-4xx-key-0001', 'rejected request')).status, 400);
-  assert.equal(reservations.get('piper-4xx-key-0001')?.status, 'released');
+  assert.equal(reservations.get('admin:primary:piper-4xx-key-0001')?.status, 'released');
   console.log('Production Piper handler integration passed: auth, local health, reservation, WAV cache/replay, fingerprint conflict, 4xx release and uncertain 5xx no-duplicate behavior. Localhost only; no provider calls.');
 } finally {
   http.close(); workerServer.close();
