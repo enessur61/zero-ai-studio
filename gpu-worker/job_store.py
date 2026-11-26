@@ -102,6 +102,11 @@ class PersistentJobStore:
                 )
                 """
             )
+            # Migrate legacy job columns before querying them during the usage backfill.
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(zero_video_jobs)")}
+            for name in ("principal_hash", "idempotency_key_hash", "request_fingerprint"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE zero_video_jobs ADD COLUMN {name} TEXT")
             # Backfill today's already accepted jobs before enabling the per-project cap.
             today = datetime.now(timezone.utc).date().isoformat()
             legacy_rows = connection.execute(
@@ -130,11 +135,6 @@ class PersistentJobStore:
                     """,
                     (today, principal, project, accepted),
                 )
-            # Additive migration: existing persisted jobs remain readable.
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(zero_video_jobs)")}
-            for name in ("principal_hash", "idempotency_key_hash", "request_fingerprint"):
-                if name not in columns:
-                    connection.execute(f"ALTER TABLE zero_video_jobs ADD COLUMN {name} TEXT")
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS zero_video_jobs_idempotency
