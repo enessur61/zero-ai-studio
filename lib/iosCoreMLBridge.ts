@@ -149,7 +149,8 @@ export async function pickNativeIOSAudio(): Promise<CoreMLBridgeResponse> {
   return dispatchBridgeAction(
     { action: 'pickAudio' },
     undefined,
-    'Der native Audio-Dateiimport erfordert die ZERO-iOS-App mit UIDocumentPicker.'
+    'Der native Audio-Dateiimport erfordert die ZERO-iOS-App mit UIDocumentPicker.',
+    300_000
   );
 }
 
@@ -168,7 +169,8 @@ export async function runNativeIOSTranscribe(params: {
       language: params.language ?? 'de',
     },
     undefined,
-    'whisper.cpp Metal/CoreML erfordert die native ZERO-iOS-App sowie installierte Whisper-Modellgewichte.'
+    'whisper.cpp Metal/CoreML erfordert die native ZERO-iOS-App sowie installierte Whisper-Modellgewichte.',
+    180_000
   );
 }
 
