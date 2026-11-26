@@ -117,6 +117,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
                 self.client.get("/jobs", headers={"Authorization": "Bearer short"}).status_code,
                 503,
             )
+            self.assertEqual(self.client.get("/health").status_code, 503)
             worker.APP_TOKEN = "example-do-not-use-this-token-000000"
             self.assertEqual(
                 self.client.get("/jobs", headers={"Authorization": "Bearer example-do-not-use-this-token-000000"}).status_code,
