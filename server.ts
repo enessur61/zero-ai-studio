@@ -103,6 +103,7 @@ function getProjectVideoAssetStore() {
 }
 
 async function getProjectVideoBackupFiles(): Promise<Record<string, Buffer>> {
+  if (!process.env.DATABASE_URL) return {};
   const assets = await getProjectVideoAssetStore().listForBackup(createZeroPrincipalHash());
   const manifest = assets.map(({ payload, ...asset }) => ({
     ...asset,
