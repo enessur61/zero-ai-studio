@@ -6,7 +6,7 @@ Optional self-hosted inference worker for ZERO AI STUDIO. This is a real model r
 
 - One request creates one **5-second, 480p shot** (81 frames at 16 fps).
 - One autonomous episode can use at most three Wan shots; the other scenes use the local storyboard compositor.
-- The worker's conservative default is **3 jobs/day**. An operator may configure up to **15 jobs/day** (ZERO_WAN_GPU_DAILY_JOB_LIMIT=15), enough for three shots in each of five episodes. Jobs are serialized (one GPU job at a time); this is a ceiling, not a throughput guarantee.
+- The worker's conservative default is **3 jobs/day**. An operator may configure up to **15 jobs/day** (ZERO_WAN_GPU_DAILY_JOB_LIMIT=15), enough for three shots in each of five episodes. The backend enforces a separate hard limit of **3 accepted shots per project per UTC day**, as well as one GPU job at a time; these are ceilings, not throughput guarantees.
 - ZERO's final assembled video must remain at or below **60 seconds**.
 - The worker has no hosted inference provider and no paid fallback.
 - The model weights are downloaded from Hugging Face on first generation. They are not included in this repository or Docker image.
