@@ -682,6 +682,9 @@ export function getZipBackupRevision(backup: ZipBackupVersion): number {
 }
 
 export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
+  if (options.projectVideoRestore && !process.env.DATABASE_URL) {
+    throw new Error('Projektvideo-Wiederherstellung benötigt PostgreSQL; der bestehende Zustand bleibt unverändert.');
+  }
   if (process.env.DATABASE_URL) {
     // All writers share the PostgreSQL advisory transaction lock and revision check.
     const operation = persistenceSaveQueue.then(async () => {
