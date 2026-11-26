@@ -40,6 +40,7 @@ WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false"
 # Keep the conservative default at three jobs; operators may raise it only
 # after verifying their own GPU capacity and non-billable hosting.
 WAN_MAX_DAILY_JOBS = 15
+WAN_MAX_PROJECT_JOBS_PER_DAY = 3
 
 
 def parse_daily_job_limit(value: str | None) -> int:
@@ -382,6 +383,7 @@ def create_job(
             job,
             daily_limit=WAN_DAILY_JOB_LIMIT,
             max_concurrent=WAN_MAX_CONCURRENT_JOBS,
+            max_project_jobs=WAN_MAX_PROJECT_JOBS_PER_DAY,
         )
         if conflict:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
@@ -392,6 +394,8 @@ def create_job(
             raise HTTPException(status_code=429, detail="Wan GPU concurrency limit reached")
         if quota_reason == "daily_limit":
             raise HTTPException(status_code=429, detail="Wan daily job limit reached")
+        if quota_reason == "project_limit":
+            raise HTTPException(status_code=429, detail="Wan per-project daily shot limit reached")
         if quota_reason or existing is None:
             raise HTTPException(status_code=503, detail="Wan worker could not reserve the job")
         _jobs[job_id] = job
