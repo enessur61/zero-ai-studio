@@ -1693,6 +1693,65 @@ async function readWorkerBodyLimited(response: Response, maxBytes: number): Prom
   return Buffer.concat(chunks, total);
 }
 
+type PiperCachedResult = {
+  audioDataUrl: string;
+  modelUsed: string;
+  voice: string;
+  costEur: 0;
+  paidFallback: false;
+  resourceReservation: string;
+};
+
+let piperResultSchemaReady: Promise<void> | null = null;
+async function ensurePiperResultSchema(): Promise<void> {
+  if (!piperResultSchemaReady) {
+    piperResultSchemaReady = getPostgresPool().query(`
+      CREATE TABLE IF NOT EXISTS zero_piper_tts_results (
+        reservation_id UUID PRIMARY KEY,
+        principal_id TEXT NOT NULL CHECK (length(btrim(principal_id)) BETWEEN 1 AND 128),
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS zero_piper_tts_results_expiry_idx
+        ON zero_piper_tts_results (expires_at);
+    `).then(() => undefined).catch((error) => {
+      piperResultSchemaReady = null;
+      throw error;
+    });
+  }
+  await piperResultSchemaReady;
+}
+
+async function getPiperCachedResult(principalId: string, reservationId: string): Promise<PiperCachedResult | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(reservationId)) return null;
+  const pool = getPostgresPool();
+  await ensurePiperResultSchema();
+  const result = await pool.query<{ payload: PiperCachedResult }>(
+    `SELECT payload FROM zero_piper_tts_results
+     WHERE reservation_id = $1 AND principal_id = $2 AND expires_at > NOW()`,
+    [reservationId, principalId],
+  );
+  return result.rows[0]?.payload ?? null;
+}
+
+async function savePiperCachedResult(principalId: string, reservationId: string, payload: PiperCachedResult): Promise<void> {
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > 28 * 1024 * 1024) {
+    throw new Error('Piper-Ergebnis überschreitet das sichere Wiederherstellungslimit.');
+  }
+  const pool = getPostgresPool();
+  await ensurePiperResultSchema();
+  await pool.query(
+    `INSERT INTO zero_piper_tts_results (reservation_id, principal_id, payload, expires_at)
+     VALUES ($1, $2, $3::jsonb, NOW() + INTERVAL '24 hours')
+     ON CONFLICT (reservation_id) DO UPDATE
+       SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at
+       WHERE zero_piper_tts_results.principal_id = EXCLUDED.principal_id`,
+    [reservationId, principalId, serialized],
+  );
+}
+
 app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
   const principal = getZeroPrincipal(res.locals);
   if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
@@ -1725,7 +1784,23 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     return res.status(status).json({ error: error instanceof Error ? error.message : 'ZERO RESOURCE GUARD hat Piper gesperrt.', costEur: 0, paidFallback: false });
   }
   if (reservation.duplicate) {
-    return res.status(409).json({ error: 'Dieser Piper-Auftrag wurde mit diesem Idempotency-Key bereits angenommen oder abgeschlossen.', reservationId: reservation.reservationId, costEur: 0, paidFallback: false });
+    // A completed response is replayed from the principal-bound result cache.
+    // This closes the lost-response gap without invoking the worker a second time.
+    const cached = await getPiperCachedResult(principal.id, reservation.reservationId).catch(() => null);
+    if (cached) return res.json(cached);
+    if (reservation.status === 'reserved') {
+      return res.status(202).json({
+        status: 'processing', reservationId: reservation.reservationId,
+        retryAfterSeconds: 2, costEur: 0, paidFallback: false,
+      });
+    }
+    return res.status(409).json({
+      status: reservation.status,
+      error: reservation.status === 'completed'
+        ? 'Piper-Auftrag ist abgeschlossen, aber das Ergebnis ist nicht mehr im Wiederherstellungscache vorhanden. Bitte mit neuem Idempotency-Key erneut starten.'
+        : 'Piper-Auftrag wurde freigegeben. Bitte mit neuem Idempotency-Key erneut starten.',
+      reservationId: reservation.reservationId, costEur: 0, paidFallback: false,
+    });
   }
 
   let controller: AbortController | null = null;
@@ -1775,14 +1850,18 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
       safeToRelease = true;
       return res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
     }
-    await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
-    completed = true;
-    return res.json({
+    const replayPayload: PiperCachedResult = {
       audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}`,
       modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
       voice: 'Thorsten · Deutsch', costEur: 0, paidFallback: false,
       resourceReservation: reservation.reservationId,
-    });
+    };
+    // Persist the exact response before marking the reservation completed.
+    // A client retry after a lost HTTP response can then replay audio byte-for-byte.
+    await savePiperCachedResult(principal.id, reservation.reservationId, replayPayload);
+    await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
+    completed = true;
+    return res.json(replayPayload);
   } catch (error) {
     const message = error instanceof Error && error.name === 'AbortError'
       ? 'Piper-Spracherzeugung dauerte länger als 150 Sekunden und wurde abgebrochen.'
