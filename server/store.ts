@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import { ZERO_ADMIN_PRINCIPAL_ID, migrateProjectOwnership } from './projectIdentity.ts';
+import { createZeroPrincipalHash } from './zeroPrincipalContext.ts';
 import { emptyContinuityState, type ContinuityState } from '../src/types/continuity.ts';
 import { validateContinuityState } from './continuity.ts';
 import fs from 'node:fs/promises';
@@ -999,4 +1000,5 @@ export const restoreFromVerifiedZipBackup = createVerifiedZipRestoreService({
   getZipBackupRevision,
   saveDb,
   enrichModelMetadata,
+  getRestorePrincipalHash: createZeroPrincipalHash,
 });
