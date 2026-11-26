@@ -1715,7 +1715,9 @@ async function ensurePiperResultSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS zero_piper_tts_results_expiry_idx
         ON zero_piper_tts_results (expires_at);
-    `).then(() => undefined).catch((error) => {
+    `).then(async () => {
+      await getPostgresPool().query('DELETE FROM zero_piper_tts_results WHERE expires_at <= NOW()');
+    }).catch((error) => {
       piperResultSchemaReady = null;
       throw error;
     });
@@ -1756,12 +1758,6 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
   const principal = getZeroPrincipal(res.locals);
   if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const worker = getPiperTtsWorkerConfig();
-  if (!worker) {
-    return res.status(503).json({
-      error: 'Der Piper-Worker ist standardmäßig gesperrt. Erst nach bestätigter kostenloser Eigenhost-Bereitstellung beide ZERO_PIPER_WORKER-Freigaben setzen und ZERO_TTS_WORKER_URL sowie ZERO_TTS_WORKER_TOKEN konfigurieren. iPhone-Web-Speech bleibt lokal verfügbar.',
-      costEur: 0, paidFallback: false,
-    });
-  }
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   const rawSpeed = Number(req.body?.speed ?? 1);
   const speed = Number.isFinite(rawSpeed) ? Math.min(1.25, Math.max(0.75, rawSpeed)) : 1;
@@ -1805,6 +1801,13 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
         ? 'Piper-Auftrag ist abgeschlossen, aber das Ergebnis ist nicht mehr im Wiederherstellungscache vorhanden. Bitte mit neuem Idempotency-Key erneut starten.'
         : 'Piper-Auftrag wurde freigegeben. Bitte mit neuem Idempotency-Key erneut starten.',
       reservationId: reservation.reservationId, costEur: 0, paidFallback: false,
+    });
+  }
+
+  if (!worker) {
+    return res.status(503).json({
+      error: 'Der Piper-Worker ist standardmäßig gesperrt. Erst nach bestätigter kostenloser Eigenhost-Bereitstellung beide ZERO_PIPER_WORKER-Freigaben setzen und ZERO_TTS_WORKER_URL sowie ZERO_TTS_WORKER_TOKEN konfigurieren. iPhone-Web-Speech bleibt lokal verfügbar.',
+      costEur: 0, paidFallback: false,
     });
   }
 
