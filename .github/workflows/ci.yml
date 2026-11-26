@@ -542,7 +542,8 @@ jobs:
               method: 'POST', body: JSON.stringify({ text: 'ZERO audio workflow smoke test' })
             }),
             authFetch('/api/audio/tts/piper', {
-              method: 'POST', body: JSON.stringify({ text: 'ZERO Piper workflow smoke test' })
+              method: 'POST', headers: { 'Idempotency-Key': 'ci-piper-no-worker-smoke' },
+              body: JSON.stringify({ text: 'ZERO Piper workflow smoke test' })
             }),
             authFetch('/api/audio/transcribe', {
               method: 'POST', body: JSON.stringify({ audioDataUrl: 'data:audio/wav;base64,AAAA' })
