@@ -63,13 +63,17 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
     setAudioModelId(assetToLoad.modelId);
     setTtsError(null);
     setSavedAudioMsg(null);
+    if (typeof assetToLoad.sourceText === 'string' && assetToLoad.sourceText.length <= 5000) {
+      setText(assetToLoad.sourceText);
+    }
+    if (typeof assetToLoad.voiceLabel === 'string') setAudioVoiceLabel(assetToLoad.voiceLabel);
     if (match) {
       const restoredVoice = match[1];
       if (['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].includes(restoredVoice)) {
         setVoiceName(restoredVoice as typeof voiceName);
       }
       setAudioVoiceLabel(restoredVoice);
-      if (match[2]) setText(match[2]);
+      if (!assetToLoad.sourceText && match[2]) setText(match[2]);
     }
     onAudioAssetLoaded?.();
   }, [assetToLoad, onAudioAssetLoaded]);
@@ -132,6 +136,10 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
   }
 
   async function handleNativeIOSAudio(modelId: 'piper-tts-de' | 'kokoro-82m') {
+    if (modelId === 'piper-tts-de') {
+      setTtsError('Piper auf iOS ist derzeit deaktiviert: ONNX Runtime und eSpeak-ng sind noch nicht in das App-Target integriert.');
+      return;
+    }
     if (!text.trim() || ttsLoading) return;
     setTtsLoading(true);
     setTtsError(null);
@@ -378,13 +386,9 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
             </button>
 
             {nativeIOSActive && (
-              <button
-                type="button"
-                onClick={() => void handleNativeIOSAudio('piper-tts-de')}
-                className="min-h-[44px] px-3.5 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-xs font-medium text-teal-300 whitespace-nowrap"
-              >
-                Piper ONNX (iOS Lokal)
-              </button>
+              <span className="min-h-[44px] px-3.5 rounded-xl border border-amber-500/20 text-xs text-amber-300 inline-flex items-center">
+                Piper iOS: nicht verfügbar (Runtime fehlt)
+              </span>
             )}
           </div>
 
@@ -435,6 +439,8 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
                                 title: `Voiceover (${audioVoiceLabel}): ${text.slice(0, 36)}`,
                                 url: audioUrl,
                                 modelId: audioModelId,
+                                sourceText: text.slice(0, 5000),
+                                voiceLabel: audioVoiceLabel.slice(0, 100),
                               }),
                             }
                           );
