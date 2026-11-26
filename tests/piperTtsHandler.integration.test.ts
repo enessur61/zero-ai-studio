@@ -16,6 +16,7 @@ wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36, 'asci
 let workerMode: 'ok' | 'unhealthy' | 'server-error' | 'reject' = 'ok';
 let workerEnabled = true;
 let synthCalls = 0;
+const workerIdempotency = new Map<string, 'unknown' | 'completed'>();
 const workerServer = createServer(async (req, res) => {
   if (req.url === '/health') {
     res.writeHead(workerMode === 'unhealthy' ? 503 : 200, { 'content-type': 'application/json' });
@@ -36,11 +37,17 @@ const workerServer = createServer(async (req, res) => {
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   assert.equal(req.headers.authorization, 'Bearer local-only-test-token');
-  assert.ok(req.headers['idempotency-key']);
+  const key = String(req.headers['idempotency-key'] ?? '');
+  assert.ok(key);
   assert.equal(body.text.length > 0, true);
+  const prior = workerIdempotency.get(key);
+  if (prior === 'completed') { res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': String(wav.length), 'x-zero-tts-replayed': 'true' }).end(wav); return; }
+  if (prior === 'unknown') { res.writeHead(409, { 'content-type': 'application/json' }).end(JSON.stringify({detail:'UNKNOWN result; duplicate inference blocked'})); return; }
+  workerIdempotency.set(key, 'unknown');
   synthCalls++;
   if (workerMode === 'server-error') { res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({detail:'temporary worker failure'})); return; }
-  if (workerMode === 'reject') { res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({detail:'invalid request'})); return; }
+  if (workerMode === 'reject') { workerIdempotency.delete(key); res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({detail:'invalid request'})); return; }
+  workerIdempotency.set(key, 'completed');
   res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': String(wav.length) }).end(wav);
 });
 workerServer.listen(0, '127.0.0.1');
@@ -130,7 +137,8 @@ try {
   workerMode = 'server-error';
   assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 503);
   assert.equal(reservations.get('piper-5xx-key-0001')?.status, 'reserved');
-  assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 202);
+  assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 409);
+  assert.equal(reservations.get('piper-5xx-key-0001')?.status, 'reserved');
   assert.equal(synthCalls, 2, 'uncertain worker result must not be submitted twice');
 
   workerMode = 'reject';
