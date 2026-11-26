@@ -115,6 +115,9 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
           await deps.settle(principal.id, reservation.reservationId, 'completed');
           res.json(recoveredPayload);
           return;
+        } catch {
+          res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 5, costEur: 0, paidFallback: false });
+          return;
         } finally {
           clearTimeout(recoveryTimeout);
         }
