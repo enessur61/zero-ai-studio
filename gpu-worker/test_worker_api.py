@@ -210,6 +210,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
 
     def test_daily_job_limit_parser_clamps_to_reviewed_ceiling_and_fails_closed(self) -> None:
         self.assertEqual(worker.WAN_MAX_DAILY_JOBS, 15)
+        self.assertEqual(worker.WAN_MAX_PROJECT_JOBS_PER_DAY, 3)
         self.assertEqual(worker.parse_daily_job_limit(None), 3)
         self.assertEqual(worker.parse_daily_job_limit("0"), 0)
         self.assertEqual(worker.parse_daily_job_limit("3"), 3)
