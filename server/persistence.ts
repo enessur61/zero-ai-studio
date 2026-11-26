@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 
 export const POSTGRES_POOL_MAX = 5;
@@ -85,7 +86,8 @@ export function createPostgresStateStore(database: Pool) {
     payload: T,
     expectedRevision: number,
     backupFile?: { id: string; filename: string; contentType: string; payload: Buffer },
-    recordAutoBackupSuccess = false
+    recordAutoBackupSuccess = false,
+    projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }
   ): Promise<number> {
     await ensureSchema();
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
@@ -146,6 +148,52 @@ export function createPostgresStateStore(database: Pool) {
           );
         }
         nextRevision = Number(updated.rows[0].revision);
+      }
+
+      // Project clips are replaced in the SAME transaction as the restored JSONB state.
+      if (projectVideoRestore) {
+        const { principalHash, assets } = projectVideoRestore;
+        if (!/^[a-f0-9]{64}$/.test(principalHash) || assets.length > 50) {
+          throw new Error('Ungültige Projektvideo-Wiederherstellung.');
+        }
+        const seen = new Set<string>();
+        const projectUsage = new Map<string, { count: number; bytes: number }>();
+        let totalBytes = 0;
+        for (const asset of assets) {
+          const digest = createHash('sha256').update(asset.payload).digest('hex');
+          const validMagic = asset.contentType === 'video/mp4'
+            ? asset.payload.toString('ascii', 4, 8) === 'ftyp'
+            : asset.payload.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+          if (!/^[0-9a-f-]{36}$/i.test(asset.id) ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(asset.projectId) ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(asset.sceneId) ||
+              (asset.jobId !== null && !/^[0-9a-f-]{36}$/i.test(asset.jobId)) ||
+              !['video/mp4', 'video/webm'].includes(asset.contentType) ||
+              !Buffer.isBuffer(asset.payload) || asset.payload.length < 1024 ||
+              asset.payload.length > 100 * 1024 * 1024 || !validMagic ||
+              digest !== asset.sha256 || seen.has(asset.id) ||
+              !Number.isFinite(Date.parse(asset.createdAt))) {
+            throw new Error('Projektvideo-Backup enthält ungültige oder beschädigte Daten.');
+          }
+          seen.add(asset.id);
+          totalBytes += asset.payload.length;
+          const usage = projectUsage.get(asset.projectId) ?? { count: 0, bytes: 0 };
+          usage.count += 1; usage.bytes += asset.payload.length;
+          projectUsage.set(asset.projectId, usage);
+          if (totalBytes > 128 * 1024 * 1024 || usage.count > 50 || usage.bytes > 500 * 1024 * 1024) {
+            throw new Error('Projektvideo-Backup überschreitet die Wiederherstellungsgrenzen.');
+          }
+        }
+        await client.query('DELETE FROM zero_project_video_assets WHERE principal_hash = $1', [principalHash]);
+        for (const asset of assets) {
+          await client.query(
+            `INSERT INTO zero_project_video_assets
+              (asset_id, project_id, scene_id, principal_hash, job_id, content_type, size_bytes, sha256, payload, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [asset.id, asset.projectId, asset.sceneId, principalHash, asset.jobId,
+              asset.contentType, asset.payload.length, asset.sha256, asset.payload, asset.createdAt]
+          );
+        }
       }
 
       // The archive bytes and the JSONB metadata/revision commit together.
@@ -362,9 +410,10 @@ export async function writePersistentStateWithBackupFile<T>(
   payload: T,
   expectedRevision: number,
   backupFile: { id: string; filename: string; contentType: string; payload: Buffer },
-  recordAutoBackupSuccess = false
+  recordAutoBackupSuccess = false,
+  projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }
 ): Promise<number> {
-  return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess);
+  return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess, projectVideoRestore);
 }
 
 
