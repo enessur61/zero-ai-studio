@@ -46,12 +46,19 @@ public final class NativeAudioImportStore: @unchecked Sendable {
         self.now = now
         self.rootDirectory = baseDirectory ?? fileManager.temporaryDirectory
             .appendingPathComponent("ZEROAudioImports", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        var directoryAttributes: [FileAttributeKey: Any] = [:]
+#if os(iOS)
+        directoryAttributes[.protectionKey] = FileProtectionType.completeUntilFirstUserAuthentication
+#endif
         try fileManager.createDirectory(
             at: rootDirectory,
             withIntermediateDirectories: true,
-            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            attributes: directoryAttributes
         )
+        // Imports from a previous process have no live UUID lease and must never be reused.
+        for staleFile in (try? fileManager.contentsOfDirectory(at: rootDirectory, includingPropertiesForKeys: nil)) ?? [] {
+            try? fileManager.removeItem(at: staleFile)
+        }
     }
 
     public var directoryURL: URL { rootDirectory }
@@ -84,10 +91,13 @@ public final class NativeAudioImportStore: @unchecked Sendable {
         let destination = rootDirectory.appendingPathComponent(id.uuidString).appendingPathExtension(ext)
         do {
             try fileManager.copyItem(at: sourceURL, to: destination)
-            try fileManager.setAttributes(
-                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                ofItemAtPath: destination.path
-            )
+            var fileAttributes: [FileAttributeKey: Any] = [:]
+#if os(iOS)
+            fileAttributes[.protectionKey] = FileProtectionType.completeUntilFirstUserAuthentication
+#endif
+            if !fileAttributes.isEmpty {
+                try fileManager.setAttributes(fileAttributes, ofItemAtPath: destination.path)
+            }
         } catch {
             try? fileManager.removeItem(at: destination)
             throw NativeAudioImportError.storageFailure(error.localizedDescription)
