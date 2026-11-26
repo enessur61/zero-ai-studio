@@ -28,7 +28,7 @@ import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
 import { isPiperWorkerHealthPayload } from './server/piperWorkerHealth.ts';
-import { postPiperWorkerTts, resolvePiperReplay } from './server/piperWorkerClient.ts';
+import { postPiperWorkerTts } from './server/piperWorkerClient.ts';
 import { createPiperTtsHandler, type PiperCachedResult } from './server/piperTtsHandler.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
