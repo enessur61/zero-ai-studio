@@ -693,9 +693,7 @@ export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Pro
           ? await writePersistentStateWithBackupFile(
               db, expectedRevision, options.backupFile, options.recordAutoBackupSuccess ?? false, options.projectVideoRestore
             )
-          : options.projectVideoRestore
-            ? await writePersistentStateWithBackupFile(db, expectedRevision, { id: '__zero_restore_transaction__', filename: '__zero_restore_transaction__', contentType: 'application/octet-stream', payload: Buffer.alloc(0) }, false, options.projectVideoRestore)
-            : await writePersistentState(db, expectedRevision);
+          : await writePersistentState(db, expectedRevision, options.projectVideoRestore);
         dbRevisions.set(db, nextRevision);
         dbCache = db;
       } catch (error) {
