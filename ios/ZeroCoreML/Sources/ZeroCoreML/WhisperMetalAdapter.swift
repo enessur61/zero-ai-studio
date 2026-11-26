@@ -76,6 +76,7 @@ public struct WhisperDeploymentDiagnostics: Codable, Sendable {
     public let runtime: String
     public let deviceModel: String
     public let weightsPresent: Bool
+    public let runtimeLinked: Bool
     public let estimatedRamGB: Double
 }
 
@@ -112,12 +113,20 @@ public final class WhisperMetalAdapter: Sendable {
 
     public func deploymentDiagnostics() -> WhisperDeploymentDiagnostics {
         let url = Self.locateModelURL(filename: weightsFilename)
+        let runtimeLinked = bridge != nil
+        let weightsPresent = url != nil
+        let status = runtimeLinked && weightsPresent
+            ? "RUNTIME_UND_MODELLGEWICHTE_VORHANDEN"
+            : (!runtimeLinked ? "WHISPER_CPP_RUNTIME_NICHT_VERLINKT" : "WHISPER_MODELLGEWICHTE_FEHLEN")
         return WhisperDeploymentDiagnostics(
             modelId: modelId,
-            status: "NATIVE APP INTEGRATION ERFORDERLICH",
-            runtime: "whisper.cpp Metal GPU + CoreML ANE Encoder (16 kHz PCM -> SRT)",
-            deviceModel: "iPhone 16 Pro Max (A18 Pro · ~0,2x Echtzeit)",
-            weightsPresent: url != nil,
+            status: status,
+            runtime: runtimeLinked
+                ? "whisper.cpp Bridge injiziert; Metal/CoreML-Inferenz separat zu verifizieren"
+                : "Keine konkrete whisper.cpp XCFramework-/C-Bridge-Implementierung verlinkt",
+            deviceModel: "Gerätemodell und Echtzeitfaktor nicht verifiziert",
+            weightsPresent: weightsPresent,
+            runtimeLinked: runtimeLinked,
             estimatedRamGB: estimatedRamGB
         )
     }
