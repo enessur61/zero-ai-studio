@@ -77,7 +77,7 @@ export function getGeminiClient(): GoogleGenAI {
       const resourceType = classifyGeminiResourceType(modelId, payload);
       const operationInput = {
         provider: 'google-gemini-free' as const, modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
-        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
+        payload: request, inputBytes: Buffer.byteLength(payload),
         inputChars: resourceType === 'text' ? payload.length : undefined,
       };
       const operationResult = await withZeroCostResourceOperation(
@@ -96,7 +96,7 @@ export function getGeminiClient(): GoogleGenAI {
       const payload = JSON.stringify(request);
       const operationInput = {
         provider: 'google-gemini-free' as const, modelId, resourceType: 'text' as const, studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
-        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
+        payload: request, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
