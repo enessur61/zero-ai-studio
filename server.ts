@@ -105,10 +105,18 @@ function getProjectVideoAssetStore() {
 async function getProjectVideoBackupFiles(): Promise<Record<string, Buffer>> {
   if (!process.env.DATABASE_URL) return {};
   const assets = await getProjectVideoAssetStore().listForBackup(createZeroPrincipalHash());
-  const manifest = assets.map(({ payload, ...asset }) => ({
-    ...asset,
-    path: `media/project-videos/${asset.id}.${asset.contentType === 'video/mp4' ? 'mp4' : 'webm'}`,
-  }));
+  const manifest = assets.map(({ payload, ...asset }) => {
+    if (!/^[0-9a-f-]{36}$/i.test(asset.id) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(asset.projectId) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(asset.sceneId) ||
+        createHash('sha256').update(payload).digest('hex') !== asset.sha256) {
+      throw new Error('Ein gespeicherter Projektclip ist beschädigt oder hat ungültige Metadaten. ZIP-Export wurde abgebrochen.');
+    }
+    return {
+      ...asset,
+      path: `media/project-videos/${asset.id}.${asset.contentType === 'video/mp4' ? 'mp4' : 'webm'}`,
+    };
+  });
   const files: Record<string, Buffer> = {
     'data/project-video-manifest.json': Buffer.from(JSON.stringify({ version: 1, assets: manifest }, null, 2), 'utf8'),
   };
