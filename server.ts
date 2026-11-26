@@ -28,6 +28,7 @@ import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
 import { isPiperWorkerHealthPayload } from './server/piperWorkerHealth.ts';
+import { postPiperWorkerTts, resolvePiperReplay } from './server/piperWorkerClient.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -1783,13 +1784,14 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     // A completed response is replayed from the principal-bound result cache.
     // This closes the lost-response gap without invoking the worker a second time.
     const cached = await getPiperCachedResult(principal.id, reservation.reservationId);
-    if (cached) {
+    const replay = resolvePiperReplay(reservation.status, cached);
+    if (replay.kind === 'replay') {
       if (reservation.status === 'reserved') {
         await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
       }
-      return res.json(cached);
+      return res.json(replay.payload);
     }
-    if (reservation.status === 'reserved') {
+    if (replay.kind === 'processing') {
       return res.status(202).json({
         status: 'processing', reservationId: reservation.reservationId,
         retryAfterSeconds: 2, costEur: 0, paidFallback: false,
@@ -1797,7 +1799,7 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     }
     return res.status(409).json({
       status: reservation.status,
-      error: reservation.status === 'completed'
+      error: replay.kind === 'completed_without_result'
         ? 'Piper-Auftrag ist abgeschlossen, aber das Ergebnis ist nicht mehr im Wiederherstellungscache vorhanden. Bitte mit neuem Idempotency-Key erneut starten.'
         : 'Piper-Auftrag wurde freigegeben. Bitte mit neuem Idempotency-Key erneut starten.',
       reservationId: reservation.reservationId, costEur: 0, paidFallback: false,
@@ -1825,11 +1827,12 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
     safeToRelease = false;
     controller = new AbortController();
     timeout = setTimeout(() => controller?.abort(), 150000);
-    const response = await fetch(new URL('/tts', worker.baseUrl), {
-      method: 'POST',
-      headers: { ...worker.headers, 'Content-Type': 'application/json', Accept: 'audio/wav' },
-      body: JSON.stringify({ text, speed }),
-      signal: controller?.signal, redirect: 'error',
+    const response = await postPiperWorkerTts({
+      baseUrl: worker.baseUrl,
+      headers: worker.headers,
+      text,
+      speed,
+      signal: controller.signal,
     });
     if (!response.ok) {
       // Only a definitive 4xx rejection proves the worker did not accept work.
