@@ -3069,6 +3069,14 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   if (project.assets.length >= 200) {
     return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
   }
+  const sourceText = req.body?.sourceText;
+  const voiceLabel = req.body?.voiceLabel;
+  if (sourceText !== undefined && (typeof sourceText !== 'string' || sourceText.length > 5000)) {
+    return res.status(400).json({ error: 'Voiceover-Text ist ungültig oder überschreitet 5.000 Zeichen.' });
+  }
+  if (voiceLabel !== undefined && (typeof voiceLabel !== 'string' || voiceLabel.length > 100)) {
+    return res.status(400).json({ error: 'Voiceover-Stimmenbezeichnung ist ungültig.' });
+  }
 
   const asset: ProjectAsset = {
     id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3076,9 +3084,23 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
     title: String(req.body?.title || 'Studio Asset').trim().slice(0, 120),
     url,
     modelId: String(req.body?.modelId || 'zero-studio').trim().slice(0, 100),
+    sourceText: typeof sourceText === 'string' ? sourceText : undefined,
+    voiceLabel: typeof voiceLabel === 'string' ? voiceLabel : undefined,
     durationSec: durationSec === undefined ? undefined : Math.min(60, durationSec),
     createdAt: new Date().toISOString(),
   };
+  // Bound both current assets and their embedded snapshot copies. This keeps
+  // project JSON comfortably below the ZIP single-entry ceiling in ordinary use.
+  const snapshotAssetBytes = project.snapshots.reduce((sum, snapshot) =>
+    sum + Buffer.byteLength(JSON.stringify(snapshot.state?.assets ?? []), 'utf8'), 0);
+  const currentAssetBytes = Buffer.byteLength(JSON.stringify([asset, ...project.assets]), 'utf8');
+  const MAX_PROJECT_ASSET_METADATA_BYTES = 20 * 1024 * 1024;
+  if (snapshotAssetBytes + currentAssetBytes > MAX_PROJECT_ASSET_METADATA_BYTES) {
+    return res.status(413).json({
+      error: 'Das Projekt-Assetlimit von 20 MiB (inklusive Snapshot-Kopien) wäre überschritten. Bitte ältere Medien oder Snapshots entfernen.',
+      maxBytes: MAX_PROJECT_ASSET_METADATA_BYTES,
+    });
+  }
   project.assets.unshift(asset);
   project.updatedAt = new Date().toISOString();
   await saveDb(db);
