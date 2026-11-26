@@ -36,6 +36,7 @@ if "CPUExecutionProvider" not in ONNX_PROVIDERS:
  raise RuntimeError("Piper requires ONNX Runtime CPUExecutionProvider; CUDA is not required")
 
 def initialize_idempotency_store(db_path:Path=IDEMPOTENCY_DB):
+ os.umask(0o077)
  with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
   db.execute("PRAGMA journal_mode=WAL")
   db.execute("PRAGMA synchronous=FULL")
@@ -44,8 +45,9 @@ def initialize_idempotency_store(db_path:Path=IDEMPOTENCY_DB):
   # UNKNOWN rather than allowing a second inference for a possibly completed job.
   db.execute("UPDATE tts_idempotency SET status='unknown', audio=NULL WHERE status='processing'")
   db.execute("DELETE FROM tts_idempotency WHERE status='completed' AND expires_at <= ?",(time.time(),))
-  try: os.chmod(db_path,0o600)
-  except OSError: pass
+  for private_path in (db_path, Path(str(db_path)+'-wal'), Path(str(db_path)+'-shm')):
+   try: os.chmod(private_path,0o600)
+   except OSError: pass
 
 def claim_tts_idempotency(key:str,fingerprint:str,db_path:Path=IDEMPOTENCY_DB)->tuple[str,bytes|None]:
  with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
