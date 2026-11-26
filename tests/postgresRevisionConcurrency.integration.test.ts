@@ -81,6 +81,17 @@ try {
   });
   assert.equal(archivedVideo.sizeBytes, mp4Payload.length);
   assert.match(archivedVideo.sha256, /^[a-f0-9]{64}$/);
+  const backupVideoAssets = await projectVideoStoreB.listForBackup(videoPrincipal);
+  assert.equal(backupVideoAssets.length, 1, 'ZIP backup enumeration includes all principal-owned clips');
+  assert.deepEqual(backupVideoAssets[0].payload, mp4Payload,
+    'ZIP backup enumeration returns the exact durable video bytes');
+  assert.equal((await projectVideoStoreB.listForBackup(otherVideoPrincipal)).length, 0,
+    'ZIP backup enumeration never crosses authenticated principal boundaries');
+  await assert.rejects(
+    () => projectVideoStoreB.listForBackup(videoPrincipal, 2048),
+    /ZIP-Backup-Limit/,
+    'backup enumeration must reject the full payload set before loading oversized media into memory',
+  );
   await assert.rejects(
     () => projectVideoStore.put({
       projectId: 'project-video-integration', sceneId: 'scene-video-integration',
