@@ -52,11 +52,16 @@ def initialize_idempotency_store(db_path:Path=IDEMPOTENCY_DB):
 def claim_tts_idempotency(key:str,fingerprint:str,db_path:Path=IDEMPOTENCY_DB)->tuple[str,bytes|None]:
  with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
   db.execute("PRAGMA synchronous=FULL")
-  row=db.execute("SELECT fingerprint,status,audio FROM tts_idempotency WHERE idempotency_key=?",(key,)).fetchone()
+  # Serialize the read/claim pair across threads and SQLite connections.
+  db.execute("BEGIN IMMEDIATE")
+  now=time.time()
+  row=db.execute("SELECT fingerprint,status,audio,expires_at FROM tts_idempotency WHERE idempotency_key=?",(key,)).fetchone()
   if row:
    if row[0]!=fingerprint: return ('conflict',None)
-   return (row[1],bytes(row[2]) if row[2] is not None else None)
-  now=time.time()
+   if row[1]=='completed' and row[3] <= now:
+    db.execute("DELETE FROM tts_idempotency WHERE idempotency_key=? AND status='completed'",(key,))
+   else:
+    return (row[1],bytes(row[2]) if row[2] is not None else None)
   db.execute("INSERT INTO tts_idempotency(idempotency_key,fingerprint,status,audio,created_at,expires_at) VALUES(?,?, 'processing',NULL,?,?)",(key,fingerprint,now,now+30*86400))
   db.commit()
   return ('new',None)
