@@ -4,7 +4,10 @@ import { apiRequest } from '../lib/api.ts';
 import { resolveAudioModelId } from '../lib/audioModelMetadata.ts';
 import {
   isNativeIOSCoreMLAvailable,
+  pickNativeIOSAudio,
+  runNativeIOSDiagnostics,
   runNativeIOSSynthesize,
+  runNativeIOSTranscribe,
 } from '../lib/iosCoreMLBridge.ts';
 import type { ProjectAsset, StudioProject } from '../types/zero.ts';
 
@@ -195,6 +198,45 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
     recognitionRef.current = rec;
     rec.start();
     setDictating(true);
+  }
+
+  async function handleNativeIOSAudioImport() {
+    if (!nativeIOSActive || transcribing) return;
+    setTranscribing(true);
+    setTranscribeError(null);
+    setTranscriptSrt(null);
+    try {
+      // Diagnostics are local-only. Never fall back to a provider when Whisper is absent.
+      const diagnostics = await runNativeIOSDiagnostics('whisper-cpp-small');
+      if (diagnostics.available !== true) {
+        const detail = diagnostics.availabilityReason || diagnostics.status || diagnostics.runtime;
+        throw new Error(
+          detail
+            ? `Lokale Whisper-Transkription ist nicht verfügbar: ${detail}`
+            : 'Lokale Whisper-Transkription ist nicht verfügbar. Runtime und Modellgewichte fehlen oder sind nicht vollständig.'
+        );
+      }
+
+      const selection = await pickNativeIOSAudio();
+      if (!selection.importId) {
+        throw new Error('Der native Dateiauswahldialog hat keine gültige Audio-Import-ID geliefert.');
+      }
+      const result = await runNativeIOSTranscribe({
+        importId: selection.importId,
+        language: 'de',
+      });
+      if (typeof result.text !== 'string' || !result.text.trim()) {
+        throw new Error('Die lokale Whisper-Runtime hat kein Transkript zurückgegeben.');
+      }
+      setTranscript(result.text);
+      setTranscriptSrt(result.srt ?? null);
+    } catch (err) {
+      setTranscribeError(
+        err instanceof Error ? err.message : 'Lokaler iOS-Audioimport oder Whisper-Transkription fehlgeschlagen.'
+      );
+    } finally {
+      setTranscribing(false);
+    }
   }
 
   async function sendAudioForTranscription(dataUrl: string) {
@@ -495,6 +537,16 @@ export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAud
               {recording ? 'Aufnahme stoppen' : 'Mikrofon aufnehmen'}
             </button>
 
+            {nativeIOSActive && (
+              <button
+                type="button"
+                onClick={() => void handleNativeIOSAudioImport()}
+                disabled={transcribing}
+                className="min-h-[44px] px-3.5 rounded-xl border border-teal-500/30 bg-teal-500/10 text-xs font-medium text-teal-200 disabled:opacity-50 whitespace-nowrap"
+              >
+                Native iOS-Dateiimport · lokal
+              </button>
+            )}
             <button
               type="button"
               onClick={handleToggleLocalDictation}
