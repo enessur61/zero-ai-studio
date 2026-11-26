@@ -153,18 +153,19 @@ export function createPostgresStateStore(database: Pool) {
       // Project clips are replaced in the SAME transaction as the restored JSONB state.
       if (projectVideoRestore) {
         const { principalHash, assets } = projectVideoRestore;
-        if (!/^[a-f0-9]{64}$/.test(principalHash) || assets.length > 50) {
+        if (!/^[a-f0-9]{64}$/.test(principalHash) || assets.length > 10_000) {
           throw new Error('Ungültige Projektvideo-Wiederherstellung.');
         }
         const seen = new Set<string>();
         const projectUsage = new Map<string, { count: number; bytes: number }>();
+        const seenJobs = new Set<string>();
         let totalBytes = 0;
         for (const asset of assets) {
           const digest = createHash('sha256').update(asset.payload).digest('hex');
           const validMagic = asset.contentType === 'video/mp4'
             ? asset.payload.toString('ascii', 4, 8) === 'ftyp'
             : asset.payload.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
-          if (!/^[0-9a-f-]{36}$/i.test(asset.id) ||
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(asset.id) ||
               !/^[A-Za-z0-9_-]{1,128}$/.test(asset.projectId) ||
               !/^[A-Za-z0-9_-]{1,128}$/.test(asset.sceneId) ||
               (asset.jobId !== null && !/^[0-9a-f-]{36}$/i.test(asset.jobId)) ||
@@ -172,10 +173,12 @@ export function createPostgresStateStore(database: Pool) {
               !Buffer.isBuffer(asset.payload) || asset.payload.length < 1024 ||
               asset.payload.length > 100 * 1024 * 1024 || !validMagic ||
               digest !== asset.sha256 || seen.has(asset.id) ||
+              (asset.jobId !== null && seenJobs.has(asset.jobId)) ||
               !Number.isFinite(Date.parse(asset.createdAt))) {
             throw new Error('Projektvideo-Backup enthält ungültige oder beschädigte Daten.');
           }
           seen.add(asset.id);
+          if (asset.jobId) seenJobs.add(asset.jobId);
           totalBytes += asset.payload.length;
           const usage = projectUsage.get(asset.projectId) ?? { count: 0, bytes: 0 };
           usage.count += 1; usage.bytes += asset.payload.length;
