@@ -76,9 +76,13 @@ class GenerateRequest(BaseModel):
     scene_id: str = Field(min_length=1, max_length=128)
 
 
+def token_is_configured() -> bool:
+    return len(APP_TOKEN) >= 32 and not APP_TOKEN.lower().startswith(("replace-", "changeme", "example"))
+
+
 def require_auth(authorization: str | None) -> None:
-    if not APP_TOKEN:
-        raise HTTPException(status_code=503, detail="Worker auth is not configured")
+    if not token_is_configured():
+        raise HTTPException(status_code=503, detail="Worker auth requires a strong, non-placeholder token of at least 32 characters")
     supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
     if not hmac.compare_digest(supplied, APP_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
