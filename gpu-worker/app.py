@@ -256,6 +256,8 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    if not token_is_configured():
+        raise HTTPException(status_code=503, detail="Worker auth requires a strong, non-placeholder token of at least 32 characters")
     return {
         "ok": True,
         "engine": "Wan 2.1",
