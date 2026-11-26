@@ -1786,8 +1786,13 @@ app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
   if (reservation.duplicate) {
     // A completed response is replayed from the principal-bound result cache.
     // This closes the lost-response gap without invoking the worker a second time.
-    const cached = await getPiperCachedResult(principal.id, reservation.reservationId).catch(() => null);
-    if (cached) return res.json(cached);
+    const cached = await getPiperCachedResult(principal.id, reservation.reservationId);
+    if (cached) {
+      if (reservation.status === 'reserved') {
+        await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
+      }
+      return res.json(cached);
+    }
     if (reservation.status === 'reserved') {
       return res.status(202).json({
         status: 'processing', reservationId: reservation.reservationId,
