@@ -174,6 +174,42 @@ final class NativeAdapterSafetyTests: XCTestCase {
         }
     }
 
+    func testNativeAudioImportRejectsSymbolicLinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-symlink-test-\\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("valid.wav")
+        try makeValidWAV(at: source)
+        let link = root.appendingPathComponent("linked.wav")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        let store = try NativeAudioImportStore(baseDirectory: root.appendingPathComponent("imports"))
+
+        XCTAssertThrowsError(try store.importAudio(from: link)) { error in
+            guard case NativeAudioImportError.invalidAudioFile = error else {
+                XCTFail("Expected invalidAudioFile for symbolic link, received: \\(error)")
+                return
+            }
+        }
+    }
+
+    func testSeparateNativeAudioImportStoresDoNotInvalidateEachOther() throws {
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zero-audio-multi-store-\\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: source) }
+        try makeValidWAV(at: source)
+
+        let firstStore = try NativeAudioImportStore()
+        let importId = try firstStore.importAudio(from: source)
+        let secondStore = try NativeAudioImportStore()
+        defer { firstStore.remove(importId) }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try firstStore.resolve(importId).path),
+                      "Creating another WKWebView bridge must not delete an active audio import.")
+        XCTAssertThrowsError(try secondStore.resolve(importId),
+                             "Import identifiers must remain scoped to the store that issued them.")
+    }
+
     func testNativeAudioImportCleanupRemovesExpiredFiles() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("zero-audio-cleanup-test-\(UUID().uuidString)", isDirectory: true)
