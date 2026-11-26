@@ -56,7 +56,7 @@ def _install_runtime_stubs() -> None:
 with tempfile.TemporaryDirectory(prefix="zero-wan-api-import-") as _import_root:
     os.environ["WAN_OUTPUT_DIR"] = _import_root
     os.environ["HF_HOME"] = str(Path(_import_root) / "hf-cache")
-    os.environ["ZERO_VIDEO_ENGINE_TOKEN"] = "ci-worker-token"
+    os.environ["ZERO_VIDEO_ENGINE_TOKEN"] = "ci-worker-token-0123456789abcdef"
     os.environ["ZERO_WAN_GPU_ENABLED"] = "true"
     os.environ["ZERO_WAN_GPU_COSTS_CONFIRMED"] = "true"
     os.environ["ZERO_WAN_GPU_DAILY_JOB_LIMIT"] = "3"
@@ -77,13 +77,13 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         worker._jobs = worker._JOB_STORE.load_all()
         worker.PERSISTENT_MOUNT_CONFIGURED = True
         worker.MODEL_CACHE_PERSISTENT = True
-        worker.APP_TOKEN = "ci-worker-token"
+        worker.APP_TOKEN = "ci-worker-token-0123456789abcdef"
         worker.WAN_GPU_ENABLED = True
         worker.WAN_GPU_COSTS_CONFIRMED = True
         worker.WAN_DAILY_JOB_LIMIT = 3
         worker.WAN_MAX_CONCURRENT_JOBS = 1
         worker.gpu_vram_total_mb = lambda: 16 * 1024
-        self.auth = "Bearer ci-worker-token"
+        self.auth = "Bearer ci-worker-token-0123456789abcdef"
         self.client = TestClient(worker.app)
 
     def tearDown(self) -> None:
@@ -110,6 +110,20 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
             return self.client.post("/jobs", json=self.payload(), headers=self.headers(principal, key))
 
     def test_authentication_cost_gate_gpu_gate_and_principal_are_required(self) -> None:
+        configured_token = worker.APP_TOKEN
+        try:
+            worker.APP_TOKEN = "short"
+            self.assertEqual(
+                self.client.get("/jobs", headers={"Authorization": "Bearer short"}).status_code,
+                503,
+            )
+            worker.APP_TOKEN = "example-do-not-use-this-token-000000"
+            self.assertEqual(
+                self.client.get("/jobs", headers={"Authorization": "Bearer example-do-not-use-this-token-000000"}).status_code,
+                503,
+            )
+        finally:
+            worker.APP_TOKEN = configured_token
         self.assertEqual(self.client.get("/jobs").status_code, 401)
         missing_principal = self.client.get("/jobs", headers={"Authorization": self.auth})
         self.assertEqual(missing_principal.status_code, 401)
