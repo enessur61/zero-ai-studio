@@ -44,21 +44,46 @@ public final class NativeAudioImportStore: @unchecked Sendable {
         self.fileManager = fileManager
         self.lifetime = max(1, lifetime)
         self.now = now
-        self.rootDirectory = baseDirectory ?? fileManager.temporaryDirectory
-            .appendingPathComponent("ZEROAudioImports", isDirectory: true)
+
         var directoryAttributes: [FileAttributeKey: Any] = [:]
 #if os(iOS)
         directoryAttributes[.protectionKey] = FileProtectionType.completeUntilFirstUserAuthentication
 #endif
+        let storageDirectory: URL
+        if let baseDirectory {
+            storageDirectory = baseDirectory
+        } else {
+            let sharedRoot = fileManager.temporaryDirectory
+                .appendingPathComponent("ZEROAudioImports", isDirectory: true)
+            try fileManager.createDirectory(
+                at: sharedRoot,
+                withIntermediateDirectories: true,
+                attributes: directoryAttributes
+            )
+
+            // Each bridge instance gets an isolated lease directory. Starting a second
+            // WKWebView must never erase an import that the first one is transcribing.
+            let staleBefore = now().addingTimeInterval(-self.lifetime)
+            let existingDirectories = (try? fileManager.contentsOfDirectory(
+                at: sharedRoot,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
+            )) ?? []
+            for candidate in existingDirectories {
+                guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
+                      values.isDirectory == true,
+                      let modifiedAt = values.contentModificationDate,
+                      modifiedAt <= staleBefore else { continue }
+                try? fileManager.removeItem(at: candidate)
+            }
+            storageDirectory = sharedRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        }
+
+        self.rootDirectory = storageDirectory
         try fileManager.createDirectory(
             at: rootDirectory,
             withIntermediateDirectories: true,
             attributes: directoryAttributes
         )
-        // Imports from a previous process have no live UUID lease and must never be reused.
-        for staleFile in (try? fileManager.contentsOfDirectory(at: rootDirectory, includingPropertiesForKeys: nil)) ?? [] {
-            try? fileManager.removeItem(at: staleFile)
-        }
     }
 
     public var directoryURL: URL { rootDirectory }
