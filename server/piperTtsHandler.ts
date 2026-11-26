@@ -76,8 +76,48 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
         res.json(replay.payload); return;
       }
       if (replay.kind === 'processing') {
-        res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 2, costEur: 0, paidFallback: false });
-        return;
+        // Re-submit only to the same self-hosted worker with the same idempotency key.
+        // Its durable journal replays a completed WAV or reports PROCESSING/UNKNOWN;
+        // it must never perform a second inference for this key.
+        if (!worker || !(await deps.verifyHealth(worker))) {
+          res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 2, costEur: 0, paidFallback: false });
+          return;
+        }
+        const recoveryController = new AbortController();
+        const recoveryTimeout = setTimeout(() => recoveryController.abort(), 150000);
+        try {
+          const recovered = await deps.synthesize({ worker, text, speed, idempotencyKey: suppliedKey, signal: recoveryController.signal });
+          if (recovered.status === 202) {
+            res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 2, costEur: 0, paidFallback: false });
+            return;
+          }
+          if (recovered.status === 409) {
+            res.status(409).json({ status: 'unknown', reservationId: reservation.reservationId, error: 'Der Piper-Worker hat für diesen Schlüssel einen unklaren Abschluss dauerhaft markiert. Eine erneute Synthese wird blockiert; das Ergebnis muss manuell abgeglichen werden.', costEur: 0, paidFallback: false });
+            return;
+          }
+          if (!recovered.ok) {
+            res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 5, costEur: 0, paidFallback: false });
+            return;
+          }
+          const recoveredBytes = await deps.readBody(recovered, 20 * 1024 * 1024);
+          if (recoveredBytes.length < 44 || recoveredBytes.length > 20 * 1024 * 1024 ||
+              recoveredBytes.subarray(0, 4).toString('ascii') !== 'RIFF' || recoveredBytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+            res.status(409).json({ status: 'unknown', reservationId: reservation.reservationId, error: 'Der Piper-Worker hat einen nicht wiederherstellbaren WAV-Inhalt geliefert. Keine erneute Synthese gestartet.', costEur: 0, paidFallback: false });
+            return;
+          }
+          const recoveredPayload: PiperCachedResult = {
+            audioDataUrl: `data:audio/wav;base64,${recoveredBytes.toString('base64')}`,
+            modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
+            voice: 'Thorsten · Deutsch', costEur: 0, paidFallback: false,
+            resourceReservation: reservation.reservationId,
+          };
+          await deps.saveCached(principal.id, reservation.reservationId, recoveredPayload);
+          await deps.settle(principal.id, reservation.reservationId, 'completed');
+          res.json(recoveredPayload);
+          return;
+        } finally {
+          clearTimeout(recoveryTimeout);
+        }
       }
       res.status(409).json({
         status: reservation.status,
@@ -112,7 +152,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       timeout = setTimeout(() => controller.abort(), 150000);
       const response = await deps.synthesize({ worker, text, speed, idempotencyKey: suppliedKey, signal: controller.signal });
       if (!response.ok) {
-        safeToRelease = response.status >= 400 && response.status < 500;
+        safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 409;
         const payload = await response.json().catch(() => ({})) as { detail?: unknown };
         const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
         res.status(response.status === 400 ? 400 : 503).json({
