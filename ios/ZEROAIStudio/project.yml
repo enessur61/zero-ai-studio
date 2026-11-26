@@ -11,8 +11,6 @@ settings:
     INFOPLIST_KEY_CFBundleDisplayName: "ZERO AI STUDIO"
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
     INFOPLIST_KEY_UIUserInterfaceStyle: Dark
-    ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
-    INFOPLIST_KEY_ZERO_APP_URL: "$(ZERO_APP_URL)"
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "ZERO nutzt das Mikrofon für Spracherkennung und Audioaufnahmen."
     INFOPLIST_KEY_NSCameraUsageDescription: "ZERO nutzt die Kamera, wenn du Bilder oder Videos aufnehmen möchtest."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "ZERO greift auf ausgewählte Medien zu, die du in deinen Projekten verwenden möchtest."
@@ -35,3 +33,4 @@ targets:
         PRODUCT_NAME: "ZERO AI STUDIO"
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         SWIFT_STRICT_CONCURRENCY: complete
+        INFOPLIST_KEY_ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
