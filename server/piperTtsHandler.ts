@@ -1,4 +1,4 @@
-import type { Request, RequestHandler, Response } from 'express';
+import type { Request, RequestHandler, Response as ExpressResponse } from 'express';
 import { createHash } from 'node:crypto';
 import { resolvePiperReplay } from './piperWorkerClient.ts';
 
@@ -23,19 +23,19 @@ export type PiperCachedResult = {
 };
 
 export type PiperTtsHandlerDependencies = {
-  getPrincipal: (response: Response) => { id: string } | null;
+  getPrincipal: (response: ExpressResponse) => { id: string } | null;
   getWorker: () => PiperWorkerConfig | null;
   reserve: (input: { principalId: string; idempotencyKey: string; units: number; requestFingerprint: string }) => Promise<PiperReservation>;
   getCached: (principalId: string, reservationId: string) => Promise<PiperCachedResult | null>;
   saveCached: (principalId: string, reservationId: string, payload: PiperCachedResult) => Promise<void>;
   settle: (principalId: string, reservationId: string, outcome: 'completed' | 'released') => Promise<unknown>;
   verifyHealth: (worker: PiperWorkerConfig) => Promise<boolean>;
-  synthesize: (input: { worker: PiperWorkerConfig; text: string; speed: number; idempotencyKey: string; signal: AbortSignal }) => Promise<Response>;
-  readBody: (response: Response, maxBytes: number) => Promise<Buffer>;
+  synthesize: (input: { worker: PiperWorkerConfig; text: string; speed: number; idempotencyKey: string; signal: AbortSignal }) => Promise<globalThis.Response>;
+  readBody: (response: globalThis.Response, maxBytes: number) => Promise<Buffer>;
 };
 
 export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): RequestHandler {
-  return (req: Request, res: Response, next) => {
+  return (req: Request, res: ExpressResponse, next) => {
     void handle(req, res).catch(next);
   };
 
