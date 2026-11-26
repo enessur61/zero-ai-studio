@@ -193,7 +193,7 @@ public actor LlamaCoreMLAdapter {
         // Use Core ML's synchronous stateful API while the adapter actor owns the model.
         // This avoids sending the non-Sendable MLModel across actor boundaries; the actor
         // also serializes access to the mutable MLState used by autoregressive decoding.
-        let output = try model.prediction(from: provider, using: state)
+        let output = try await model.prediction(from: provider, using: state)
         guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
             throw CoreMLAdapterError.missingOutputLogits
         }
