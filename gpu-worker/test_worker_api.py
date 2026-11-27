@@ -190,17 +190,38 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         worker.run_generation(job_id, "A cinematic five second test scene", "9:16", None)
         self.assertEqual(worker._jobs[job_id]["status"], "cancelled")
 
-    def test_idempotency_replays_only_same_principal_and_same_request(self) -> None:
+    def test_idempotency_replays_before_queue_cost_and_gpu_admission(self) -> None:
         first = self.create_http(principal=self.PRINCIPAL_A, key="1" * 64)
         self.assertEqual(first.status_code, 202)
         first_id = first.json()["job"]["id"]
+
+        # Fill the in-memory queue after the job was accepted. A retry must
+        # replay the original durable job rather than being rejected as new.
+        for _ in range(49):
+            fake_id = str(UUID(int=1000 + _))
+            worker._jobs[fake_id] = {
+                "id": fake_id, "status": "completed", "created_at": "2026-11-18T12:00:00Z",
+                "duration_sec": 5, "engine": "Wan 2.1", "project_id": "project_123",
+                "scene_id": "scene_456", "principal_hash": self.PRINCIPAL_A,
+                "idempotency_key_hash": str(_).zfill(64), "request_fingerprint": str(_).zfill(64),
+            }
+        self.assertEqual(len(worker._jobs), 50)
+
+        # Closing the gate or losing GPU capacity after acceptance must not
+        # prevent a read-only replay; it must never start a second inference.
+        worker.WAN_GPU_ENABLED = False
+        worker.WAN_GPU_COSTS_CONFIRMED = False
+        worker.gpu_vram_total_mb = lambda: 0
         replay = self.create_http(principal=self.PRINCIPAL_A, key="1" * 64)
-        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json()["job"]["id"], first_id)
         self.assertTrue(replay.json()["replayed"])
+        worker.WAN_GPU_ENABLED = True
+        worker.WAN_GPU_COSTS_CONFIRMED = True
+        worker.gpu_vram_total_mb = lambda: 16 * 1024
 
         other_principal = self.create_http(principal=self.PRINCIPAL_B, key="1" * 64)
-        self.assertEqual(other_principal.status_code, 429)  # GPU slot remains occupied by the first queued job.
+        self.assertEqual(other_principal.status_code, 429)  # A different principal cannot replay the accepted job.
 
         changed_payload = self.payload()
         changed_payload["prompt"] = "A different cinematic five second test scene"
