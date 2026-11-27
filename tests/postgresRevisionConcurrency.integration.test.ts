@@ -173,6 +173,45 @@ try {
     await adminPool.query(`DROP SCHEMA IF EXISTS "${freshSchema}" CASCADE`);
   }
 
+  // Invalid legacy rows must abort the complete migration transaction and leave
+  // both the source row and the absence of migration metadata intact.
+  const invalidSchema = `zero_revision_invalid_${randomUUID().replaceAll('-', '')}`;
+  await adminPool.query(`CREATE SCHEMA "${invalidSchema}"`);
+  const invalidPool = new Pool({ connectionString, options: `-c search_path=${invalidSchema}`, max: 1 });
+  try {
+    await adminPool.query(`
+      CREATE TABLE "${invalidSchema}".zero_project_video_assets (
+        asset_id UUID NOT NULL, project_id TEXT NOT NULL, scene_id TEXT NOT NULL,
+        principal_hash CHAR(64) NOT NULL, job_id UUID, content_type TEXT NOT NULL,
+        size_bytes BIGINT NOT NULL, sha256 CHAR(64) NOT NULL, payload BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await adminPool.query(
+      `INSERT INTO "${invalidSchema}".zero_project_video_assets
+       (asset_id, project_id, scene_id, principal_hash, content_type, size_bytes, sha256, payload)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [randomUUID(), 'invalid-legacy-project', 'invalid-legacy-scene', 'f'.repeat(64),
+        'application/invalid', 1024, 'a'.repeat(64), Buffer.alloc(1024)]
+    );
+    await assert.rejects(
+      () => ensureZeroCostResourceSchema(invalidPool),
+      /ZERO-Ressourcenschema konnte nicht sicher initialisiert werden/;
+    );
+    const migrationTable = await invalidPool.query<{ migration_table: string | null }>(
+      "SELECT to_regclass('zero_schema_migrations')::text AS migration_table"
+    );
+    assert.equal(migrationTable.rows[0]?.migration_table, null,
+      'failed migration must not leave the version table or a version 4 record behind');
+    const preservedInvalidRow = await invalidPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM zero_project_video_assets'
+    );
+    assert.equal(preservedInvalidRow.rows[0]?.count, '1',
+      'migration failure must preserve the legacy row rather than silently deleting it');
+  } finally {
+    await invalidPool.end();
+    await adminPool.query(`DROP SCHEMA IF EXISTS "${invalidSchema}" CASCADE`);
+  }
   const projectVideoStore = createProjectVideoAssetStore(poolA);
   const projectVideoStoreB = createProjectVideoAssetStore(poolB);
   const videoPrincipal = 'd'.repeat(64);
