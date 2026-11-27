@@ -105,11 +105,14 @@ const key = { 'idempotency-key': 'piper-handler-test-001' };
 
 {
   const { deps, calls } = dependencies({
-    reserve: async () => ({
-      reservationId: '00000000-0000-4000-8000-000000000001',
-      status: 'reserved',
-      duplicate: true,
-    }),
+    reserve: async () => {
+      calls.reserve += 1;
+      return {
+        reservationId: '00000000-0000-4000-8000-000000000001',
+        status: 'reserved',
+        duplicate: true,
+      };
+    },
   });
   const result = await invoke(deps, key);
   assert.equal(result.status, 200);
