@@ -701,6 +701,68 @@ try {
     principalId: 'admin:primary', reservationId: afterResourceRollback.reservationId, outcome: 'released',
   });
 
+  // Isolated cost-ledger fixture: an audit-write failure after the budget
+  // UPSERT must roll the budget increment back in the same transaction.
+  const costRollbackSchema = `zero_cost_rollback_${randomUUID().replaceAll('-', '')}`;
+  await adminPool.query(`CREATE SCHEMA "${costRollbackSchema}"`);
+  const costRollbackPool = new Pool({ connectionString, options: `-c search_path=${costRollbackSchema}`, max: 1 });
+  try {
+    const rollbackEnv = {
+      DATABASE_URL: connectionString,
+      ZERO_COST_GUARD_ENABLED: 'true',
+      ZERO_COST_GUARD_FREE_ONLY_CONFIRMED: 'true',
+      ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '4',
+      ZERO_CLOUDFLARE_AI_ENABLED: 'true',
+      ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+    };
+    const rollbackRequest = {
+      provider: 'cloudflare-workers-ai' as const,
+      modelId: '@cf/zai-org/glm-4.7-flash',
+      studio: 'ZERO CORE',
+      action: 'COST_ROLLBACK_FIXTURE',
+    };
+    const firstCostReservation = await reserveZeroCostProviderRequestWithPool(
+      costRollbackPool, rollbackRequest, rollbackEnv,
+    );
+    assert.equal(firstCostReservation.requestsUsed, 1);
+    await costRollbackPool.query(`
+      CREATE FUNCTION reject_cost_audit_insert() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.action = 'COST_ROLLBACK_TRIGGER_TEST' THEN
+          RAISE EXCEPTION 'injected cost audit failure' USING ERRCODE = 'P0001';
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER reject_cost_audit_insert
+      BEFORE INSERT ON zero_cost_audit_events
+      FOR EACH ROW EXECUTE FUNCTION reject_cost_audit_insert();
+    `);
+    await assert.rejects(
+      () => reserveZeroCostProviderRequestWithPool(costRollbackPool, {
+        ...rollbackRequest, action: 'COST_ROLLBACK_TRIGGER_TEST',
+      }, rollbackEnv),
+      /Persistente Kostenreservierung fehlgeschlagen/,
+      'an audit failure after the budget UPSERT must abort the provider reservation',
+    );
+    const budgetAfterFailedAudit = await costRollbackPool.query<{ requests_used: number }>(
+      `SELECT requests_used FROM zero_cost_daily_budget WHERE scope = 'global'`,
+    );
+    assert.equal(budgetAfterFailedAudit.rows[0]?.requests_used, 1,
+      'a failed audit insert must roll back the preceding global budget increment');
+    await costRollbackPool.query('DROP TRIGGER reject_cost_audit_insert ON zero_cost_audit_events');
+    await costRollbackPool.query('DROP FUNCTION reject_cost_audit_insert()');
+    const retriedCostReservation = await reserveZeroCostProviderRequestWithPool(
+      costRollbackPool, { ...rollbackRequest, action: 'COST_ROLLBACK_RETRY' }, rollbackEnv,
+    );
+    assert.equal(retriedCostReservation.requestsUsed, 2,
+      'the same available budget slot must remain usable after the failed transaction');
+  } finally {
+    await costRollbackPool.end();
+    await adminPool.query(`DROP SCHEMA "${costRollbackSchema}" CASCADE`);
+  }
+
   // Simulated pool failures must fail closed without provider execution.
   const unavailablePool = { connect: async () => { throw new Error('injected unavailable PostgreSQL'); } } as unknown as Pool;
   await assert.rejects(
