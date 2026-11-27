@@ -19,8 +19,14 @@ export function clampScenesToMax60Seconds<T extends { durationSec: number }>(sce
   const total = normalized.reduce((sum, scene) => sum + scene.durationSec, 0);
   if (total <= MAX_VIDEO_DURATION_SEC) return normalized;
 
-  const exactDurations = normalized.map(
-    (scene) => (scene.durationSec * MAX_VIDEO_DURATION_SEC) / total
+  // Scale by the largest duration before summing. Summing several finite but
+  // extreme inputs (for example Number.MAX_VALUE) can overflow to Infinity;
+  // multiplying a large duration by 60 before division can overflow as well.
+  const maxDuration = Math.max(...normalized.map((scene) => scene.durationSec));
+  const weights = normalized.map((scene) => scene.durationSec / maxDuration);
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const exactDurations = weights.map(
+    (weight) => (weight * MAX_VIDEO_DURATION_SEC) / totalWeight
   );
   const durations = exactDurations.map((duration) => Math.max(1, Math.floor(duration)));
   let assigned = durations.reduce((sum, duration) => sum + duration, 0);
