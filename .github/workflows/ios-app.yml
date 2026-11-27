@@ -25,7 +25,9 @@ jobs:
   # Validate native iOS changes on PRs and allow explicit manual runs.
   build-ios-app:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
-    runs-on: macos-latest
+    # Intel avoids the documented macOS ARM64 capacity bottleneck. Xcode can
+    # still cross-compile the unsigned iPhone device target for arm64.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -79,7 +81,7 @@ jobs:
           test -d "$APP_PATH"
           APP_URL="$(/usr/libexec/PlistBuddy -c 'Print :ZERO_APP_URL' "$APP_PATH/Info.plist")"
           [[ "$APP_URL" == "https://zero-ai-studio.onrender.com" ]]
-          printf 'Verified ZERO_APP_URL in app bundle.\n'
+          printf 'Verified ZERO_APP_URL in app bundle.\\n'
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
