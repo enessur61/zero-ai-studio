@@ -241,9 +241,11 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
 
         SELECT c.contype, c.conname, c.conkey INTO existing_pk
         FROM pg_constraint c WHERE c.conrelid = target_table AND c.contype = 'p';
-        IF FOUND AND existing_pk.conkey <> ARRAY[asset_id_att]::smallint[] THEN
-          RAISE EXCEPTION 'Migration 4: existing primary key does not cover asset_id';
-        ELSIF NOT FOUND THEN
+        IF FOUND THEN
+          IF existing_pk.conkey <> ARRAY[asset_id_att]::smallint[] THEN
+            RAISE EXCEPTION 'Migration 4: existing primary key does not cover asset_id';
+          END IF;
+        ELSE
           EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_asset_id_v4_pkey PRIMARY KEY (asset_id)', target_table);
         END IF;
 
