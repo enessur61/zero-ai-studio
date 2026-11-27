@@ -211,6 +211,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         # prevent a read-only replay; it must never start a second inference.
         worker.WAN_GPU_ENABLED = False
         worker.WAN_GPU_COSTS_CONFIRMED = False
+        worker.MODEL_CACHE_PERSISTENT = False
         worker.gpu_vram_total_mb = lambda: 0
         replay = self.create_http(principal=self.PRINCIPAL_A, key="1" * 64)
         self.assertEqual(replay.status_code, 200, replay.text)
@@ -218,6 +219,7 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         self.assertTrue(replay.json()["replayed"])
         worker.WAN_GPU_ENABLED = True
         worker.WAN_GPU_COSTS_CONFIRMED = True
+        worker.MODEL_CACHE_PERSISTENT = True
         worker.gpu_vram_total_mb = lambda: 16 * 1024
 
         other_principal = self.create_http(principal=self.PRINCIPAL_B, key="1" * 64)
