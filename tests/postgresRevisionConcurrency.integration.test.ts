@@ -515,6 +515,27 @@ try {
   await authA.createSession('b'.repeat(64), new Date(Date.now() - 1));
   assert.equal(await authB.hasSession('b'.repeat(64)), false, 'expired sessions must fail closed across pools');
 
+  // If auth schema initialization cannot roll back, its checked-out session
+  // must be destroyed instead of being returned to the pool in unknown state.
+  let failedAuthSchemaRelease: Error | boolean | undefined;
+  const failedAuthSchemaClient = {
+    query: async (sql: string) => {
+      if (sql === 'BEGIN') throw new Error('injected auth BEGIN transport failure');
+      if (sql === 'ROLLBACK') throw new Error('injected auth ROLLBACK transport failure');
+      return { rows: [] };
+    },
+    release: (error?: Error | boolean) => { failedAuthSchemaRelease = error; },
+  };
+  const failedAuthSchemaPool = {
+    connect: async () => failedAuthSchemaClient,
+  } as unknown as Pool;
+  await assert.rejects(
+    () => createPostgresAuthStore(failedAuthSchemaPool).ensureSchema(),
+    /injected auth BEGIN transport failure/,
+  );
+  assert.equal(failedAuthSchemaRelease, true,
+    'an auth schema connection with uncertain transaction state must be destroyed');
+
   // Eight failed logins are shared; the ninth attempt is rejected across pools.
   const loginKeyHash = 'c'.repeat(64);
   const loginNow = new Date();
@@ -531,6 +552,39 @@ try {
     loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
   );
   assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
+
+  // A failed cost-reservation transaction must also destroy a client if
+  // PostgreSQL cannot confirm rollback. This path never invokes a provider.
+  let failedCostRollbackRelease: Error | boolean | undefined;
+  const failedCostRollbackClient = {
+    query: async (sql: string) => {
+      if (sql === 'BEGIN') throw new Error('injected cost BEGIN transport failure');
+      if (sql === 'ROLLBACK') throw new Error('injected cost ROLLBACK transport failure');
+      return { rows: [] };
+    },
+    release: (error?: Error | boolean) => { failedCostRollbackRelease = error; },
+  };
+  const failedCostRollbackPool = {
+    connect: async () => failedCostRollbackClient,
+  } as unknown as Pool;
+  await assert.rejects(
+    () => reserveZeroCostProviderRequestWithPool(failedCostRollbackPool, {
+      provider: 'cloudflare-workers-ai',
+      modelId: '@cf/zai-org/glm-4.7-flash',
+      studio: 'ZERO CORE',
+      action: 'ROLLBACK_FAILURE_TEST',
+    }, {
+      DATABASE_URL: connectionString,
+      ZERO_COST_GUARD_ENABLED: 'true',
+      ZERO_COST_GUARD_FREE_ONLY_CONFIRMED: 'true',
+      ZERO_COST_GUARD_DAILY_REQUEST_LIMIT: '5',
+      ZERO_CLOUDFLARE_AI_ENABLED: 'true',
+      ZERO_CLOUDFLARE_WORKERS_FREE_PLAN_CONFIRMED: 'true',
+    }),
+    /Persistente Kostenreservierung fehlgeschlagen/,
+  );
+  assert.equal(failedCostRollbackRelease, true,
+    'an uncertain cost reservation transaction must destroy its pooled connection');
 
   // Shared resource reservations are idempotent and transactional across
   // independent instances. This fixture performs database-only operations.
