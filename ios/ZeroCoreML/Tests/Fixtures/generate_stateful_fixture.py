@@ -17,7 +17,8 @@ def build_model():
             mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16),
             mb.StateTensorSpec(shape=(1,), dtype=types.fp32),
             mb.StateTensorSpec(shape=(1,), dtype=types.fp32),
-        ]
+        ],
+        opset_version=ct.target.iOS18,
     )
     def stateful_kv_cache(inputIds, causalMask, k_cache, v_cache):
         previous_k = mb.read_state(input=k_cache)
