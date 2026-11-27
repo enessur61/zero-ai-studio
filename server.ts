@@ -2336,7 +2336,12 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
         !['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
-      return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
+      return { status: 502, body: {
+        error: 'Ungültige Auftragsantwort vom Wan-Worker.',
+        resourceReservation: reservation.reservationId,
+        retryWithSameIdempotencyKey: true,
+        costFallback: false,
+      } };
     }
     await linkWanJobReservationWithPool(getPostgresPool(), {
       workerJobId: job.id,
@@ -2344,7 +2349,10 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       principalId,
     });
     if (['cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
-      await settleZeroResourceReservation({ principalId, reservationId: reservation.reservationId, outcome: 'completed' });
+      await settleZeroResourceReservation({
+        principalId, reservationId: reservation.reservationId,
+        outcome: job.status === 'succeeded' ? 'completed' : 'released',
+      });
     }
     return { status: payload.replayed === true ? 200 : 202, body: {
       job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
@@ -2392,6 +2400,7 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       .filter((job) => ['cancelled', 'succeeded', 'failed'].includes(job.status))
       .map((job) => settleWanJobReservationWithPool(getPostgresPool(), {
         workerJobId: job.id, principalId,
+        outcome: job.status === 'succeeded' ? 'completed' : 'released',
       })));
     return res.json({ jobs: loaded.jobs, costFallback: false });
   } catch {
@@ -2423,7 +2432,10 @@ app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
     if (['cancelled', 'succeeded', 'failed'].includes(String(payload.status))) {
       const principalId = getZeroPrincipal(res.locals)?.id;
       if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-      await settleWanJobReservationWithPool(getPostgresPool(), { workerJobId: id, principalId });
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: id, principalId,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
     }
     const statusCode = payload.status === 'cancel_requested' ? 202 : 200;
     return res.status(statusCode).json({
@@ -2462,7 +2474,10 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
     if (['cancelled', 'succeeded', 'failed'].includes(job.status)) {
       const principalId = getZeroPrincipal(res.locals)?.id;
       if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-      await settleWanJobReservationWithPool(getPostgresPool(), { workerJobId: id, principalId });
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: id, principalId,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
     }
     return res.json({ job, costFallback: false });
   } catch {
