@@ -70,6 +70,7 @@ jobs:
           -derivedDataPath "$RUNNER_TEMP/ZEROAIStudioDerived"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
+          INFOPLIST_KEY_ZERO_APP_URL=https://zero-ai-studio.onrender.com
           build
       - name: Verify ZERO_APP_URL is embedded in the native app
         shell: bash
