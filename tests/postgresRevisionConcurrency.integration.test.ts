@@ -66,7 +66,7 @@ try {
     )
   `);
   await adminPool.query(`
-    CREATE INDEX "${schema}".zero_project_video_assets_project_idx
+    CREATE INDEX "${schema}".zero_project_video_assets_project_idx_legacy
     ON "${schema}".zero_project_video_assets (principal_hash, project_id, created_at DESC)
   `);
   const storeA = createPostgresStateStore(poolA);
@@ -137,7 +137,7 @@ try {
             pg_get_indexdef(i.indexrelid) AS definition
      FROM pg_index i JOIN pg_class idx ON idx.oid = i.indexrelid
      WHERE i.indrelid = 'zero_project_video_assets'::regclass
-       AND idx.relname = 'zero_project_video_assets_project_idx'`
+       AND idx.relname = 'zero_project_video_assets_project_idx_legacy'`
   );
   assert.equal(videoIndex.rowCount, 1);
   assert.equal(videoIndex.rows[0].indisvalid, true);
