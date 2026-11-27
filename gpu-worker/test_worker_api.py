@@ -217,8 +217,15 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json()["job"]["id"], first_id)
         self.assertTrue(replay.json()["replayed"])
+
+        # A genuinely new job must still fail closed while the model cache is
+        # not persistent, and must not consume daily quota.
         worker.WAN_GPU_ENABLED = True
         worker.WAN_GPU_COSTS_CONFIRMED = True
+        blocked_new = self.create_http(principal=self.PRINCIPAL_B, key="2" * 64)
+        self.assertEqual(blocked_new.status_code, 503, blocked_new.text)
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 1)
+
         worker.MODEL_CACHE_PERSISTENT = True
         worker.gpu_vram_total_mb = lambda: 16 * 1024
 
