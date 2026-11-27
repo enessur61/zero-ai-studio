@@ -78,7 +78,15 @@ jobs:
           VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
           printf '%s\\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
+      - name: Install pinned Core ML fixture generator
+        run: python3 -m pip install --disable-pip-version-check coremltools==8.3.0
+      - name: Generate deterministic stateful Core ML test model
+        run: >-
+          python3 ios/ZeroCoreML/Tests/Fixtures/generate_stateful_fixture.py
+          --output "$RUNNER_TEMP/ZeroStatefulAccumulator.mlpackage"
       - name: Run ZeroCoreML Swift 6 XCTest suite
+        env:
+          ZERO_STATEFUL_COREML_FIXTURE: ${{ runner.temp }}/ZeroStatefulAccumulator.mlpackage
         run: swift test --package-path ios/ZeroCoreML
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml

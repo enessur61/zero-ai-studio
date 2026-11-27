@@ -1,8 +1,6 @@
 name: ZERO Resource Guard PostgreSQL 16.16
 
 on:
-  push:
-    branches: [release/zero-2026-11-20-preview]
   pull_request:
     paths:
       - 'server/zeroCostResourceGuard.ts'
