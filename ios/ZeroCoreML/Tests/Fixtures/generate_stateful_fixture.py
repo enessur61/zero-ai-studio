@@ -12,6 +12,7 @@ from coremltools.converters.mil.mil import types
 
 def build_model():
     @mb.program(
+        opset_version=ct.target.iOS18,
         input_specs=[
             mb.TensorSpec(shape=(1, 1), dtype=types.int32),
             mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16),
