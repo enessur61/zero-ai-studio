@@ -41,7 +41,7 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             do {
                 try await session.loadModelIfNeeded()
                 XCTFail("Unverified Llama artifact must never load")
-            } catch CoreMLAdapterError.modelContractUnverified {
+            } catch CoreMLAdapterError.modelContractUnverified(_, _) {
                 // Expected: production inference is blocked until artifact evidence exists.
             } catch {
                 XCTFail("Unexpected error: \(error)")
