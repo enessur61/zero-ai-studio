@@ -14,9 +14,7 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         )
 
         do {
-            trace("before actor session load")
-        try await session.loadModelIfNeeded()
-        trace("after actor session load")
+            try await session.loadModelIfNeeded()
             XCTFail("Expected missing model error")
         } catch let error as CoreMLAdapterError {
             guard case .modelBundleMissing = error else {
@@ -284,7 +282,9 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             modelURL: compiledURL,
             permitsSyntheticFixture: true
         )
+        trace("before actor session load")
         try await session.loadModelIfNeeded()
+        trace("after actor session load")
         let stateA = try await session.makeState()
         let stateB = try await session.makeState()
         trace("actor session states created")
