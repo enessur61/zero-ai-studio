@@ -300,7 +300,7 @@ jobs:
           }
           const blockedIp = await fetch(baseB + '/api/auth/login', {
             method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+            headers: { 'content-type': 'application/json', origin: baseB, 'x-forwarded-for': '203.0.113.10' },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
           if (blockedIp.status !== 429) throw new Error('Shared login rate limit did not block the ninth attempt on the other instance');
