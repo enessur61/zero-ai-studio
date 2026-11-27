@@ -1301,7 +1301,8 @@ try {
     { value: 'restored-with-video' }, initialRevision, undefined, false,
     { principalHash: videoPrincipal, assets: restoreAssets },
   );
-  assert.equal(restoredRevision, 2);
+  assert.equal(restoredRevision, initialRevision + 1,
+    'video restore must advance the actual persisted revision, not assume a fresh database');
   assert.deepEqual(
     (await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal))?.payload,
     mp4Payload,
