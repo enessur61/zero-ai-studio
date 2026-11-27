@@ -159,7 +159,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       timeout = setTimeout(() => controller.abort(), 150000);
       const response = await deps.synthesize({ worker, text, speed, idempotencyKey: workerIdempotencyKey, signal: controller.signal });
       if (!response.ok) {
-        safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 409;
+        safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 409;
         const payload = await response.json().catch(() => ({})) as { detail?: unknown };
         const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
         res.status(response.status === 400 ? 400 : 503).json({
