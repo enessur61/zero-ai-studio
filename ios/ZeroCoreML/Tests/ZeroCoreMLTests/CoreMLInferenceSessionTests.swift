@@ -14,7 +14,9 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         )
 
         do {
-            try await session.loadModelIfNeeded()
+            trace("before actor session load")
+        try await session.loadModelIfNeeded()
+        trace("after actor session load")
             XCTFail("Expected missing model error")
         } catch let error as CoreMLAdapterError {
             guard case .modelBundleMissing = error else {
@@ -188,21 +190,33 @@ final class CoreMLInferenceSessionTests: XCTestCase {
     }
 
     func testRealStatefulModelMaintainsIndependentMLStatesAndSessionCaches() async throws {
+        func trace(_ message: String) {
+            FileHandle.standardError.write(Data("[stateful-fixture] \(message)\n".utf8))
+        }
+        trace("test entered")
         guard let fixturePath = ProcessInfo.processInfo.environment["ZERO_STATEFUL_COREML_FIXTURE"] else {
             throw XCTSkip("Set ZERO_STATEFUL_COREML_FIXTURE to the generated stateful .mlpackage.")
         }
         let fixtureURL = URL(fileURLWithPath: fixturePath, isDirectory: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixtureURL.path))
+        trace("fixture path verified")
 
+        trace("before MLModel.compileModel")
         let compiledURL = try await MLModel.compileModel(at: fixtureURL)
+        trace("after MLModel.compileModel")
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuOnly
+        trace("before MLModel load")
         let model = try MLModel(contentsOf: compiledURL, configuration: configuration)
+        trace("after MLModel load")
         XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["k_cache"])
         XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["v_cache"])
+        trace("state descriptions verified")
 
+        trace("before direct makeState")
         let directStateA = model.makeState()
         let directStateB = model.makeState()
+        trace("after direct makeState")
         func cacheValue(_ state: MLState, name: String) -> Float {
             state.withMultiArray(for: name) { array in array[0].floatValue }
         }
@@ -235,17 +249,29 @@ final class CoreMLInferenceSessionTests: XCTestCase {
 
         // Interleave two independent states while advancing each sequence position.
         // The real Core ML model must accept causalMask widths 1, 2, then 3.
+        trace("before direct A position 0")
         _ = try await model.prediction(from: features(token: 2, startPosition: 0), using: directStateA)
+        trace("after direct A position 0")
         XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 2)
         XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 4)
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
         XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
+        trace("before direct B position 0")
         _ = try await model.prediction(from: features(token: 9, startPosition: 0), using: directStateB)
+        trace("after direct B position 0")
+        trace("before direct A position 1")
         _ = try await model.prediction(from: features(token: 5, startPosition: 1), using: directStateA)
+        trace("after direct A position 1")
+        trace("before direct B position 1")
         _ = try await model.prediction(from: features(token: 2, startPosition: 1), using: directStateB)
+        trace("after direct B position 1")
+        trace("before direct A position 2")
         _ = try await model.prediction(from: features(token: 3, startPosition: 2), using: directStateA)
+        trace("after direct A position 2")
+        trace("before direct B position 2")
         _ = try await model.prediction(from: features(token: 4, startPosition: 2), using: directStateB)
+        trace("after direct B position 2")
         XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 10)
         XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 20)
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 15)
@@ -261,12 +287,25 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         try await session.loadModelIfNeeded()
         let stateA = try await session.makeState()
         let stateB = try await session.makeState()
+        trace("actor session states created")
+        trace("before actor A position 0")
         let aFirst = try await session.predictStep(inputIds: [2], startPosition: 0, stateID: stateA)
+        trace("after actor A position 0")
+        trace("before actor B position 0")
         let bFirst = try await session.predictStep(inputIds: [9], startPosition: 0, stateID: stateB)
+        trace("after actor B position 0")
+        trace("before actor A position 1")
         let aSecond = try await session.predictStep(inputIds: [5], startPosition: 1, stateID: stateA)
+        trace("after actor A position 1")
+        trace("before actor B position 1")
         let bSecond = try await session.predictStep(inputIds: [2], startPosition: 1, stateID: stateB)
+        trace("after actor B position 1")
+        trace("before actor A position 2")
         let aThird = try await session.predictStep(inputIds: [3], startPosition: 2, stateID: stateA)
+        trace("after actor A position 2")
+        trace("before actor B position 2")
         let bThird = try await session.predictStep(inputIds: [4], startPosition: 2, stateID: stateB)
+        trace("after actor B position 2")
         XCTAssertEqual(aFirst, [2])
         XCTAssertEqual(bFirst, [9])
         XCTAssertEqual(aSecond, [7])
