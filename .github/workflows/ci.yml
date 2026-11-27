@@ -3,7 +3,7 @@ name: ZERO AI STUDIO CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, release/zero-2026-11-20-preview]
   pull_request:
 
 permissions:
