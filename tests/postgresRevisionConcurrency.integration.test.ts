@@ -19,6 +19,7 @@ import type { ZipBackupVersion } from '../src/types/zero.ts';
 import { Pool } from 'pg';
 import { POSTGRES_POOL_MAX } from '../server/persistence.ts';
 import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
+import { createMultiUserAuthStore, ZERO_LEGACY_ADMIN_USER_ID } from '../server/multiUserAuthStore.ts';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
 import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
 import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
@@ -529,6 +530,67 @@ try {
   assert.equal(await authA.hasSession(sessionHash), false, 'logout on pool B must revoke the session on pool A');
   await authA.createSession('b'.repeat(64), new Date(Date.now() - 1));
   assert.equal(await authB.hasSession('b'.repeat(64)), false, 'expired sessions must fail closed across pools');
+
+  // Additive multi-user migration: legacy admin sessions and state are copied
+  // once into user-bound tables without mutating their original records.
+  const legacySessionHash = 'c'.repeat(64);
+  const legacyExpiry = new Date(Date.now() + 120_000);
+  await authA.createSession(legacySessionHash, legacyExpiry);
+  const legacyAdminPayload = { projects: [{ id: 'legacy-admin-project', title: 'Preserve me' }] };
+  await poolA.query(
+    `INSERT INTO zero_app_state (id, payload, revision) VALUES ('primary', $1::jsonb, 7)`,
+    [JSON.stringify(legacyAdminPayload)],
+  );
+  const multiUserA = createMultiUserAuthStore(poolA);
+  const multiUserB = createMultiUserAuthStore(poolB);
+  await Promise.all([multiUserA.ensureSchema(), multiUserB.ensureSchema()]);
+  const migratedAdmin = await poolA.query<{ user_id: string; role: string }>(
+    'SELECT user_id, role FROM zero_users WHERE user_id = $1',
+    [ZERO_LEGACY_ADMIN_USER_ID],
+  );
+  assert.deepEqual(migratedAdmin.rows[0], { user_id: 'admin:primary', role: 'admin' });
+  assert.equal((await multiUserB.getSession(legacySessionHash))?.id, ZERO_LEGACY_ADMIN_USER_ID,
+    'an existing valid admin session must migrate to the original admin principal');
+  assert.equal(await authB.hasSession(legacySessionHash), true,
+    'migration must preserve the original legacy session for rollback compatibility');
+  const migratedState = await multiUserB.readState<typeof legacyAdminPayload>(ZERO_LEGACY_ADMIN_USER_ID);
+  assert.deepEqual(migratedState, { payload: legacyAdminPayload, revision: 7 },
+    'legacy primary state must be copied intact to the admin account exactly once');
+
+  const account = await multiUserA.createUser('  Studio.User@Example.com ', 'a-long-user-password-123');
+  assert.equal(account.email, 'studio.user@example.com');
+  assert.equal((await multiUserB.authenticateUser('STUDIO.USER@example.com', 'a-long-user-password-123'))?.id, account.id,
+    'normalized email and scrypt password credentials must authenticate across pools');
+  assert.equal(await multiUserB.authenticateUser(account.email!, 'incorrect-password-123'), null,
+    'invalid passwords must not authenticate');
+  await assert.rejects(() => multiUserA.createUser('second@example.com', 'short'),
+    /zwischen 12 und 1024 Zeichen/);
+  await assert.rejects(() => multiUserA.createUser('not-an-email', 'a-long-user-password-123'),
+    /Ungültige E-Mail-Adresse/);
+
+  const userSessionHash = 'd'.repeat(64);
+  await multiUserA.createSession(userSessionHash, account.id, new Date(Date.now() + 120_000));
+  assert.equal((await multiUserB.getSession(userSessionHash))?.id, account.id,
+    'user sessions must resolve to their own immutable principal across pools');
+  assert.equal(await multiUserB.getSession('f'.repeat(64)), null);
+  await multiUserB.deleteSession(userSessionHash);
+  assert.equal(await multiUserA.getSession(userSessionHash), null, 'user logout must revoke the shared session');
+
+  const adminRevision = await multiUserA.writeState(
+    ZERO_LEGACY_ADMIN_USER_ID,
+    { projects: [{ id: 'legacy-admin-project', title: 'Admin only' }] },
+    7,
+  );
+  const userRevision = await multiUserB.writeState(account.id, { projects: [{ id: 'private-user-project' }] }, 0);
+  assert.equal(adminRevision, 8);
+  assert.equal(userRevision, 1);
+  assert.equal((await multiUserA.readState<{ projects: Array<{ id: string }> }>(ZERO_LEGACY_ADMIN_USER_ID))?.payload.projects[0].id,
+    'legacy-admin-project');
+  assert.equal((await multiUserB.readState<{ projects: Array<{ id: string }> }>(account.id))?.payload.projects[0].id,
+    'private-user-project');
+  await assert.rejects(() => multiUserA.writeState(account.id, { projects: [] }, 0), /parallel geändert/,
+    'stale user-state revisions must conflict rather than overwrite newer data');
+
 
   // If auth schema initialization cannot roll back, its checked-out session
   // must be destroyed instead of being returned to the pool in unknown state.
