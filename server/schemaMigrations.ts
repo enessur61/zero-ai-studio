@@ -204,9 +204,9 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         END IF;
 
         SELECT
-          a.attnum FILTER (WHERE a.attname = 'asset_id'),
-          a.attnum FILTER (WHERE a.attname = 'principal_hash'),
-          a.attnum FILTER (WHERE a.attname = 'job_id')
+          max(a.attnum) FILTER (WHERE a.attname = 'asset_id'),
+          max(a.attnum) FILTER (WHERE a.attname = 'principal_hash'),
+          max(a.attnum) FILTER (WHERE a.attname = 'job_id')
         INTO asset_id_att, principal_hash_att, job_id_att
         FROM pg_attribute a
         WHERE a.attrelid = target_table AND a.attnum > 0 AND NOT a.attisdropped;
