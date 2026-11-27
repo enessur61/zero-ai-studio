@@ -90,9 +90,9 @@ try {
   const storeA = createPostgresStateStore(poolA);
   const storeB = createPostgresStateStore(poolB);
 
-  // Run DDL sequentially: concurrent CREATE TABLE IF NOT EXISTS may race in pg_type.
-  await storeA.ensureSchema();
-  await storeB.ensureSchema();
+  // Two independent pools bootstrap together; the schema advisory lock must
+  // serialize CREATE TABLE IF NOT EXISTS and the backward-compatible ALTER.
+  await Promise.all([storeA.ensureSchema(), storeB.ensureSchema()]);
 
   // Principal-bound durable video assets use versioned PostgreSQL schema and
   // binary storage. Exercise >8 MB payloads across independent DB pools.
