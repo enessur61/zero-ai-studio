@@ -9,7 +9,8 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         let session = CoreMLInferenceSession(
             variant: .instruct1B,
             computeUnits: .cpuOnly,
-            modelURL: missingURL
+            modelURL: missingURL,
+            permitsSyntheticFixture: true
         )
 
         do {
@@ -23,6 +24,67 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testVersionedLlamaContractsFailClosedForBothVariants() async {
+        XCTAssertEqual(LlamaCoreMLModelContract.schemaVersion, 1)
+        for variant in Llama32Variant.allCases {
+            let evidence = LlamaCoreMLModelContract.evidence(for: variant)
+            XCTAssertFalse(evidence.isProductionReady)
+            XCTAssertNil(evidence.artifactSHA256)
+            XCTAssertNil(evidence.inputTensorSpecifications)
+            XCTAssertNil(evidence.outputTensorSpecifications)
+            XCTAssertNil(evidence.stateTensorSpecifications)
+            XCTAssertNil(evidence.attentionMaskSpecification)
+
+            let session = CoreMLInferenceSession(variant: variant, computeUnits: .cpuOnly)
+            do {
+                try await session.loadModelIfNeeded()
+                XCTFail("Unverified Llama artifact must never load")
+            } catch CoreMLAdapterError.modelContractUnverified {
+                // Expected: production inference is blocked until artifact evidence exists.
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testCausalMaskAdvancesWithSequencePositionAndUsesCausalUpperTriangle() throws {
+        let first = try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 1, startPosition: 0, contextLimit: 8
+        )
+        XCTAssertEqual(first.shape.map(\.intValue), [1, 1, 1, 1])
+        XCTAssertEqual(first[[0, 0, 0, 0]].floatValue, 0)
+
+        let advanced = try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 2, startPosition: 1, contextLimit: 8
+        )
+        XCTAssertEqual(advanced.shape.map(\.intValue), [1, 1, 2, 3])
+        XCTAssertEqual(advanced[[0, 0, 0, 0]].floatValue, 0)
+        XCTAssertEqual(advanced[[0, 0, 0, 1]].floatValue, 0)
+        XCTAssertEqual(advanced[[0, 0, 0, 2]].floatValue, -65504)
+        XCTAssertEqual(advanced[[0, 0, 1, 2]].floatValue, 0)
+    }
+
+    func testSequenceWindowRejectsContextOverflowAndInvalidPositions() throws {
+        _ = try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 1, startPosition: 4095, contextLimit: 4096
+        )
+        XCTAssertThrowsError(try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 1, startPosition: 4096, contextLimit: 4096
+        ))
+        XCTAssertThrowsError(try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 2, startPosition: 4095, contextLimit: 4096
+        ))
+        XCTAssertThrowsError(try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 1, startPosition: -1, contextLimit: 4096
+        ))
+        XCTAssertThrowsError(try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 1, startPosition: Int.max, contextLimit: 4096
+        ))
+        XCTAssertThrowsError(try CoreMLInferenceSession.makeCausalMask(
+            sequenceLength: 0, startPosition: 0, contextLimit: 4096
+        ))
     }
 
     func testUnknownStateIdentifierIsRejectedWithoutCreatingState() async {
@@ -173,7 +235,8 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         let session = CoreMLInferenceSession(
             variant: .instruct1B,
             computeUnits: .cpuOnly,
-            modelURL: compiledURL
+            modelURL: compiledURL,
+            permitsSyntheticFixture: true
         )
         try await session.loadModelIfNeeded()
         let stateA = try await session.makeState()
@@ -195,6 +258,26 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         await session.releaseState(stateB)
         let noStatesActive = await session.activeStateCount()
         XCTAssertEqual(noStatesActive, 0)
+
+        // Unload invalidates every registered state; reload starts cleanly.
+        let stateC = try await session.makeState()
+        await session.unloadModel()
+        let unloadedStateCount = await session.activeStateCount()
+        XCTAssertEqual(unloadedStateCount, 0)
+        do {
+            _ = try await session.predictStep(inputIds: [3], startPosition: 0, stateID: stateC)
+            XCTFail("A state must not survive model unload")
+        } catch CoreMLAdapterError.invalidInputTensor {
+            // Expected: unload removed the state registry.
+        }
+        try await session.loadModelIfNeeded()
+        let stateD = try await session.makeState()
+        let afterReload = try await session.predictStep(inputIds: [4], startPosition: 0, stateID: stateD)
+        XCTAssertEqual(afterReload, [4])
+        await session.releaseState(stateD)
+        await session.releaseState(stateD)
+        let afterRepeatedRelease = await session.activeStateCount()
+        XCTAssertEqual(afterRepeatedRelease, 0)
     }
 
 }
