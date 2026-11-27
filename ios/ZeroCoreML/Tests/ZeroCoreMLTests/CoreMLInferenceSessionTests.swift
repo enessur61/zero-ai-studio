@@ -168,9 +168,14 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             modelURL: nil
         )
         let task = Task {
+            // Cancel from inside the task before crossing the actor boundary.
+            // This removes the scheduling race where the checkpoint can finish
+            // before an immediate external cancel reaches the task.
+            withUnsafeCurrentTask { currentTask in
+                currentTask?.cancel()
+            }
             try await session.cancellationCheckpoint()
         }
-        task.cancel()
 
         do {
             try await task.value
