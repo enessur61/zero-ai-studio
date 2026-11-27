@@ -896,7 +896,12 @@ jobs:
             docker compose --file docker-compose.workers.yml --file /tmp/zero-ci-db.override.yml "$@"
           }
           cleanup() {
-            compose down --volumes --remove-orphans
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              compose logs --no-color zero-app zero-db || true
+            fi
+            compose down --volumes --remove-orphans || true
+            exit "$status"
           }
           trap cleanup EXIT
           compose up --detach --build zero-app
@@ -934,8 +939,10 @@ jobs:
             exit 1
           fi
           compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
-          LIVE_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
+          LIVE_STATUS=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
+          echo "Compose /api/live HTTP status: $LIVE_STATUS"
           test "$LIVE_STATUS" = 200
-          READY_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/health)
+          READY_STATUS=$(curl --silent --show-error --output /tmp/zero-readiness.json --write-out '%{http_code}' http://127.0.0.1:3000/api/health)
+          echo "Compose /api/health HTTP status: $READY_STATUS; body: $(cat /tmp/zero-readiness.json)"
           test "$READY_STATUS" = 200
           echo "Compose app and PostgreSQL are healthy; Piper remains authenticated and no inference was invoked."
