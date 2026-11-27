@@ -2241,7 +2241,9 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
   const workerIdempotencyKey = createZeroIdempotencyKey('wan-video');
 
-  const result = await withZeroProjectLifecycleLock(projectId, async () => {
+  let result: { status: number; body: Record<string, unknown> };
+  try {
+    result = await withZeroProjectLifecycleLock(projectId, async () => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === projectId);
   if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
@@ -2324,7 +2326,13 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   } finally {
     clearTimeout(timeout);
   }
-  });
+    });
+  } catch {
+    return res.status(503).json({
+      error: 'ZERO-Datenbank oder Ressourcenreservierung ist derzeit nicht verfügbar. Der Wan-Auftrag wurde nicht als erfolgreich bestätigt.',
+      costFallback: false,
+    });
+  }
   return res.status(result.status).json(result.body);
 }));
 
