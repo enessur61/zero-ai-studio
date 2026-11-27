@@ -31,24 +31,30 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Determine Apple toolchain cache key
+        id: apple-toolchain
+        shell: bash
+        run: |
+          TOOLCHAIN_KEY="$( { xcodebuild -version; swift --version; } | shasum -a 256 | cut -c1-16)"
+          echo "key=$TOOLCHAIN_KEY" >> "$GITHUB_OUTPUT"
       - name: Restore pinned XcodeGen binary
         id: xcodegen-cache
         uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
         with:
           path: ${{ runner.temp }}/xcodegen
-          key: zero-xcodegen-macos-15-intel-8445e778451c7e44237b90281bde622d764b0084
+          key: zero-xcodegen-macos-15-intel-${{ steps.apple-toolchain.outputs.key }}-8445e778451c7e44237b90281bde622d764b0084
       - name: Restore Swift package build cache
         uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
         with:
           path: ios/ZeroCoreML/.build
-          key: zero-swift-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ios/ZeroCoreML/Package.resolved', 'ios/ZeroCoreML/Package.swift') }}
+          key: zero-swift-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-toolchain.outputs.key }}-${{ steps.apple-toolchain.outputs.key }}-${{ hashFiles('ios/ZeroCoreML/Package.resolved', 'ios/ZeroCoreML/Package.swift') }}
           restore-keys: |
             zero-swift-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore Xcode derived data
         uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
         with:
           path: ${{ runner.temp }}/ZEROAIStudioDerived
-          key: zero-xcode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ios/ZEROAIStudio/project.yml', 'ios/ZEROAIStudio/**/*.swift', 'ios/ZeroCoreML/Package.swift') }}
+          key: zero-xcode-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-toolchain.outputs.key }}-${{ steps.apple-toolchain.outputs.key }}-${{ hashFiles('ios/ZEROAIStudio/project.yml', 'ios/ZEROAIStudio/**/*.swift', 'ios/ZeroCoreML/Package.swift') }}
           restore-keys: |
             zero-xcode-${{ runner.os }}-${{ runner.arch }}-
       - name: Build pinned XcodeGen 2.46.0 on cache miss
