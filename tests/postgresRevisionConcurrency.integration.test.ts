@@ -677,6 +677,17 @@ try {
     principalId: 'admin:primary', reservationId: wanReservation.reservationId,
   }).then((value) => value?.status), 'reserved',
   'Wan reservation remains active while its worker job is queued or running');
+  await assert.rejects(
+    () => reserveZeroResourceWithPool(poolB, {
+      principalId: 'admin:primary',
+      resourceId: 'wan-video',
+      idempotencyKey: `wan-concurrency-block-${randomUUID()}`,
+      units: 1,
+      requestFingerprint: createHash('sha256').update('second-wan-job').digest('hex'),
+    }),
+    /Parallelitätslimit/,
+    'a second Wan job must be blocked while the first worker job is queued or running',
+  );
   assert.equal(await settleWanJobReservationWithPool(poolB, {
     workerJobId, principalId: 'admin:primary',
   }), true, 'terminal job settlement releases the active slot from another instance');
