@@ -56,7 +56,7 @@ export async function linkWanJobReservationWithPool(
 
 export async function settleWanJobReservationWithPool(
   pool: Pool,
-  input: { workerJobId: string; principalId: string },
+  input: { workerJobId: string; principalId: string; outcome: 'completed' | 'released' },
 ): Promise<boolean> {
   if (!/^[0-9a-f-]{36}$/i.test(input.workerJobId) || !input.principalId.trim()) {
     throw new Error('Invalid Wan job settlement identity.');
@@ -71,7 +71,7 @@ export async function settleWanJobReservationWithPool(
   const settled = await settleZeroResourceReservationWithPool(pool, {
     principalId: input.principalId,
     reservationId,
-    outcome: 'completed',
+    outcome: input.outcome,
   });
   await pool.query(
     `UPDATE zero_wan_job_reservations SET settled_at = COALESCE(settled_at, NOW())
