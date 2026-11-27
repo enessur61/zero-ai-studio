@@ -43,6 +43,14 @@ for (const path of [
   assert.equal(allowed.nextCalled, true, `${path} must proceed for a valid ZERO session`);
 }
 
+const unavailableSessionStore = await invoke('/video/engine/status', async () => {
+  throw new Error('injected PostgreSQL session-store outage');
+});
+assert.equal(unavailableSessionStore.status(), 503,
+  'a database outage during session validation must return fail-closed 503, not generic 500');
+assert.equal(unavailableSessionStore.nextCalled, false,
+  'a database outage must never continue into a protected route');
+
 const unconfigured = await invoke('/video/engine/status', async () => true, false);
 assert.equal(unconfigured.status(), 503);
 assert.equal(unconfigured.nextCalled, false);
