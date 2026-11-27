@@ -16,19 +16,16 @@ def build_model():
         input_specs=[
             mb.TensorSpec(shape=(1, 1), dtype=types.int32),
             mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16),
-            mb.StateTensorSpec(shape=(1,), dtype=types.fp32),
-            mb.StateTensorSpec(shape=(1,), dtype=types.fp32),
+            mb.StateTensorSpec(shape=(1,), dtype=types.fp16),
+            mb.StateTensorSpec(shape=(1,), dtype=types.fp16),
         ],
     )
     def stateful_kv_cache(inputIds, causalMask, k_cache, v_cache):
         previous_k = mb.read_state(input=k_cache)
         previous_v = mb.read_state(input=v_cache)
-        token_values = mb.cast(x=inputIds, dtype="fp32")
+        token_values = mb.cast(x=inputIds, dtype="fp16")
         token_sum = mb.reduce_sum(x=token_values, axes=[0, 1])
-        mask_sum = mb.cast(
-            x=mb.reduce_sum(x=causalMask, axes=[0, 1, 2, 3]),
-            dtype="fp32",
-        )
+        mask_sum = mb.reduce_sum(x=causalMask, axes=[0, 1, 2, 3])
         increment = mb.add(x=token_sum, y=mask_sum)
         increment_vector = mb.reshape(x=increment, shape=[1])
         updated_k = mb.add(x=previous_k, y=increment_vector)
