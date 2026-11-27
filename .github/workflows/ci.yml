@@ -734,7 +734,10 @@ jobs:
             'p95=' + Math.round(burstP95Ms) + 'ms, max=' + Math.round(burstMaxMs) +
             'ms, wall=' + Math.round(burstDurationMs) + 'ms.');
 
-          const logout = await authFetch('/api/auth/logout', { method: 'POST' });
+          const logout = await authFetch('/api/auth/logout', {
+            method: 'POST',
+            headers: { origin: base }
+          });
           if (!logout.ok) throw new Error('Logout failed');
           const clearedCookie = logout.headers.get('set-cookie') ?? '';
           if (!clearedCookie.includes('Max-Age=0')) throw new Error('Logout did not clear the session cookie');
