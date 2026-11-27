@@ -46,10 +46,10 @@ class FakeMigrationClient {
         name: String(values[1]),
         checksum: String(values[2]),
       });
+      if (this.failMigration && Number(values[0]) === 4) {
+        throw new Error('simulated migration 4 version-row failure');
+      }
       return { rows: [], rowCount: 1 };
-    }
-    if (this.failMigration && normalized.includes('ZERO_PROJECT_VIDEO_ASSETS_PRINCIPAL_HASH_V4_CHECK')) {
-      throw new Error('simulated migration 4 failure');
     }
     return { rows: [], rowCount: 0 };
   }
@@ -132,6 +132,10 @@ await assert.rejects(
 assert.deepEqual(failedMigration4.rows.map((row) => row.version), [1, 2, 3],
   'a failed migration 4 must preserve previously committed migration versions');
 assert.ok(failedMigration4.statements.includes('ROLLBACK'), 'migration 4 failure rolls back');
+assert.ok(
+  failedMigration4.statements.some((sql) => sql.includes('zero_project_video_assets_principal_hash_v4_check')),
+  'migration 4 DDL completed before the simulated version-row failure',
+);
 
 const failed = new FakeMigrationClient();
 failed.failMigration = true;
