@@ -2246,7 +2246,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
   if (!project.scenes.some((item) => item.id === sceneId)) return { status: 404, body: { error: 'Szene nicht gefunden.' } };
 
-  let reservation;
+  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
   try {
     reservation = await reserveZeroResource({
       principalId,
@@ -2291,7 +2291,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     if (!response.ok) {
       // A definitive client rejection cannot have started inference; release it.
       // Conflicts and 5xx responses remain reserved because worker acceptance may be uncertain.
-      if (response.status >= 400 && response.status < 500 && response.status !== 409) {
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 409) {
         await settleZeroResourceReservation({ principalId, reservationId: reservation.reservationId, outcome: 'released' });
       }
       if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.', resourceReservation: reservation.reservationId } };
