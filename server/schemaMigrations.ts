@@ -129,6 +129,602 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         ON zero_project_video_assets (principal_hash, project_id, created_at DESC);
     `,
   },
+
+  {
+    version: 4,
+    name: 'reconcile-project-video-assets-schema',
+    sql: `
+      DO $migration$
+      DECLARE
+        target_table regclass;
+        expected record;
+        actual_type text;
+        actual_not_null boolean;
+        created_at_default text;
+        invalid_count bigint;
+        asset_id_att smallint;
+        principal_hash_att smallint;
+        job_id_att smallint;
+        existing_pk record;
+        index_row record;
+        index_columns text[];
+        index_options smallint[];
+      BEGIN
+        target_table := to_regclass(
+          format('%I.%I', current_schema(), 'zero_project_video_assets')
+        );
+        IF target_table IS NULL THEN
+          RAISE EXCEPTION 'Migration 4: zero_project_video_assets is missing in schema %', current_schema();
+        END IF;
+
+        FOR expected IN
+          SELECT * FROM (VALUES
+            ('asset_id', 'uuid', true),
+            ('project_id', 'text', true),
+            ('scene_id', 'text', true),
+            ('principal_hash', 'character(64)', true),
+            ('job_id', 'uuid', false),
+            ('content_type', 'text', true),
+            ('size_bytes', 'bigint', true),
+            ('sha256', 'character(64)', true),
+            ('payload', 'bytea', true),
+            ('created_at', 'timestamp with time zone', true)
+          ) AS e(name, type_name, not_null)
+        LOOP
+          SELECT format_type(a.atttypid, a.atttypmod), a.attnotnull
+          INTO actual_type, actual_not_null
+          FROM pg_attribute a
+          WHERE a.attrelid = target_table
+            AND a.attname = expected.name
+            AND a.attnum > 0
+            AND NOT a.attisdropped;
+
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'Migration 4: required column % is missing', expected.name;
+          END IF;
+          IF actual_type <> expected.type_name THEN
+            RAISE EXCEPTION 'Migration 4: incompatible type for %. Expected %, found %',
+              expected.name, expected.type_name, actual_type;
+          END IF;
+          IF actual_not_null IS DISTINCT FROM expected.not_null THEN
+            RAISE EXCEPTION 'Migration 4: unexpected nullability for column %', expected.name;
+          END IF;
+        END LOOP;
+
+        SELECT pg_get_expr(d.adbin, d.adrelid)
+        INTO created_at_default
+        FROM pg_attribute a
+        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = target_table AND a.attname = 'created_at';
+
+        IF created_at_default IS NULL THEN
+          EXECUTE format('ALTER TABLE %s ALTER COLUMN created_at SET DEFAULT NOW()', target_table);
+        ELSIF lower(created_at_default) <> 'now()' THEN
+          RAISE EXCEPTION 'Migration 4: unexpected created_at default: %', created_at_default;
+        END IF;
+
+        SELECT
+          a.attnum FILTER (WHERE a.attname = 'asset_id'),
+          a.attnum FILTER (WHERE a.attname = 'principal_hash'),
+          a.attnum FILTER (WHERE a.attname = 'job_id')
+        INTO asset_id_att, principal_hash_att, job_id_att
+        FROM pg_attribute a
+        WHERE a.attrelid = target_table AND a.attnum > 0 AND NOT a.attisdropped;
+
+        SELECT count(*) INTO invalid_count
+        FROM zero_project_video_assets
+        WHERE asset_id IS NULL
+          OR project_id IS NULL OR length(project_id) NOT BETWEEN 1 AND 128
+          OR scene_id IS NULL OR length(scene_id) NOT BETWEEN 1 AND 128
+          OR principal_hash IS NULL OR principal_hash !~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+
+          OR content_type IS NULL OR content_type NOT IN ('video/mp4', 'video/webm')
+          OR size_bytes IS NULL OR size_bytes NOT BETWEEN 1024 AND 104857600
+          OR sha256 IS NULL OR sha256 !~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+
+          OR payload IS NULL OR created_at IS NULL;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: % existing video asset rows violate required invariants', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM (SELECT asset_id FROM zero_project_video_assets GROUP BY asset_id HAVING count(*) > 1) duplicates;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: duplicate asset_id values prevent primary key creation';
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM (
+          SELECT principal_hash, job_id
+          FROM zero_project_video_assets
+          WHERE job_id IS NOT NULL
+          GROUP BY principal_hash, job_id
+          HAVING count(*) > 1
+        ) duplicates;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: duplicate principal_hash/job_id values prevent unique constraint creation';
+        END IF;
+
+        SELECT c.contype, c.conname, c.conkey
+        INTO existing_pk
+        FROM pg_constraint c
+        WHERE c.conrelid = target_table AND c.contype = 'p';
+        IF FOUND AND existing_pk.conkey <> ARRAY[asset_id_att]::smallint[] THEN
+          RAISE EXCEPTION 'Migration 4: existing primary key does not cover asset_id';
+        ELSIF NOT FOUND THEN
+          EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_asset_id_v4_pkey PRIMARY KEY (asset_id)', target_table);
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint c
+          WHERE c.conrelid = target_table AND c.contype = 'u'
+            AND c.conkey = ARRAY[principal_hash_att, job_id_att]::smallint[]
+        ) THEN
+          EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_principal_job_v4_key UNIQUE (principal_hash, job_id)', target_table);
+        END IF;
+
+        -- New, separately named checks deliberately coexist with legacy checks.
+        -- This guarantees a fully anchored principal hash check without trusting
+        -- the old persistence constraint, whose regex omitted the final '(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+.
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = target_table
+            AND conname IN (
+              'zero_project_video_assets_project_id_v4_check',
+              'zero_project_video_assets_scene_id_v4_check',
+              'zero_project_video_assets_principal_hash_v4_check',
+              'zero_project_video_assets_content_type_v4_check',
+              'zero_project_video_assets_size_bytes_v4_check',
+              'zero_project_video_assets_sha256_v4_check'
+            )
+        ) THEN
+          RAISE EXCEPTION 'Migration 4: reserved v4 constraint name already exists; refusing ambiguous definition';
+        END IF;
+      END
+      $migration$;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_project_id_v4_check
+        CHECK (length(project_id) BETWEEN 1 AND 128) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_project_id_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_scene_id_v4_check
+        CHECK (length(scene_id) BETWEEN 1 AND 128) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_scene_id_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_principal_hash_v4_check
+        CHECK (principal_hash ~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_principal_hash_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_content_type_v4_check
+        CHECK (content_type IN ('video/mp4', 'video/webm')) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_content_type_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_size_bytes_v4_check
+        CHECK (size_bytes BETWEEN 1024 AND 104857600) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_size_bytes_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_sha256_v4_check
+        CHECK (sha256 ~ '^[a-f0-9]{64}(migration: ZeroSchemaMigration): string {
+  return createHash('sha256').update(migration.sql).digest('hex');
+}
+
+async function applyZeroSchemaMigrations(client: PoolClient): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const applied = await client.query<AppliedMigration>(
+    'SELECT version, name, checksum FROM zero_schema_migrations ORDER BY version'
+  );
+  const appliedByVersion = new Map(applied.rows.map((row) => [Number(row.version), row]));
+
+  for (const migration of ZERO_SCHEMA_MIGRATIONS) {
+    const checksum = getZeroSchemaMigrationChecksum(migration);
+    const existing = appliedByVersion.get(migration.version);
+    if (existing) {
+      if (existing.name !== migration.name || existing.checksum.trim() !== checksum) {
+        throw new Error(`ZERO schema migration ${migration.version} checksum/name mismatch.`);
+      }
+      continue;
+    }
+
+    await client.query(migration.sql);
+    await client.query(
+      'INSERT INTO zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
+      [migration.version, migration.name, checksum],
+    );
+  }
+}
+
+/**
+ * Run versioned ZERO schema migrations on a caller-owned transaction.
+ * The caller must have started a transaction and acquired ZERO_COST_ADVISORY_LOCK.
+ */
+export async function applyZeroSchemaMigrationsWithClient(client: PoolClient): Promise<void> {
+  await applyZeroSchemaMigrations(client);
+}
+
+/** Run migrations atomically using the shared ZERO cost/resource advisory lock. */
+export async function runZeroSchemaMigrations(pool: Pool): Promise<void> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', ZERO_COST_ADVISORY_LOCK);
+    await applyZeroSchemaMigrations(client);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw new Error('ZERO schema migrations failed; resource operations remain blocked.');
+  } finally {
+    client.release(destroyClient);
+  }
+}
+) NOT VALID;
+      ALTER TABLE zero_project_video_assets
+        VALIDATE CONSTRAINT zero_project_video_assets_sha256_v4_check;
+
+      DO $migration$
+      DECLARE
+        target_table regclass;
+        index_oid oid;
+        index_valid boolean;
+        index_ready boolean;
+        index_unique boolean;
+        index_partial boolean;
+        index_access_method text;
+        key_count smallint;
+        total_attribute_count smallint;
+        index_columns text[];
+        index_options smallint[];
+      BEGIN
+        target_table := to_regclass(
+          format('%I.%I', current_schema(), 'zero_project_video_assets')
+        );
+
+        SELECT i.indexrelid, i.indisvalid, i.indisready, i.indisunique,
+               i.indpred IS NULL, am.amname, i.indnkeyatts, i.indnatts
+        INTO index_oid, index_valid, index_ready, index_unique,
+             index_partial, index_access_method, key_count, total_attribute_count
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = idx.relam
+        WHERE i.indrelid = target_table
+          AND idx.relname = 'zero_project_video_assets_project_idx';
+
+        IF FOUND THEN
+          SELECT
+            array_agg(a.attname ORDER BY k.ordinality),
+            array_agg(o.option_value ORDER BY o.ordinality)
+          INTO index_columns, index_options
+          FROM pg_index i
+          CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          JOIN LATERAL unnest(i.indoption) WITH ORDINALITY AS o(option_value, ordinality)
+            ON o.ordinality = k.ordinality
+          WHERE i.indexrelid = index_oid
+            AND k.ordinality <= i.indnkeyatts;
+
+          IF NOT index_valid OR NOT index_ready OR index_unique OR NOT index_partial
+             OR index_access_method <> 'btree'
+             OR key_count <> 3 OR total_attribute_count <> 3
+             OR index_columns <> ARRAY['principal_hash', 'project_id', 'created_at']::text[]
+             OR index_options <> ARRAY[0, 0, 3]::smallint[] THEN
+            RAISE EXCEPTION 'Migration 4: existing project video index has an incompatible definition';
+          END IF;
+        ELSE
+          EXECUTE format(
+            'CREATE INDEX zero_project_video_assets_project_idx ON %s (principal_hash, project_id, created_at DESC)',
+            target_table
+          );
+        END IF;
+      END
+      $migration$;
+    `,
+  },
 ];
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
   return createHash('sha256').update(migration.sql).digest('hex');
