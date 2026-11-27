@@ -106,6 +106,10 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
           const recoveredBytes = await deps.readBody(recovered, 20 * 1024 * 1024);
           if (recoveredBytes.length < 44 || recoveredBytes.length > 20 * 1024 * 1024 ||
               recoveredBytes.subarray(0, 4).toString('ascii') !== 'RIFF' || recoveredBytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+            // The worker has durably finished this idempotency key, but its output
+            // is unusable. Consume the quota and release the active slot; never
+            // leave a permanently reserved job that can only replay bad bytes.
+            await deps.settle(principal.id, reservation.reservationId, 'completed');
             res.status(409).json({ status: 'unknown', reservationId: reservation.reservationId, error: 'Der Piper-Worker hat einen nicht wiederherstellbaren WAV-Inhalt geliefert. Keine erneute Synthese gestartet.', costEur: 0, paidFallback: false });
             return;
           }
@@ -171,6 +175,10 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       const bytes = await deps.readBody(response, 20 * 1024 * 1024);
       if (bytes.length < 44 || bytes.length > 20 * 1024 * 1024 ||
           bytes.subarray(0, 4).toString('ascii') !== 'RIFF' || bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
+        // HTTP 200 means the worker completed inference. Keep daily usage
+        // consumed, but release the concurrency slot even though the WAV is bad.
+        await deps.settle(principal.id, reservation.reservationId, 'completed');
+        completed = true;
         res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
         return;
       }
