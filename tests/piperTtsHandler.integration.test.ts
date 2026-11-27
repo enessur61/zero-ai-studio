@@ -141,10 +141,11 @@ try {
 
   workerMode = 'server-error';
   assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 503);
+  assert.equal(reservations.get('admin:primary:piper-5xx-key-0001')?.status, 'reserved',
+    'an ambiguous 5xx must keep the reservation open until the worker classifies the outcome');
+  assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 409);
   assert.equal(reservations.get('admin:primary:piper-5xx-key-0001')?.status, 'completed',
     'terminal UNKNOWN must consume quota and release the active slot after refusing a duplicate synthesis');
-  assert.equal((await send('piper-5xx-key-0001', 'unknown worker outcome')).status, 409);
-  assert.equal(reservations.get('admin:primary:piper-5xx-key-0001')?.status, 'reserved');
   assert.equal(synthCalls, 3, 'uncertain worker result must not be submitted twice');
 
   workerMode = 'reject';
