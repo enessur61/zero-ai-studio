@@ -665,14 +665,6 @@ try {
   await linkWanJobReservationWithPool(poolB, {
     workerJobId, reservationId: wanReservation.reservationId, principalId: 'admin:primary',
   });
-  const conflictingWanReservationId = randomUUID();
-  await assert.rejects(
-    () => linkWanJobReservationWithPool(poolB, {
-      workerJobId, reservationId: conflictingWanReservationId, principalId: 'admin:primary',
-    }),
-    /already linked to a different resource reservation/,
-    'a worker job must never be rebound to a different resource reservation',
-  );
   assert.equal(await getZeroResourceReservationWithPool(poolA, {
     principalId: 'admin:primary', reservationId: wanReservation.reservationId,
   }).then((value) => value?.status), 'reserved',
@@ -686,6 +678,23 @@ try {
   assert.equal(await settleWanJobReservationWithPool(poolA, {
     workerJobId, principalId: 'admin:primary',
   }), false, 'terminal job settlement is idempotent');
+  const conflictingWanReservation = await reserveZeroResourceWithPool(poolA, {
+    principalId: 'admin:primary',
+    resourceId: 'wan-video',
+    idempotencyKey: `wan-job-conflict-${randomUUID()}`,
+    units: 1,
+    requestFingerprint: createHash('sha256').update('other-wan-request').digest('hex'),
+  });
+  await assert.rejects(
+    () => linkWanJobReservationWithPool(poolB, {
+      workerJobId, reservationId: conflictingWanReservation.reservationId, principalId: 'admin:primary',
+    }),
+    /already linked to a different resource reservation/,
+    'a worker job must never be rebound to a different resource reservation',
+  );
+  await settleZeroResourceReservationWithPool(poolA, {
+    principalId: 'admin:primary', reservationId: conflictingWanReservation.reservationId, outcome: 'released',
+  });
 
   // A database-side failure during reservation must roll back the reservation,
   // daily usage and rate-window increment together; the same pool remains usable.
