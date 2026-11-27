@@ -536,11 +536,21 @@ try {
   const legacySessionHash = 'c'.repeat(64);
   const legacyExpiry = new Date(Date.now() + 120_000);
   await authA.createSession(legacySessionHash, legacyExpiry);
-  const legacyAdminPayload = { projects: [{ id: 'legacy-admin-project', title: 'Preserve me' }] };
-  await poolA.query(
-    `INSERT INTO zero_app_state (id, payload, revision) VALUES ('primary', $1::jsonb, 7)`,
-    [JSON.stringify(legacyAdminPayload)],
+  let legacyAdminStateBefore = await poolA.query<{ payload: unknown; revision: string }>(
+    "SELECT payload, revision FROM zero_app_state WHERE id = 'primary'",
   );
+  if (!legacyAdminStateBefore.rows[0]) {
+    const fixture = { projects: [{ id: 'legacy-admin-project', title: 'Preserve me' }] };
+    await poolA.query(
+      `INSERT INTO zero_app_state (id, payload, revision) VALUES ('primary', $1::jsonb, 7)`,
+      [JSON.stringify(fixture)],
+    );
+    legacyAdminStateBefore = await poolA.query<{ payload: unknown; revision: string }>(
+      "SELECT payload, revision FROM zero_app_state WHERE id = 'primary'",
+    );
+  }
+  const legacyAdminPayload = legacyAdminStateBefore.rows[0].payload;
+  const legacyAdminRevision = Number(legacyAdminStateBefore.rows[0].revision);
   const multiUserA = createMultiUserAuthStore(poolA);
   const multiUserB = createMultiUserAuthStore(poolB);
   await Promise.all([multiUserA.ensureSchema(), multiUserB.ensureSchema()]);
@@ -554,7 +564,7 @@ try {
   assert.equal(await authB.hasSession(legacySessionHash), true,
     'migration must preserve the original legacy session for rollback compatibility');
   const migratedState = await multiUserB.readState<typeof legacyAdminPayload>(ZERO_LEGACY_ADMIN_USER_ID);
-  assert.deepEqual(migratedState, { payload: legacyAdminPayload, revision: 7 },
+  assert.deepEqual(migratedState, { payload: legacyAdminPayload, revision: legacyAdminRevision },
     'legacy primary state must be copied intact to the admin account exactly once');
 
   const account = await multiUserA.createUser('  Studio.User@Example.com ', 'a-long-user-password-123');
@@ -579,10 +589,10 @@ try {
   const adminRevision = await multiUserA.writeState(
     ZERO_LEGACY_ADMIN_USER_ID,
     { projects: [{ id: 'legacy-admin-project', title: 'Admin only' }] },
-    7,
+    legacyAdminRevision,
   );
   const userRevision = await multiUserB.writeState(account.id, { projects: [{ id: 'private-user-project' }] }, 0);
-  assert.equal(adminRevision, 8);
+  assert.equal(adminRevision, legacyAdminRevision + 1);
   assert.equal(userRevision, 1);
   assert.equal((await multiUserA.readState<{ projects: Array<{ id: string }> }>(ZERO_LEGACY_ADMIN_USER_ID))?.payload.projects[0].id,
     'legacy-admin-project');
