@@ -146,6 +146,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         principal_hash_att smallint;
         job_id_att smallint;
         existing_pk record;
+        existing_unique record;
       BEGIN
         target_table := to_regclass(format('%I.%I', current_schema(), 'zero_project_video_assets'));
         IF target_table IS NULL THEN
@@ -239,21 +240,29 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
           RAISE EXCEPTION 'Migration 4: duplicate principal_hash/job_id values';
         END IF;
 
-        SELECT c.contype, c.conname, c.conkey INTO existing_pk
-        FROM pg_constraint c WHERE c.conrelid = target_table AND c.contype = 'p';
+        SELECT c.contype, c.conname, c.conkey, c.condeferrable, c.condeferred
+        INTO existing_pk
+        FROM pg_constraint c
+        WHERE c.conrelid = target_table AND c.contype = 'p';
         IF FOUND THEN
-          IF existing_pk.conkey <> ARRAY[asset_id_att]::smallint[] THEN
-            RAISE EXCEPTION 'Migration 4: existing primary key does not cover asset_id';
+          IF existing_pk.conkey <> ARRAY[asset_id_att]::smallint[]
+             OR existing_pk.condeferrable OR existing_pk.condeferred THEN
+            RAISE EXCEPTION 'Migration 4: existing primary key has an incompatible key or deferrability';
           END IF;
         ELSE
           EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_asset_id_v4_pkey PRIMARY KEY (asset_id)', target_table);
         END IF;
 
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint c
-          WHERE c.conrelid = target_table AND c.contype = 'u'
-            AND c.conkey = ARRAY[principal_hash_att, job_id_att]::smallint[]
-        ) THEN
+        SELECT c.conkey, c.condeferrable, c.condeferred
+        INTO existing_unique
+        FROM pg_constraint c
+        WHERE c.conrelid = target_table AND c.contype = 'u'
+          AND c.conkey = ARRAY[principal_hash_att, job_id_att]::smallint[];
+        IF FOUND THEN
+          IF existing_unique.condeferrable OR existing_unique.condeferred THEN
+            RAISE EXCEPTION 'Migration 4: principal_hash/job_id unique constraint must be immediate';
+          END IF;
+        ELSE
           EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_principal_job_v4_key UNIQUE (principal_hash, job_id)', target_table);
         END IF;
 
