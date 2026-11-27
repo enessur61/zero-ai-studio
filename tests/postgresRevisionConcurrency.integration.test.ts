@@ -59,7 +59,7 @@ try {
       job_id UUID,
       content_type TEXT NOT NULL CHECK (content_type IN ('video/mp4', 'video/webm')),
       size_bytes BIGINT NOT NULL CHECK (size_bytes BETWEEN 1024 AND 104857600),
-      sha256 CHAR(64) NOT NULL CHECK (sha256 ~ ('^[a-f0-9]{64}' || chr(36))),
+      sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
       payload BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (principal_hash, job_id)
