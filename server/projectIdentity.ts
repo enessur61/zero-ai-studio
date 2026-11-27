@@ -4,8 +4,8 @@ import { asyncRoute } from './asyncRoute.ts';
 export const ZERO_ADMIN_PRINCIPAL_ID = 'admin:primary' as const;
 
 export type ZeroPrincipal = {
-  id: typeof ZERO_ADMIN_PRINCIPAL_ID;
-  role: 'admin';
+  id: string;
+  role: 'admin' | 'user';
 };
 
 export const ZERO_ADMIN_PRINCIPAL: ZeroPrincipal = Object.freeze({
@@ -21,9 +21,13 @@ export function getZeroPrincipal(locals: unknown): ZeroPrincipal | null {
   const candidate = (locals as Record<string, unknown>).zeroProjectPrincipal;
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
   const value = candidate as Record<string, unknown>;
-  return value.id === ZERO_ADMIN_PRINCIPAL_ID && value.role === 'admin'
-    ? ZERO_ADMIN_PRINCIPAL
-    : null;
+  if (value.id === ZERO_ADMIN_PRINCIPAL_ID && value.role === 'admin') return ZERO_ADMIN_PRINCIPAL;
+  if (typeof value.id === 'string' &&
+      /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.id) &&
+      value.role === 'user') {
+    return { id: value.id, role: 'user' };
+  }
+  return null;
 }
 
 /** Resolve a project only when its persisted owner matches the authenticated principal. */
@@ -45,7 +49,9 @@ export function migrateProjectOwnership<T extends ProjectIdentityShape>(projects
       changed = true;
       continue;
     }
-    if (project.ownerId !== ZERO_ADMIN_PRINCIPAL_ID) {
+    const validUserOwner = typeof project.ownerId === 'string' &&
+      /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(project.ownerId);
+    if (project.ownerId !== ZERO_ADMIN_PRINCIPAL_ID && !validUserOwner) {
       throw new Error('Ungültige Projekt-Eigentümerschaft: ' + project.id);
     }
   }

@@ -33,6 +33,19 @@ assert.throws(
 );
 assert.throws(() => migrateProjectOwnership([{ id: 'empty-owner', ownerId: '' }]), /Ungültige Projekt-Eigentümerschaft/);
 assert.equal(getZeroPrincipal({ zeroProjectPrincipal: ZERO_ADMIN_PRINCIPAL }), ZERO_ADMIN_PRINCIPAL);
+const USER_PRINCIPAL_ID = 'user:123e4567-e89b-42d3-a456-426614174000';
+assert.deepEqual(getZeroPrincipal({ zeroProjectPrincipal: { id: USER_PRINCIPAL_ID, role: 'user' } }),
+  { id: USER_PRINCIPAL_ID, role: 'user' }, 'a validated user principal must be accepted by the shared ownership layer');
+assert.equal(getZeroPrincipal({ zeroProjectPrincipal: { id: 'user:not-a-uuid', role: 'user' } }), null);
+const mixedOwnerProjects = [
+  { id: 'admin-owned', ownerId: ZERO_ADMIN_PRINCIPAL_ID },
+  { id: 'user-owned', ownerId: USER_PRINCIPAL_ID },
+];
+assert.equal(migrateProjectOwnership(mixedOwnerProjects), false,
+  'ownership migration must preserve valid user-owned projects without reassignment');
+assert.equal(resolveOwnedProject(mixedOwnerProjects, { id: USER_PRINCIPAL_ID, role: 'user' }, 'user-owned'),
+  mixedOwnerProjects[1]);
+assert.equal(resolveOwnedProject(mixedOwnerProjects, ZERO_ADMIN_PRINCIPAL, 'user-owned'), null);
 assert.equal(getZeroPrincipal({ zeroProjectPrincipal: { id: 'admin:other', role: 'admin' } }), null);
 assert.equal(getZeroPrincipal({ body: { principalId: ZERO_ADMIN_PRINCIPAL_ID, ownerId: ZERO_ADMIN_PRINCIPAL_ID } }), null,
   'client-controlled body identity must never establish a principal');
@@ -50,12 +63,16 @@ app.use((req, res, next) => {
   if (req.headers.cookie === 'zero_session=valid-test-session') {
     res.locals.zeroProjectPrincipal = ZERO_ADMIN_PRINCIPAL;
     res.locals.zeroRequestIdempotencyKey = req.get('Idempotency-Key') ?? '';
+  } else if (req.headers.cookie === 'zero_session=valid-user-session') {
+    res.locals.zeroProjectPrincipal = { id: USER_PRINCIPAL_ID, role: 'user' };
+    res.locals.zeroRequestIdempotencyKey = req.get('Idempotency-Key') ?? '';
   }
   next();
 });
 const routeProjects = [
   { id: 'owned-http', ownerId: ZERO_ADMIN_PRINCIPAL_ID },
   { id: 'foreign-http', ownerId: 'admin:other' },
+  { id: 'user-http', ownerId: USER_PRINCIPAL_ID },
 ];
 app.use('/projects/:id', createProjectOwnershipMiddleware(
   async () => routeProjects,
@@ -88,6 +105,14 @@ try {
     headers: { cookie: 'zero_session=valid-test-session', 'x-zero-principal': 'admin:other' },
   });
   assert.equal(ownedWithSpoofedHeader.status, 200, 'client headers cannot replace the authenticated principal');
+  const userOwnedProject = await fetch(baseUrl + '/projects/user-http', {
+    headers: { cookie: 'zero_session=valid-user-session' },
+  });
+  assert.equal(userOwnedProject.status, 200, 'a user session must resolve its own project');
+  const adminCannotReadUserProject = await fetch(baseUrl + '/projects/user-http', {
+    headers: { cookie: 'zero_session=valid-test-session' },
+  });
+  assert.equal(adminCannotReadUserProject.status, 404, 'the admin principal cannot cross into a user-owned project');
   const foreignWithSpoofedBody = await fetch(baseUrl + '/projects/foreign-http', {
     headers: { cookie: 'zero_session=valid-test-session', 'content-type': 'application/json' },
     body: JSON.stringify({ principalId: 'admin:other', ownerId: ZERO_ADMIN_PRINCIPAL_ID }),
