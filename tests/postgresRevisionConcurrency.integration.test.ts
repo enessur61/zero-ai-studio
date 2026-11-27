@@ -155,7 +155,7 @@ try {
   assert.equal(createdAtDefault.rows[0]?.expression, 'now()');
 
   const videoKeys = await poolA.query<{ contype: string; key_columns: string[] }>(
-    `SELECT c.contype, array_agg(a.attname ORDER BY k.ordinality) AS key_columns
+    `SELECT c.contype, array_agg(a.attname::text ORDER BY k.ordinality)::text[] AS key_columns
      FROM pg_constraint c
      CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality)
      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
@@ -168,7 +168,7 @@ try {
   const videoIndex = await poolA.query<{ index_name: string; indisvalid: boolean; indisready: boolean; indisunique: boolean; no_predicate: boolean; indnkeyatts: number; indnatts: number; options: number[]; definition: string }>(
     `SELECT idx.relname AS index_name, i.indisvalid, i.indisready, i.indisunique, i.indpred IS NULL AS no_predicate,
             i.indnkeyatts, i.indnatts,
-            (SELECT array_agg(option_value ORDER BY ordinality)
+            (SELECT array_agg(option_value::integer ORDER BY ordinality)
              FROM unnest(i.indoption) WITH ORDINALITY AS option_row(option_value, ordinality)) AS options,
             pg_get_indexdef(i.indexrelid) AS definition
      FROM pg_index i JOIN pg_class idx ON idx.oid = i.indexrelid
