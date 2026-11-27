@@ -20,8 +20,8 @@ import path from 'node:path';
 import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
-import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { ensureZeroCostResourceSchema, getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
+import { ensureZeroResourceSchema, ensureZeroResourceSchemaWithPool, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
 import { createWanWorkerStatusPayload, isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
@@ -3526,6 +3526,22 @@ app.use('/api', (_req, res) => {
 });
 
 async function startServer() {
+  // Production traffic is not accepted until every shared PostgreSQL schema
+  // is initialized. This prevents the first API request from racing schema DDL.
+  if (IS_PRODUCTION && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL fehlt; ZERO kann in Produktion nicht sicher starten.');
+  }
+  if (process.env.DATABASE_URL) {
+    const database = getPostgresPool();
+    await database.query('SELECT 1');
+    await ensureZeroCostResourceSchema(database);
+    await ensurePostgresSchema();
+    await authStore().ensureSchema();
+    await ensureZeroResourceSchemaWithPool(database);
+    await ensureProjectDeletionIdempotencySchema();
+    await database.query('SELECT 1');
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await import('vite');
     const viteServer = await vite.createServer({
