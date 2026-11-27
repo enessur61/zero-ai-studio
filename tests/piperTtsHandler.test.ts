@@ -75,6 +75,27 @@ const key = { 'idempotency-key': 'piper-handler-test-001' };
 
 {
   const { deps, calls } = dependencies({
+    synthesize: async () => new Response(JSON.stringify({ status: 'processing' }), { status: 202 }),
+  });
+  const result = await invoke(deps, key);
+  assert.equal(result.status, 202);
+  assert.deepEqual(calls.settled, [],
+    'a worker processing response must keep the reservation open, not be misclassified as malformed completed WAV');
+  assert.equal(calls.save, 0);
+}
+
+{
+  const { deps, calls } = dependencies({
+    synthesize: async () => new Response(JSON.stringify({ status: 'unknown' }), { status: 409 }),
+  });
+  const result = await invoke(deps, key);
+  assert.equal(result.status, 409);
+  assert.deepEqual(calls.settled, ['completed'],
+    'a terminal unknown worker result consumes quota and releases the active slot without re-synthesis');
+}
+
+{
+  const { deps, calls } = dependencies({
     synthesize: async () => new Response(JSON.stringify({ detail: 'worker timed out after admission' }), { status: 408 }),
   });
   const result = await invoke(deps, key);
@@ -130,6 +151,21 @@ const key = { 'idempotency-key': 'piper-handler-test-001' };
   assert.equal(result.status, 502);
   assert.deepEqual(calls.settled, ['completed'],
     'a completed inference with malformed WAV output must consume quota and release its active slot');
+}
+
+{
+  const { deps, calls } = dependencies({
+    reserve: async () => ({
+      reservationId: '00000000-0000-4000-8000-000000000001',
+      status: 'reserved',
+      duplicate: true,
+    }),
+    synthesize: async () => new Response(JSON.stringify({ status: 'unknown' }), { status: 409 }),
+  });
+  const result = await invoke(deps, key);
+  assert.equal(result.status, 409);
+  assert.deepEqual(calls.settled, ['completed'],
+    'a duplicate worker UNKNOWN must release the active slot and remain terminal');
 }
 
 {
