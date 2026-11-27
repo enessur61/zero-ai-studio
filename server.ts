@@ -182,8 +182,11 @@ async function hasValidSession(req: express.Request): Promise<boolean> {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
-  const [expiresAt, nonce, signature] = token.split('.');
-  if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
+  const tokenParts = token.split('.');
+  if (tokenParts.length !== 3) return false;
+  const [expiresAt, nonce, signature] = tokenParts;
+  if (!/^\\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now() ||
+      !/^[a-f0-9]{48}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(signature)) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
   return authStore().hasSession(tokenDigest(token));
@@ -418,7 +421,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
+  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(token));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
