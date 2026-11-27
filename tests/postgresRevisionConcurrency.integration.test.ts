@@ -765,6 +765,54 @@ try {
   const afterInvalidPause = await getZeroCostGuardStatus(poolB, costGuardEnv);
   assert.equal(afterInvalidPause.paused, false, 'invalid budget configuration must not alter persisted pause state');
 
+  // PostgreSQL failures in auth persistence must propagate instead of
+  // silently authenticating or consuming a login attempt.
+  await poolA.query(`
+    CREATE FUNCTION reject_zero_login_attempt() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected login-attempt persistence failure' USING ERRCODE = 'P0001';
+    END;
+    $$;
+    CREATE TRIGGER reject_zero_login_attempt
+    BEFORE INSERT ON zero_login_attempts
+    FOR EACH ROW EXECUTE FUNCTION reject_zero_login_attempt();
+  `);
+  const failedLoginKey = 'd'.repeat(64);
+  await assert.rejects(
+    () => authA.consumeLoginAttempt(failedLoginKey, new Date(), 15 * 60 * 1000, 8),
+    /injected login-attempt persistence failure/,
+    'login throttling must fail closed when PostgreSQL cannot persist the attempt',
+  );
+  await poolA.query('DROP TRIGGER reject_zero_login_attempt ON zero_login_attempts');
+  await poolA.query('DROP FUNCTION reject_zero_login_attempt()');
+  const recoveredLoginAttempt = await authB.consumeLoginAttempt(failedLoginKey, new Date(), 15 * 60 * 1000, 8);
+  assert.equal(recoveredLoginAttempt.allowed, true);
+  assert.equal(recoveredLoginAttempt.attempts, 1,
+    'a failed database write must not create a phantom login attempt');
+
+  await poolA.query(`
+    CREATE FUNCTION reject_zero_auth_session() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected auth-session persistence failure' USING ERRCODE = 'P0001';
+    END;
+    $$;
+    CREATE TRIGGER reject_zero_auth_session
+    BEFORE INSERT ON zero_auth_sessions
+    FOR EACH ROW EXECUTE FUNCTION reject_zero_auth_session();
+  `);
+  const failedSessionHash = 'e'.repeat(64);
+  await assert.rejects(
+    () => authA.createSession(failedSessionHash, new Date(Date.now() + 60_000)),
+    /injected auth-session persistence failure/,
+    'session creation must fail closed when PostgreSQL rejects persistence',
+  );
+  await poolA.query('DROP TRIGGER reject_zero_auth_session ON zero_auth_sessions');
+  await poolA.query('DROP FUNCTION reject_zero_auth_session()');
+  assert.equal(await authB.hasSession(failedSessionHash), false,
+    'a failed session insert must never become visible on another instance');
+
   // A shared atomic quota reservation must admit only the configured number
   // of provider calls, even when requests are distributed across two pools.
   const quotaParams = {
