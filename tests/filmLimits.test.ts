@@ -29,6 +29,13 @@ const tooManyScenes = clampScenesToMax60Seconds(
 assert.equal(tooManyScenes.length, 30);
 assert.ok(totalDuration(tooManyScenes) <= 60);
 
+const extremeFiniteDurations = clampScenesToMax60Seconds([
+  { id: 'max', durationSec: Number.MAX_VALUE },
+  { id: 'half-max', durationSec: Number.MAX_VALUE / 2 },
+]);
+assert.deepEqual(extremeFiniteDurations.map((scene) => scene.durationSec), [40, 20]);
+assert.equal(totalDuration(extremeFiniteDurations), 60);
+
 const invalidDurations = clampScenesToMax60Seconds([
   { id: 'nan', durationSec: Number.NaN },
   { id: 'negative', durationSec: -10 },
