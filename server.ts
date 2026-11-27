@@ -1741,19 +1741,38 @@ async function readWorkerBodyLimited(response: Response, maxBytes: number): Prom
 let piperResultSchemaReady: Promise<void> | null = null;
 async function ensurePiperResultSchema(): Promise<void> {
   if (!piperResultSchemaReady) {
-    piperResultSchemaReady = getPostgresPool().query(`
-      CREATE TABLE IF NOT EXISTS zero_piper_tts_results (
-        reservation_id UUID PRIMARY KEY,
-        principal_id TEXT NOT NULL CHECK (length(btrim(principal_id)) BETWEEN 1 AND 128),
-        payload JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        expires_at TIMESTAMPTZ NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS zero_piper_tts_results_expiry_idx
-        ON zero_piper_tts_results (expires_at);
-    `).then(async () => {
-      await getPostgresPool().query('DELETE FROM zero_piper_tts_results WHERE expires_at <= NOW()');
-    }).catch((error) => {
+    piperResultSchemaReady = (async () => {
+      const client = await getPostgresPool().connect();
+      let transactionOpen = true;
+      let destroyClient = false;
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(1514480207, 76)');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS zero_piper_tts_results (
+            reservation_id UUID PRIMARY KEY,
+            principal_id TEXT NOT NULL CHECK (length(btrim(principal_id)) BETWEEN 1 AND 128),
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL
+          )
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS zero_piper_tts_results_expiry_idx
+          ON zero_piper_tts_results (expires_at)
+        `);
+        await client.query('DELETE FROM zero_piper_tts_results WHERE expires_at <= NOW()');
+        await client.query('COMMIT');
+        transactionOpen = false;
+      } catch (error) {
+        if (transactionOpen) {
+          try { await client.query('ROLLBACK'); } catch { destroyClient = true; }
+        }
+        throw error;
+      } finally {
+        client.release(destroyClient);
+      }
+    })().catch((error) => {
       piperResultSchemaReady = null;
       throw error;
     });
@@ -1780,14 +1799,18 @@ async function savePiperCachedResult(principalId: string, reservationId: string,
   }
   const pool = getPostgresPool();
   await ensurePiperResultSchema();
-  await pool.query(
+  const saved = await pool.query(
     `INSERT INTO zero_piper_tts_results (reservation_id, principal_id, payload, expires_at)
      VALUES ($1, $2, $3::jsonb, NOW() + INTERVAL '24 hours')
      ON CONFLICT (reservation_id) DO UPDATE
        SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at
-       WHERE zero_piper_tts_results.principal_id = EXCLUDED.principal_id`,
+       WHERE zero_piper_tts_results.principal_id = EXCLUDED.principal_id
+     RETURNING reservation_id`,
     [reservationId, principalId, serialized],
   );
+  if (saved.rowCount !== 1) {
+    throw new Error('Piper-Ergebnis konnte nicht eindeutig dem authentifizierten Auftrag zugeordnet werden.');
+  }
 }
 
 app.post('/api/audio/tts/piper', createPiperTtsHandler({
@@ -3621,6 +3644,7 @@ async function startServer() {
     await authStore().ensureSchema();
     await ensureZeroResourceSchemaWithPool(database);
     await ensureWanJobReservationSchemaWithPool(database);
+    await ensurePiperResultSchema();
     await ensureProjectDeletionIdempotencySchema();
     await database.query('SELECT 1');
   }
