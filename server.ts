@@ -2239,6 +2239,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
 
   const principalId = getZeroPrincipal(res.locals)?.id;
   if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+  const workerIdempotencyKey = createZeroIdempotencyKey('wan-video');
 
   const result = await withZeroProjectLifecycleLock(projectId, async () => {
   const db = await loadDb();
@@ -2251,7 +2252,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     reservation = await reserveZeroResource({
       principalId,
       resourceId: 'wan-video',
-      idempotencyKey: rawIdempotencyKey,
+      idempotencyKey: workerIdempotencyKey,
       units: 1,
       requestFingerprint: createHash('sha256').update(JSON.stringify({
         prompt, aspectRatio, projectId, sceneId, seed: seed ?? null,
@@ -2275,7 +2276,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
         ...worker.headers,
         'Content-Type': 'application/json',
         'X-Zero-Principal-Hash': createZeroPrincipalHash(),
-        'Idempotency-Key': createZeroIdempotencyKey('wan-video'),
+        'Idempotency-Key': workerIdempotencyKey,
       },
       body: JSON.stringify({
         prompt, duration_sec: 5, aspect_ratio: aspectRatio,
