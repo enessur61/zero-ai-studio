@@ -41,9 +41,13 @@ def build_model():
         mb.coreml_update_state(state=v_cache, value=updated_v)
         return mb.reshape(x=updated_k, shape=[1, 1], name="logits")
 
+    # This fixture intentionally keeps the small MIL graph unchanged.
+    # Core ML Tools 8.3.0's default canonicalize_inplace_pattern pass crashes
+    # when canonicalizing the two independent state updates in this model.
     return ct.convert(
         stateful_kv_cache,
         minimum_deployment_target=ct.target.iOS18,
+        pass_pipeline=ct.PassPipeline.EMPTY,
     )
 
 
