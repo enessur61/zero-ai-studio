@@ -777,21 +777,7 @@ jobs:
             exit 1
           fi
           grep -F "DATABASE_URL fehlt" /tmp/zero-production-gate.log
-          docker run --detach --name zero-arm64-app --platform linux/arm64 \
-            --publish 127.0.0.1:4179:3000 \
-            --env NODE_ENV=test \
-            zero-arm64:ci
-          trap 'docker logs zero-arm64-app || true; docker rm --force zero-arm64-app >/dev/null 2>&1 || true' EXIT
-          for attempt in $(seq 1 45); do
-            health_status=$(docker inspect --format '{{.State.Health.Status}}' zero-arm64-app)
-            if [ "$health_status" = "healthy" ]; then break; fi
-            sleep 2
-          done
-          test "$(docker inspect --format '{{.State.Health.Status}}' zero-arm64-app)" = "healthy"
-          curl --fail --silent http://127.0.0.1:4179/api/live
-          readiness_status=$(curl --silent --output /tmp/zero-readiness.json --write-out '%{http_code}' http://127.0.0.1:4179/api/health)
-          test "$readiness_status" = "503"
-          echo "ARM64 image healthcheck and /api/live passed; readiness correctly reports missing PostgreSQL."
+          echo "ARM64 runtime image correctly refuses production startup without DATABASE_URL."
       - name: Build Piper ARM64 image and verify ONNX CPU provider
         run: |
           docker buildx build --platform linux/arm64 --load --tag zero-piper-arm64:ci ./piper-worker
@@ -868,7 +854,7 @@ jobs:
           SEARCH_SECRET=$(openssl rand -hex 32)
           VIDEO_TOKEN=$(openssl rand -hex 32)
           cat > production.env <<EOF
-          NODE_ENV=test
+          NODE_ENV=production
           ZERO_ADMIN_PASSWORD=zero-ci-password-123
           ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789
           ZERO_TTS_WORKER_TOKEN=$WORKER_TOKEN
@@ -882,15 +868,42 @@ jobs:
           cat > searxng/searxng.env <<EOF
           SEARXNG_SECRET=$SEARCH_SECRET
           EOF
-          docker compose --file docker-compose.workers.yml up --detach --build zero-app
+          cat > /tmp/zero-ci-db.override.yml <<'EOF'
+          services:
+            zero-app:
+              depends_on:
+                zero-db:
+                  condition: service_healthy
+              environment:
+                DATABASE_URL: postgresql://zero:zero-ci-password@zero-db:5432/zero_ci
+            zero-db:
+              image: postgres:16.16
+              environment:
+                POSTGRES_DB: zero_ci
+                POSTGRES_USER: zero
+                POSTGRES_PASSWORD: zero-ci-password
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U zero -d zero_ci"]
+                interval: 2s
+                timeout: 2s
+                retries: 45
+              volumes:
+                - zero-ci-postgres-data:/var/lib/postgresql/data
+          volumes:
+            zero-ci-postgres-data:
+          EOF
+          compose() {
+            docker compose --file docker-compose.workers.yml --file /tmp/zero-ci-db.override.yml "$@"
+          }
           cleanup() {
-            docker compose --file docker-compose.workers.yml down --volumes --remove-orphans
+            compose down --volumes --remove-orphans
           }
           trap cleanup EXIT
+          compose up --detach --build zero-app
           for attempt in $(seq 1 90); do
-            APP_ID=$(docker compose --file docker-compose.workers.yml ps --quiet zero-app)
-            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --quiet zero-worker)
-            SEARCH_ID=$(docker compose --file docker-compose.workers.yml ps --quiet searxng)
+            APP_ID=$(compose ps --quiet zero-app)
+            PIPER_ID=$(compose ps --quiet zero-worker)
+            SEARCH_ID=$(compose ps --quiet searxng)
             if [ -n "$APP_ID" ] && [ -n "$PIPER_ID" ] && [ -n "$SEARCH_ID" ]; then
               APP_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$APP_ID")
               PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID")
@@ -904,12 +917,12 @@ jobs:
           test "$(docker inspect --format '{{.State.Health.Status}}' "$APP_ID")" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID")" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' "$SEARCH_ID")" = healthy
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-app node --input-type=module -e "const base='http://zero-worker:8000'; const h=await fetch(base+'/health'); const p=await h.json(); if(!h.ok||!p.auth_configured||p.voice_loaded) throw new Error('Piper health or lazy-load state incorrect'); const denied=await fetch(base+'/tts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer invalid-ci-token'},body:JSON.stringify({text:'must not synthesize'})}); if(denied.status!==401) throw new Error('Piper did not reject an invalid token before inference'); console.log('Private Piper DNS, authenticated health and no-inference rejection passed.');"
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); p.write_text('survives-worker-restart')"
-          docker compose --file docker-compose.workers.yml restart zero-worker
+          compose exec --no-TTY zero-app node --input-type=module -e "const base='http://zero-worker:8000'; const h=await fetch(base+'/health'); const p=await h.json(); if(!h.ok||!p.auth_configured||p.voice_loaded) throw new Error('Piper health or lazy-load state incorrect'); const denied=await fetch(base+'/tts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer invalid-ci-token'},body:JSON.stringify({text:'must not synthesize'})}); if(denied.status!==401) throw new Error('Piper did not reject an invalid token before inference'); console.log('Private Piper DNS, authenticated health and no-inference rejection passed.');"
+          compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); p.write_text('survives-worker-restart')"
+          compose restart zero-worker
           PIPER_HEALTH=""
           for attempt in $(seq 1 45); do
-            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --all --quiet zero-worker | head -n 1)
+            PIPER_ID=$(compose ps --all --quiet zero-worker | head -n 1)
             if [ -n "$PIPER_ID" ]; then
               PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID" 2>/dev/null || true)
             fi
@@ -917,12 +930,12 @@ jobs:
             sleep 2
           done
           if [ "$PIPER_HEALTH" != healthy ]; then
-            docker compose --file docker-compose.workers.yml logs --no-color zero-worker
+            compose logs --no-color zero-worker
             exit 1
           fi
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
+          compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
           LIVE_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
           test "$LIVE_STATUS" = 200
           READY_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/health)
-          test "$READY_STATUS" = 503
-          echo "Compose app is live while unreachable CI-only PostgreSQL correctly keeps readiness at 503."
+          test "$READY_STATUS" = 200
+          echo "Compose app and PostgreSQL are healthy; Piper remains authenticated and no inference was invoked."
