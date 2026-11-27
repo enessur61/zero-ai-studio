@@ -122,4 +122,29 @@ const key = { 'idempotency-key': 'piper-handler-test-001' };
   assert.deepEqual(calls.settled, ['completed']);
 }
 
+{
+  const { deps, calls } = dependencies({
+    synthesize: async () => new Response(Buffer.from('not-a-wav-payload'), { status: 200 }),
+  });
+  const result = await invoke(deps, key);
+  assert.equal(result.status, 502);
+  assert.deepEqual(calls.settled, ['completed'],
+    'a completed inference with malformed WAV output must consume quota and release its active slot');
+}
+
+{
+  const { deps, calls } = dependencies({
+    reserve: async () => ({
+      reservationId: '00000000-0000-4000-8000-000000000001',
+      status: 'reserved',
+      duplicate: true,
+    }),
+    synthesize: async () => new Response(Buffer.from('not-a-wav-payload'), { status: 200 }),
+  });
+  const result = await invoke(deps, key);
+  assert.equal(result.status, 409);
+  assert.deepEqual(calls.settled, ['completed'],
+    'recovery of a durably completed job with malformed output must not hold the reservation open');
+}
+
 console.log('Piper handler reservation, timeout recovery and fail-closed regression tests passed (mock worker only).');
