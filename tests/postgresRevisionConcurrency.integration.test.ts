@@ -506,6 +506,20 @@ try {
   // Production auth state must be shared across independent Node-process pools.
   const authA = createPostgresAuthStore(poolA);
   const authB = createPostgresAuthStore(poolB);
+  const unavailableAuthPool = {
+    connect: async () => { throw new Error('injected unavailable PostgreSQL auth store'); },
+  } as unknown as Pool;
+  const unavailableAuthStore = createPostgresAuthStore(unavailableAuthPool);
+  await assert.rejects(
+    () => unavailableAuthStore.hasSession('d'.repeat(64)),
+    /injected unavailable PostgreSQL auth store/,
+    'session validation must fail closed when PostgreSQL cannot be reached',
+  );
+  await assert.rejects(
+    () => unavailableAuthStore.consumeLoginAttempt('e'.repeat(64), new Date(), 60_000, 3),
+    /injected unavailable PostgreSQL auth store/,
+    'login attempts must not be admitted when persistent rate-limit storage is unavailable',
+  );
   await Promise.all([authA.ensureSchema(), authB.ensureSchema()]);
   const sessionHash = 'a'.repeat(64);
   await authA.createSession(sessionHash, new Date(Date.now() + 60_000));
