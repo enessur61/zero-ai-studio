@@ -211,10 +211,11 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["v_cache"])
         trace("state descriptions verified")
 
-        trace("before direct makeState")
+        trace("before direct makeState A")
         let directStateA = model.makeState()
+        trace("after direct makeState A")
         let directStateB = model.makeState()
-        trace("after direct makeState")
+        trace("after direct makeState B")
         func cacheValue(_ state: MLState, name: String) -> Float {
             state.withMultiArray(for: name) { array in array[0].floatValue }
         }
