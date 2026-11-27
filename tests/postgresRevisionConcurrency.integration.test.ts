@@ -97,6 +97,22 @@ try {
   assert.ok(strictPrincipalCheck.definition.includes("'^[a-f0-9]{64}'"), 'strict check matches exactly 64 lowercase hex characters');
   assert.ok(strictPrincipalCheck.definition.includes('chr(36)'), 'strict check appends the dollar end anchor');
 
+  const validatedChecks = await poolA.query<{ conname: string; convalidated: boolean }>(
+    `SELECT conname, convalidated FROM pg_constraint
+     WHERE conrelid = 'zero_project_video_assets'::regclass AND contype = 'c'`
+  );
+  for (const constraintName of [
+    'zero_project_video_assets_project_id_v4_check',
+    'zero_project_video_assets_scene_id_v4_check',
+    'zero_project_video_assets_principal_hash_v4_check',
+    'zero_project_video_assets_content_type_v4_check',
+    'zero_project_video_assets_size_bytes_v4_check',
+    'zero_project_video_assets_sha256_v4_check',
+  ]) {
+    assert.equal(validatedChecks.rows.find((row) => row.conname === constraintName)?.convalidated, true,
+      `migration 4 validates ${constraintName}`);
+  }
+
   const videoColumns = await poolA.query<{ attname: string; data_type: string; attnotnull: boolean }>(
     `SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS data_type, a.attnotnull
      FROM pg_attribute a
@@ -129,8 +145,8 @@ try {
   assert.ok(videoKeys.rows.some((row) => row.contype === 'p' && row.key_columns.join(',') === 'asset_id'));
   assert.ok(videoKeys.rows.some((row) => row.contype === 'u' && row.key_columns.join(',') === 'principal_hash,job_id'));
 
-  const videoIndex = await poolA.query<{ indisvalid: boolean; indisready: boolean; indisunique: boolean; no_predicate: boolean; indnkeyatts: number; indnatts: number; options: number[]; definition: string }>(
-    `SELECT i.indisvalid, i.indisready, i.indisunique, i.indpred IS NULL AS no_predicate,
+  const videoIndex = await poolA.query<{ index_name: string; indisvalid: boolean; indisready: boolean; indisunique: boolean; no_predicate: boolean; indnkeyatts: number; indnatts: number; options: number[]; definition: string }>(
+    `SELECT idx.relname AS index_name, i.indisvalid, i.indisready, i.indisunique, i.indpred IS NULL AS no_predicate,
             i.indnkeyatts, i.indnatts,
             (SELECT array_agg(option_value ORDER BY ordinality)
              FROM unnest(i.indoption) WITH ORDINALITY AS option_row(option_value, ordinality)) AS options,
@@ -140,6 +156,7 @@ try {
        AND idx.relname = 'zero_project_video_assets_project_idx_legacy'`
   );
   assert.equal(videoIndex.rowCount, 1);
+  assert.equal(videoIndex.rows[0].index_name, 'zero_project_video_assets_project_idx_legacy', 'equivalent index under a legacy name is reused');
   assert.equal(videoIndex.rows[0].indisvalid, true);
   assert.equal(videoIndex.rows[0].indisready, true);
   assert.equal(videoIndex.rows[0].indisunique, false);
