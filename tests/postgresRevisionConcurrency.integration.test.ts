@@ -689,13 +689,13 @@ try {
     'a second Wan job must be blocked while the first worker job is queued or running',
   );
   assert.equal(await settleWanJobReservationWithPool(poolB, {
-    workerJobId, principalId: 'admin:primary',
-  }), true, 'terminal job settlement releases the active slot from another instance');
+    workerJobId, principalId: 'admin:primary', outcome: 'completed',
+  }), true, 'successful Wan jobs complete their reservation from another instance');
   assert.equal(await getZeroResourceReservationWithPool(poolA, {
     principalId: 'admin:primary', reservationId: wanReservation.reservationId,
   }).then((value) => value?.status), 'completed');
   assert.equal(await settleWanJobReservationWithPool(poolA, {
-    workerJobId, principalId: 'admin:primary',
+    workerJobId, principalId: 'admin:primary', outcome: 'completed',
   }), false, 'terminal job settlement is idempotent');
   const conflictingWanReservation = await reserveZeroResourceWithPool(poolA, {
     principalId: 'admin:primary',
@@ -714,6 +714,26 @@ try {
   await settleZeroResourceReservationWithPool(poolA, {
     principalId: 'admin:primary', reservationId: conflictingWanReservation.reservationId, outcome: 'released',
   });
+  const failedWanReservation = await reserveZeroResourceWithPool(poolA, {
+    principalId: 'admin:primary', resourceId: 'wan-video',
+    idempotencyKey: `wan-job-failed-${randomUUID()}`, units: 1,
+    requestFingerprint: createHash('sha256').update('failed-wan-job').digest('hex'),
+  });
+  const failedWorkerJobId = randomUUID();
+  await linkWanJobReservationWithPool(poolA, {
+    workerJobId: failedWorkerJobId, reservationId: failedWanReservation.reservationId,
+    principalId: 'admin:primary',
+  });
+  assert.equal(await settleWanJobReservationWithPool(poolB, {
+    workerJobId: failedWorkerJobId, principalId: 'admin:primary', outcome: 'released',
+  }), true, 'failed or cancelled Wan jobs release their active slot');
+  assert.equal(await getZeroResourceReservationWithPool(poolA, {
+    principalId: 'admin:primary', reservationId: failedWanReservation.reservationId,
+  }).then((value) => value?.status), 'released',
+  'failed or cancelled Wan jobs must be recorded as released, not completed');
+  assert.equal(await settleWanJobReservationWithPool(poolA, {
+    workerJobId: failedWorkerJobId, principalId: 'admin:primary', outcome: 'released',
+  }), false, 'failed-job settlement is idempotent');
 
   // A database-side failure during reservation must roll back the reservation,
   // daily usage and rate-window increment together; the same pool remains usable.
