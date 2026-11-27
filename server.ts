@@ -75,6 +75,7 @@ import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.t
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
+import { ensureWanJobReservationSchemaWithPool, linkWanJobReservationWithPool, settleWanJobReservationWithPool } from './server/wanResourceReservation.ts';
 
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
@@ -2236,11 +2237,34 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
+  const principalId = getZeroPrincipal(res.locals)?.id;
+  if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+
   const result = await withZeroProjectLifecycleLock(projectId, async () => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === projectId);
   if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
   if (!project.scenes.some((item) => item.id === sceneId)) return { status: 404, body: { error: 'Szene nicht gefunden.' } };
+
+  let reservation;
+  try {
+    reservation = await reserveZeroResource({
+      principalId,
+      resourceId: 'wan-video',
+      idempotencyKey: rawIdempotencyKey,
+      units: 1,
+      requestFingerprint: createHash('sha256').update(JSON.stringify({
+        prompt, aspectRatio, projectId, sceneId, seed: seed ?? null,
+      })).digest('hex'),
+    });
+  } catch (error) {
+    const status = error instanceof ZeroResourceLimitError ? 429
+      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
+    return { status, body: { error: error instanceof Error ? error.message : 'ZERO-Ressourcenreservierung fehlgeschlagen.', costFallback: false } };
+  }
+  if (reservation.duplicate && reservation.status === 'released') {
+    return { status: 409, body: { error: 'Dieser Wan-Auftrag wurde bereits freigegeben. Bitte mit neuem Idempotency-Key erneut starten.', resourceReservation: reservation.reservationId, costFallback: false } };
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
@@ -2251,7 +2275,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
         ...worker.headers,
         'Content-Type': 'application/json',
         'X-Zero-Principal-Hash': createZeroPrincipalHash(),
-        'Idempotency-Key': createZeroIdempotencyKey(),
+        'Idempotency-Key': createZeroIdempotencyKey('wan-video'),
       },
       body: JSON.stringify({
         prompt, duration_sec: 5, aspect_ratio: aspectRatio,
@@ -2265,21 +2289,37 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       job?: Record<string, unknown>; replayed?: boolean; detail?: unknown;
     };
     if (!response.ok) {
-      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' } };
-      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status } };
+      // A definitive client rejection cannot have started inference; release it.
+      // Conflicts and 5xx responses remain reserved because worker acceptance may be uncertain.
+      if (response.status >= 400 && response.status < 500 && response.status !== 409) {
+        await settleZeroResourceReservation({ principalId, reservationId: reservation.reservationId, outcome: 'released' });
+      }
+      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.', resourceReservation: reservation.reservationId } };
+      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht sicher annehmen.', workerStatus: response.status, resourceReservation: reservation.reservationId, retryWithSameIdempotencyKey: true } };
     }
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
         !['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
       return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
     }
+    await linkWanJobReservationWithPool(getPostgresPool(), {
+      workerJobId: job.id,
+      reservationId: reservation.reservationId,
+      principalId,
+    });
+    if (['cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
+      await settleZeroResourceReservation({ principalId, reservationId: reservation.reservationId, outcome: 'completed' });
+    }
     return { status: payload.replayed === true ? 200 : 202, body: {
       job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
+      resourceReservation: reservation.reservationId,
       maxFinalDurationSec: 60,
       costFallback: false,
     } };
   } catch {
-    return { status: 503, body: { error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' } };
+    // The worker may have accepted the request before the connection failed.
+    // Keep the reservation live and require a retry with the same idempotency key.
+    return { status: 503, body: { error: 'Wan-Worker nicht eindeutig erreichbar. Die Ressourcenreservierung bleibt zur sicheren Wiederaufnahme bestehen.', resourceReservation: reservation.reservationId, retryWithSameIdempotencyKey: true, costFallback: false } };
   } finally {
     clearTimeout(timeout);
   }
@@ -3544,6 +3584,7 @@ async function startServer() {
     await ensurePostgresSchema();
     await authStore().ensureSchema();
     await ensureZeroResourceSchemaWithPool(database);
+    await ensureWanJobReservationSchemaWithPool(database);
     await ensureProjectDeletionIdempotencySchema();
     await database.query('SELECT 1');
   }
