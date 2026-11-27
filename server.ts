@@ -495,7 +495,13 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       maxVideoDurationSec: 60,
       readiness: readinessForStage(readinessStage),
     });
-  } catch {
+  } catch (error) {
+    const safeMessage = error instanceof Error
+      ? error.message
+          .replace(/postgres(?:ql)?:\/\/[^\s"'\x60]+/gi, 'postgres://[redacted]')
+          .replace(/(password\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]')
+      : 'Unknown readiness error';
+    console.error(`[ZERO HEALTH] Readiness failed at stage ${readinessStage}: ${safeMessage}`);
     return res.status(503).json({
       ok: false,
       app: 'ZERO AI STUDIO',
