@@ -126,23 +126,23 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         let fixtureURL = URL(fileURLWithPath: fixturePath, isDirectory: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixtureURL.path))
 
-        // Compile the actual MIL-generated .mlpackage with the host Core ML runtime.
         let compiledURL = try MLModel.compileModel(at: fixtureURL)
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuOnly
         let model = try MLModel(contentsOf: compiledURL, configuration: configuration)
-        XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["accumulator"])
+        XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["k_cache"])
+        XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["v_cache"])
 
-        // Inspect two genuine Core ML state buffers and prove they do not alias.
+        // Two independent MLState instances each own distinct K and V cache buffers.
         let directStateA = model.makeState()
         let directStateB = model.makeState()
-        func accumulatorValue(_ state: MLState) -> Float {
-            state.withMultiArray(for: "accumulator") { array in
-                array[0].floatValue
-            }
+        func cacheValue(_ state: MLState, name: String) -> Float {
+            state.withMultiArray(for: name) { array in array[0].floatValue }
         }
-        XCTAssertEqual(accumulatorValue(directStateA), 0)
-        XCTAssertEqual(accumulatorValue(directStateB), 0)
+        XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 0)
+        XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 0)
+        XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
+        XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
         func features(token: Int32) throws -> MLDictionaryFeatureProvider {
             let ids = try MLMultiArray(shape: [1, 1], dataType: .int32)
@@ -156,16 +156,20 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         }
 
         _ = try model.prediction(from: features(token: 2), using: directStateA)
-        XCTAssertEqual(accumulatorValue(directStateA), 2)
-        XCTAssertEqual(accumulatorValue(directStateB), 0, "Updating state A must not mutate state B.")
+        XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 2)
+        XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 4)
+        XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
+        XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
         _ = try model.prediction(from: features(token: 9), using: directStateB)
         _ = try model.prediction(from: features(token: 5), using: directStateA)
         _ = try model.prediction(from: features(token: 2), using: directStateB)
-        XCTAssertEqual(accumulatorValue(directStateA), 7)
-        XCTAssertEqual(accumulatorValue(directStateB), 11)
+        XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 7)
+        XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 14)
+        XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 11)
+        XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 22)
 
-        // Exercise the production actor/session path with its own real MLState objects.
+        // Exercise the production actor/session path with its own real K/V MLState objects.
         let session = CoreMLInferenceSession(
             variant: .instruct1B,
             computeUnits: .cpuOnly,
