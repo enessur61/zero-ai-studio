@@ -1,3 +1,5 @@
+import { isZeroResourceOperationReplay, withZeroCostResourceOperation, ZeroResourceOperationReplayError, type ZeroResourceType } from './zeroCostResourceGuard.ts';
+import { createZeroIdempotencyKey, requireZeroPrincipal } from './zeroPrincipalContext.ts';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { BudgetGuardState } from '../src/types/zero.ts';
 
@@ -25,6 +27,22 @@ const PAID_GEMINI_MODELS = new Set([
   'lyria-3-pro-preview',
 ]);
 
+export function classifyGeminiResourceType(modelId: string, payload: string): ZeroResourceType {
+  if (/tts|transcrib/i.test(modelId) || payload.includes('audio/')) return 'audio';
+  if (payload.includes('video/')) return 'video';
+  if (payload.includes('image/')) return 'image';
+  return 'text';
+}
+
+export function classifyGeminiResourceError(error: unknown): 'FAILED' | 'UNKNOWN' {
+  const kind = classifyProviderError(error);
+  if (kind === 'quota-exhausted' || kind === 'rate-limited' || kind === 'auth' || kind === 'not-found') return 'FAILED';
+  const message = error instanceof Error ? error.message : String(error);
+  const clientStatus = message.match(/\b(?:HTTP\s*)?(4\d{2})\b/i);
+  if (clientStatus) return 'FAILED';
+  return 'UNKNOWN';
+}
+
 let sharedClient: GoogleGenAI | null = null;
 
 export function getGeminiClient(): GoogleGenAI {
@@ -47,6 +65,47 @@ export function getGeminiClient(): GoogleGenAI {
         },
       },
     });
+    const models = sharedClient.models;
+    const originalGenerateContent = models.generateContent.bind(models);
+    const originalEmbedContent = models.embedContent.bind(models);
+    models.generateContent = (async (request: Parameters<typeof models.generateContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      const resourceType = classifyGeminiResourceType(modelId, payload);
+      const operationInput = {
+        provider: 'google-gemini-free' as const, modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
+        payload: request, inputBytes: Buffer.byteLength(payload),
+        inputChars: resourceType === 'text' ? payload.length : undefined,
+      };
+      const operationResult = await withZeroCostResourceOperation(
+        { ...operationInput, principal: requireZeroPrincipal(),
+          idempotencyKey: createZeroIdempotencyKey(`gemini.generateContent:${modelId}:${payload}`) },
+        () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
+      );
+      if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
+      return operationResult;
+    }) as typeof models.generateContent;
+    models.embedContent = (async (request: Parameters<typeof models.embedContent>[0]) => {
+      const modelId = String(request.model ?? '');
+      if (!ALLOWED_FREE_GEMINI_MODELS.has(modelId)) {
+        throw new Error('ZERO blockiert ein nicht freigegebenes Gemini-Embedding-Modell vor dem Provider-Aufruf.');
+      }
+      const payload = JSON.stringify(request);
+      const operationInput = {
+        provider: 'google-gemini-free' as const, modelId, resourceType: 'text' as const, studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
+        payload: request, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
+      };
+      const operationResult = await withZeroCostResourceOperation(
+        { ...operationInput, principal: requireZeroPrincipal(),
+          idempotencyKey: createZeroIdempotencyKey(`gemini.embedContent:${modelId}:${payload}`) },
+        () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
+      );
+      if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
+      return operationResult;
+    }) as typeof models.embedContent;
   }
   return sharedClient;
 }
@@ -353,7 +412,7 @@ export function formatGermanApiError(err: unknown): string {
     case 'rate-limited':
       return 'Free-Tier Anfrage-Limit vorübergehend erreicht (HTTP 429, Rate-Limit). Bitte kurz warten und erneut versuchen — kein dauerhaft ausgeschöpftes Kontingent, kein kostenpflichtiger Fallback.';
     case 'transient':
-      return 'KI-Provider vorübergehend mit einem Serverfehler (HTTP 5xx) nicht erreichbar. ZERO hat begrenzt erneut versucht; bitte später erneut versuchen. Kein kostenpflichtiger Fallback.';
+      return 'KI-Provider vorübergehend mit einem Serverfehler (HTTP 5xx) nicht erreichbar. ZERO wiederholt diesen Provider-Aufruf nicht automatisch, weil der erste Aufruf bereits verarbeitet oder berechnet worden sein kann. Bitte später erneut versuchen. Kein kostenpflichtiger Fallback.';
     case 'auth':
       if (raw.toLowerCase().includes('zero_gemini_free_tier_only')) {
         return 'Gemini gesperrt: ZERO_GEMINI_FREE_TIER_ONLY=true muss erst bestätigt werden, nachdem die Abrechnung im Google-Cloud-Projekt deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.';
@@ -366,25 +425,16 @@ export function formatGermanApiError(err: unknown): string {
   }
 }
 
-export async function withTransientRetry<T>(
+/**
+ * Execute a metered provider operation exactly once. A timeout/5xx response
+ * does not prove that the provider did not process or bill the request.
+ * Callers reserve budget before entering this function; automatic retries
+ * would therefore create unreserved duplicate provider requests.
+ */
+export function withSingleProviderAttempt<T>(
   operation: () => Promise<T>,
-  maxRetries = 1
 ): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await operation();
-    } catch (err) {
-      if (isQuotaOrRateLimitError(err)) {
-        throw err;
-      }
-      if (!isTransientServerError(err) || attempt >= maxRetries) {
-        throw err;
-      }
-      attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, 1400 * attempt));
-    }
-  }
+  return operation();
 }
 
 export { ThinkingLevel, Type };

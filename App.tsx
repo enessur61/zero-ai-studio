@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import {
   Brain,
   Clapperboard,
@@ -17,6 +17,8 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
+import { ObjectUrlLease } from './lib/objectUrlLease.ts';
+import { readProjectVideoPlaybackSnapshot, shouldOpenVideoStudioForPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
   BackupConfigState,
@@ -28,6 +30,7 @@ import type {
   MemoryEntry,
   ModelDefinition,
   NavigationTab,
+  ProjectAsset,
   StudioProject,
   SystemBackupMeta,
 } from './types/zero.ts';
@@ -94,7 +97,13 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavigationTab>('home');
+  const [activeTab, setActiveTab] = useState<NavigationTab>(() => {
+    try {
+      return shouldOpenVideoStudioForPlaybackSnapshot(readProjectVideoPlaybackSnapshot(window.sessionStorage)) ? 'video' : 'home';
+    } catch {
+      return 'home';
+    }
+  });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -126,9 +135,31 @@ export default function App() {
   const [istZustand, setIstZustand] = useState<IstZustandItem[]>([]);
   const [roadmap, setRoadmap] = useState<DevelopmentPhase[]>([]);
   const [videoProjectId, setVideoProjectId] = useState<string | undefined>(undefined);
+  const [audioAssetToLoad, setAudioAssetToLoad] = useState<ProjectAsset | null>(null);
   const [videoSoundtrack, setVideoSoundtrack] = useState<{ url: string; title: string } | null>(
     null
   );
+  const videoSoundtrackLeaseRef = useRef(new ObjectUrlLease());
+
+  useEffect(() => {
+    const url = videoSoundtrack?.url;
+    if (!url) return;
+    videoSoundtrackLeaseRef.current.adopt(url);
+    return () => {
+      videoSoundtrackLeaseRef.current.release(url);
+    };
+  }, [videoSoundtrack?.url]);
+
+
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setAuthRequired(true);
+      setLoading(false);
+      setAuthStatusLoading(false);
+    };
+    window.addEventListener('zero:session-expired', onSessionExpired);
+    return () => window.removeEventListener('zero:session-expired', onSessionExpired);
+  }, []);
 
   useEffect(() => {
     const userAgent = window.navigator.userAgent;
@@ -267,9 +298,11 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function handleProjectUpdated(updated: StudioProject) {
+  const handleAudioAssetLoaded = useCallback(() => setAudioAssetToLoad(null), []);
+
+  const handleProjectUpdated = useCallback((updated: StudioProject) => {
     setProjects((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-  }
+  }, []);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === activeTab) ?? NAV_ITEMS[0];
 
@@ -515,11 +548,12 @@ export default function App() {
               projects={projects}
               activeProjectId={videoProjectId}
               soundtrack={videoSoundtrack}
+              onProjectUpdated={handleProjectUpdated}
             />
           )}
 
           {activeTab === 'audio' && (
-            <AudioStudioView projects={projects} onProjectUpdated={handleProjectUpdated} />
+            <AudioStudioView projects={projects} onProjectUpdated={handleProjectUpdated} assetToLoad={audioAssetToLoad} onAudioAssetLoaded={handleAudioAssetLoaded} />
           )}
 
           {activeTab === 'music' && (
@@ -557,6 +591,10 @@ export default function App() {
               onProjectUpdated={handleProjectUpdated}
               onCharacterCreated={(c) => setCharacters((prev) => [c, ...prev])}
               onOpenDirector={() => navigateTo('director')}
+              onLoadAudioAsset={(asset) => {
+                setAudioAssetToLoad(asset);
+                navigateTo('audio');
+              }}
             />
           )}
 

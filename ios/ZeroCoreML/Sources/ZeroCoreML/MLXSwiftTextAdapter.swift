@@ -88,7 +88,7 @@ public enum MLXTextAdapterError: Error, LocalizedError, Sendable {
 
 /// Apple MLX Swift Runtime Adapter für Qwen 2.5 3B Instruct & DeepSeek-R1-Distill-Qwen-1.5B
 /// Optimiert für Apple A18 Pro GPU + Unified Memory auf iPhone 16 Pro Max (8 GB RAM).
-public final class MLXSwiftTextAdapter: @unchecked Sendable {
+public final class MLXSwiftTextAdapter: Sendable {
     public let variant: MLXTextVariant
     public let systemPrompt: String
     public let maxTokens: Int

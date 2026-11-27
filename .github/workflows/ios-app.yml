@@ -1,16 +1,16 @@
 name: ZERO Native iOS App Build
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "ios/**"
       - ".github/workflows/ios-app.yml"
   push:
-    branches: [main]
+    branches: [main, release/zero-2026-11-20-preview]
     paths:
       - "ios/**"
       - ".github/workflows/ios-app.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,12 +22,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Validate native iOS changes on PRs and allow explicit manual runs.
   build-ios-app:
-    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event_name == 'push'
+    # Intel avoids the documented macOS ARM64 capacity bottleneck. Xcode can
+    # still cross-compile the unsigned iPhone device target for arm64.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Build pinned XcodeGen 2.46.0 from verified source commit
+      - name: Determine Apple toolchain cache key
+        id: apple-toolchain
+        shell: bash
+        run: |
+          TOOLCHAIN_KEY="$( { xcodebuild -version; swift --version; } | shasum -a 256 | cut -c1-16)"
+          echo "key=$TOOLCHAIN_KEY" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned XcodeGen binary
+        id: xcodegen-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/xcodegen
+          key: zero-xcodegen-macos-15-intel-${{ steps.apple-toolchain.outputs.key }}-8445e778451c7e44237b90281bde622d764b0084
+      - name: Restore Swift package build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ios/ZeroCoreML/.build
+          key: zero-swift-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-toolchain.outputs.key }}-${{ steps.apple-toolchain.outputs.key }}-${{ hashFiles('ios/ZeroCoreML/Package.resolved', 'ios/ZeroCoreML/Package.swift') }}
+          restore-keys: |
+            zero-swift-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore Xcode derived data
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/ZEROAIStudioDerived
+          key: zero-xcode-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-toolchain.outputs.key }}-${{ steps.apple-toolchain.outputs.key }}-${{ hashFiles('ios/ZEROAIStudio/project.yml', 'ios/ZEROAIStudio/**/*.swift', 'ios/ZeroCoreML/Package.swift') }}
+          restore-keys: |
+            zero-xcode-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build pinned XcodeGen 2.46.0 on cache miss
+        if: steps.xcodegen-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -37,12 +68,18 @@ jobs:
           git -C "$XCODEGEN_DIR" fetch --depth 1 origin 8445e778451c7e44237b90281bde622d764b0084
           git -C "$XCODEGEN_DIR" checkout --detach FETCH_HEAD
           # XcodeGen's Makefile uses the inherited PWD variable for its resource copy.
-          # Set it explicitly because make -C alone does not update that environment variable.
           PWD="$XCODEGEN_DIR" make -C "$XCODEGEN_DIR" install PREFIX="$RUNNER_TEMP/xcodegen"
+      - name: Verify pinned XcodeGen binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$RUNNER_TEMP/xcodegen/bin/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
           VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
           printf '%s\\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
+      - name: Run ZeroCoreML Swift 6 XCTest suite
+        run: swift test --package-path ios/ZeroCoreML
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/ZEROAIStudio/project.yml
       - name: Build unsigned iOS Simulator app
@@ -53,6 +90,7 @@ jobs:
           -sdk iphonesimulator
           -configuration Debug
           -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/ZEROAIStudioDerived"
           CODE_SIGNING_ALLOWED=NO
           build
       - name: Build unsigned iPhone device app
@@ -67,6 +105,20 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           build
+      - name: Verify ZERO_APP_URL is embedded in the native app
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
+          test -d "$APP_PATH"
+          APP_URL="$(/usr/libexec/PlistBuddy -c 'Print :ZERO_APP_URL' "$APP_PATH/Info.plist")"
+          [[ "$APP_URL" == "https://zero-ai-studio.onrender.com" ]]
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")"
+          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")"
+          EXPECTED_APP_VERSION="$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' package.json)"
+          [[ -n "$EXPECTED_APP_VERSION" && "$APP_VERSION" == "$EXPECTED_APP_VERSION" ]]
+          [[ "$APP_BUILD" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]
+          printf 'Verified ZERO_APP_URL and app version %s (%s).\\n' "$APP_VERSION" "$APP_BUILD"
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
@@ -81,4 +133,4 @@ jobs:
           name: ZEROAIStudio-unsigned-IPA
           path: ${{ runner.temp }}/ZEROAIStudio-unsigned.ipa
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7

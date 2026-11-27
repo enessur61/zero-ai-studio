@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Database, Loader2, Plus, Search, Trash2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { getMemoryActionError } from '../lib/memoryActionError.ts';
 import type { MemoryEntry, MemoryType } from '../types/zero.ts';
 
 interface MemoryViewProps {
@@ -23,10 +24,12 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
   const [type, setType] = useState<MemoryType>('knowledge');
   const [tags, setTags] = useState('');
   const [saving, setSaving] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     setSearching(true);
+    setActionError(null);
     try {
       const data = await apiRequest<{
         results: Array<{ memory: MemoryEntry; score: number }>;
@@ -39,6 +42,8 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
       setSearchResults(data.results);
       setSemanticUsed(data.semanticActive);
       setEmbeddingNotice(data.embeddingNotice ?? null);
+    } catch (error) {
+      setActionError(getMemoryActionError(error, 'Memory-Suche fehlgeschlagen.'));
     } finally {
       setSearching(false);
     }
@@ -48,6 +53,7 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
     e.preventDefault();
     if (!title.trim() || !content.trim() || saving) return;
     setSaving(true);
+    setActionError(null);
     try {
       const data = await apiRequest<{ memory: MemoryEntry; embeddingNotice?: string }>('/api/memory', {
         method: 'POST',
@@ -59,16 +65,23 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
       setContent('');
       setTags('');
       setSearchResults(null);
+    } catch (error) {
+      setActionError(getMemoryActionError(error, 'Speichern der Erinnerung fehlgeschlagen.'));
     } finally {
       setSaving(false);
     }
   }
 
   async function handleDelete(id: string) {
-    await apiRequest(`/api/memory/${id}`, { method: 'DELETE' });
-    onMemoryDeleted(id);
-    if (searchResults) {
-      setSearchResults(searchResults.filter((r) => r.memory.id !== id));
+    setActionError(null);
+    try {
+      await apiRequest(`/api/memory/${id}`, { method: 'DELETE' });
+      onMemoryDeleted(id);
+      if (searchResults) {
+        setSearchResults(searchResults.filter((r) => r.memory.id !== id));
+      }
+    } catch (error) {
+      setActionError(getMemoryActionError(error, 'Löschen der Erinnerung fehlgeschlagen.'));
     }
   }
 
@@ -84,6 +97,8 @@ export function MemoryView({ memories, onMemoryAdded, onMemoryDeleted }: MemoryV
           Dauerhaftes Langzeitgedächtnis · Projekt- & Charakterwissen · Semantische Vektorsuche mit Gemini Embedding 2
         </p>
       </div>
+
+      {actionError && <div role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{actionError}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <form

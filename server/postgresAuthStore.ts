@@ -17,6 +17,8 @@ export function createPostgresAuthStore(database: Pool) {
     if (!schemaReady) {
       schemaReady = (async () => {
         const client = await database.connect();
+        let transactionOpen = true;
+        let destroyClient = false;
         try {
           await client.query('BEGIN');
           // Serialize first-use DDL when multiple production instances start together.
@@ -47,11 +49,19 @@ export function createPostgresAuthStore(database: Pool) {
             )
           `);
           await client.query('COMMIT');
+          transactionOpen = false;
         } catch (error) {
-          await client.query('ROLLBACK').catch(() => undefined);
+          if (transactionOpen) {
+            try {
+              await client.query('ROLLBACK');
+              transactionOpen = false;
+            } catch {
+              destroyClient = true;
+            }
+          }
           throw error;
         } finally {
-          client.release();
+          client.release(destroyClient);
         }
       })().catch((error) => {
         schemaReady = null;

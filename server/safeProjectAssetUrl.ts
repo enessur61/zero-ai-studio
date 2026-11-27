@@ -41,6 +41,8 @@ export function sanitizeProjectAssets(value: unknown): ProjectAsset[] {
       typeof candidate.title === 'string' &&
       typeof candidate.modelId === 'string' &&
       typeof candidate.createdAt === 'string' &&
+      (candidate.sourceText === undefined || (typeof candidate.sourceText === 'string' && candidate.sourceText.length <= 5000)) &&
+      (candidate.voiceLabel === undefined || (typeof candidate.voiceLabel === 'string' && candidate.voiceLabel.length <= 100)) &&
       PROJECT_ASSET_TYPES.includes(candidate.type as ProjectAsset['type']) &&
       isSafeProjectAssetUrl(candidate.url, candidate.type as ProjectAsset['type']);
   }).slice(0, 200);
@@ -52,7 +54,7 @@ export function sanitizeProjectScenes(scenes: FilmScene[]): FilmScene[] {
   return scenes.map((scene) => {
     const safeScene = { ...scene };
     // Generated clip URLs are transient browser object URLs. Clip bytes are stored
-    // in local IndexedDB and mirrored into the owning project's durable assets.
+    // in local IndexedDB as a cache and in the principal-bound PostgreSQL video archive.
     delete safeScene.videoUrl;
     if (safeScene.imageUrl !== undefined && !isSafeProjectAssetUrl(safeScene.imageUrl, 'image')) {
       delete safeScene.imageUrl;

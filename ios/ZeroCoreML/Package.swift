@@ -20,6 +20,11 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]
+        ),
+        .testTarget(
+            name: "ZeroCoreMLTests",
+            dependencies: ["ZeroCoreML"],
+            path: "Tests/ZeroCoreMLTests"
         )
     ]
 )

@@ -1,0 +1,101 @@
+import assert from 'node:assert/strict';
+import type { Request, Response } from 'express';
+import { createApiAuthMiddleware } from '../server/apiAuth.ts';
+
+function responseRecorder() {
+  let code = 200;
+  let body: unknown;
+  const response = {
+    status(value: number) { code = value; return this; },
+    json(value: unknown) { body = value; return this; },
+  };
+  return { response: response as unknown as Response, status: () => code, body: () => body };
+}
+
+async function invoke(
+  path: string,
+  hasValidSession: () => Promise<boolean>,
+  configured = true,
+  headers: Record<string, string> = { host: 'zero.example', origin: 'https://zero.example' },
+  protocol = 'https',
+) {
+  let nextCalled = false;
+  const recorder = responseRecorder();
+  const middleware = createApiAuthMiddleware({
+    isProduction: true,
+    adminPassword: configured ? 'a-secure-ci-password' : '',
+    sessionSecret: configured ? 'a-secure-session-secret-that-is-long-enough-123' : '',
+    hasValidSession,
+  });
+  const request = {
+    path,
+    protocol,
+    get(name: string) { return headers[name.toLowerCase()]; },
+  } as unknown as Request;
+  middleware(request, recorder.response, (() => { nextCalled = true; }) as never);
+  await new Promise((resolve) => setImmediate(resolve));
+  return { ...recorder, nextCalled };
+}
+
+for (const path of [
+  '/video/engine/status',
+  '/video/engine/jobs',
+  '/video/engine/jobs/00000000-0000-4000-8000-000000000001',
+  '/video/engine/jobs/00000000-0000-4000-8000-000000000001/cancel',
+  '/video/engine/jobs/00000000-0000-4000-8000-000000000001/video',
+]) {
+  let sessionChecks = 0;
+  const denied = await invoke(path, async () => { sessionChecks += 1; return false; });
+  assert.equal(denied.status(), 401, `${path} must require a ZERO session`);
+  assert.equal(denied.nextCalled, false);
+  assert.equal(sessionChecks, 1);
+
+  const allowed = await invoke(path, async () => true);
+  assert.equal(allowed.nextCalled, true, `${path} must proceed for a valid ZERO session`);
+}
+
+const unavailableSessionStore = await invoke('/video/engine/status', async () => {
+  throw new Error('injected PostgreSQL session-store outage');
+});
+assert.equal(unavailableSessionStore.status(), 503,
+  'a database outage during session validation must return fail-closed 503, not generic 500');
+assert.equal(unavailableSessionStore.nextCalled, false,
+  'a database outage must never continue into a protected route');
+
+const unconfigured = await invoke('/video/engine/status', async () => true, false);
+assert.equal(unconfigured.status(), 503);
+assert.equal(unconfigured.nextCalled, false);
+
+for (const path of ['/auth/login', '/auth/logout']) {
+  const missingOrigin = await invoke(path, async () => false, true, { host: 'zero.example' });
+  assert.equal(missingOrigin.status(), 403, `${path} must reject a missing Origin`);
+  assert.equal(missingOrigin.nextCalled, false);
+
+  const hostileOrigin = await invoke(path, async () => false, true, {
+    host: 'zero.example',
+    origin: 'https://attacker.example',
+  });
+  assert.equal(hostileOrigin.status(), 403, `${path} must reject a cross-origin request`);
+  assert.equal(hostileOrigin.nextCalled, false);
+
+  const malformedOrigin = await invoke(path, async () => false, true, {
+    host: 'zero.example',
+    origin: 'https://zero.example.evil.test',
+  });
+  assert.equal(malformedOrigin.status(), 403, `${path} must reject a deceptive origin`);
+  assert.equal(malformedOrigin.nextCalled, false);
+
+  const sameOrigin = await invoke(path, async () => false);
+  assert.equal(sameOrigin.status(), 200, `${path} must allow an exact same-origin request`);
+  assert.equal(sameOrigin.nextCalled, true);
+}
+
+const publicLive = await invoke('/live', async () => false);
+assert.equal(publicLive.nextCalled, true);
+assert.equal(publicLive.status(), 200);
+
+const publicHealth = await invoke('/health', async () => false);
+assert.equal(publicHealth.nextCalled, true);
+assert.equal(publicHealth.status(), 200);
+
+console.log('ZERO API session authentication and login/logout origin-protection tests passed.');

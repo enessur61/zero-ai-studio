@@ -1,11 +1,15 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Download, FolderPlus, Loader2, Mic, Square, Upload, Volume2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { resolveAudioModelId } from '../lib/audioModelMetadata.ts';
 import {
   isNativeIOSCoreMLAvailable,
+  pickNativeIOSAudio,
+  runNativeIOSDiagnostics,
   runNativeIOSSynthesize,
+  runNativeIOSTranscribe,
 } from '../lib/iosCoreMLBridge.ts';
-import type { StudioProject } from '../types/zero.ts';
+import type { ProjectAsset, StudioProject } from '../types/zero.ts';
 
 interface SpeechRecognitionInstance {
   lang: string;
@@ -21,9 +25,11 @@ interface SpeechRecognitionInstance {
 interface AudioStudioViewProps {
   projects: StudioProject[];
   onProjectUpdated: (p: StudioProject) => void;
+  assetToLoad?: ProjectAsset | null;
+  onAudioAssetLoaded?: () => void;
 }
 
-export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewProps) {
+export function AudioStudioView({ projects, onProjectUpdated, assetToLoad, onAudioAssetLoaded }: AudioStudioViewProps) {
   const [text, setText] = useState(
     'Nichts im Rauschen passiert ohne Grund. Bei exakt vierhundertdreißig Hertz löste sich die Verzerrung.'
   );
@@ -53,18 +59,41 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   const chunksRef = useRef<BlobPart[]>([]);
   const nativeIOSActive = isNativeIOSCoreMLAvailable();
 
+  useEffect(() => {
+    if (!assetToLoad || assetToLoad.type !== 'audio') return;
+    const match = /^Voiceover \(([^)]+)\):\s*(.*)$/.exec(assetToLoad.title);
+    setAudioUrl(assetToLoad.url);
+    setAudioModelId(assetToLoad.modelId);
+    setTtsError(null);
+    setSavedAudioMsg(null);
+    if (typeof assetToLoad.sourceText === 'string' && assetToLoad.sourceText.length <= 5000) {
+      setText(assetToLoad.sourceText);
+    }
+    if (typeof assetToLoad.voiceLabel === 'string') setAudioVoiceLabel(assetToLoad.voiceLabel);
+    if (match) {
+      const restoredVoice = match[1];
+      if (['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].includes(restoredVoice)) {
+        setVoiceName(restoredVoice as typeof voiceName);
+      }
+      setAudioVoiceLabel(restoredVoice);
+      if (!assetToLoad.sourceText && match[2]) setText(match[2]);
+    }
+    onAudioAssetLoaded?.();
+  }, [assetToLoad, onAudioAssetLoaded]);
+
   async function handleGenerateTts(e: React.FormEvent) {
     e.preventDefault();
     if (!text.trim() || ttsLoading) return;
     setTtsLoading(true);
     setTtsError(null);
     try {
-      const data = await apiRequest<{ audioDataUrl: string }>('/api/audio/tts', {
+      const data = await apiRequest<{ audioDataUrl: string; modelUsed?: string }>('/api/audio/tts', {
         method: 'POST',
         body: JSON.stringify({ text, voiceName, style, expressive }),
       });
       setAudioUrl(data.audioDataUrl);
-      setAudioModelId(expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts');
+      setSavedAudioMsg(null);
+      setAudioModelId(resolveAudioModelId(data.modelUsed, expressive ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts'));
       setAudioVoiceLabel(voiceName);
     } catch (err) {
       setTtsError(err instanceof Error ? err.message : 'TTS fehlgeschlagen');
@@ -83,7 +112,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
         body: JSON.stringify({ text, speed: 0.96 }),
       });
       setAudioUrl(data.audioDataUrl);
-      setAudioModelId('piper-tts-de-worker');
+      setAudioModelId(resolveAudioModelId(data.modelUsed, 'piper-tts-de-worker'));
       setAudioVoiceLabel('Thorsten Deutsch');
       setSavedAudioMsg(null);
     } catch (err) {
@@ -110,6 +139,10 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
   }
 
   async function handleNativeIOSAudio(modelId: 'piper-tts-de' | 'kokoro-82m') {
+    if (modelId === 'piper-tts-de') {
+      setTtsError('Piper auf iOS ist derzeit deaktiviert: ONNX Runtime und eSpeak-ng sind noch nicht in das App-Target integriert.');
+      return;
+    }
     if (!text.trim() || ttsLoading) return;
     setTtsLoading(true);
     setTtsError(null);
@@ -165,6 +198,45 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
     recognitionRef.current = rec;
     rec.start();
     setDictating(true);
+  }
+
+  async function handleNativeIOSAudioImport() {
+    if (!nativeIOSActive || transcribing) return;
+    setTranscribing(true);
+    setTranscribeError(null);
+    setTranscriptSrt(null);
+    try {
+      // Diagnostics are local-only. Never fall back to a provider when Whisper is absent.
+      const diagnostics = await runNativeIOSDiagnostics('whisper-cpp-small');
+      if (diagnostics.available !== true) {
+        const detail = diagnostics.availabilityReason || diagnostics.status || diagnostics.runtime;
+        throw new Error(
+          detail
+            ? `Lokale Whisper-Transkription ist nicht verfügbar: ${detail}`
+            : 'Lokale Whisper-Transkription ist nicht verfügbar. Runtime und Modellgewichte fehlen oder sind nicht vollständig.'
+        );
+      }
+
+      const selection = await pickNativeIOSAudio();
+      if (!selection.importId) {
+        throw new Error('Der native Dateiauswahldialog hat keine gültige Audio-Import-ID geliefert.');
+      }
+      const result = await runNativeIOSTranscribe({
+        importId: selection.importId,
+        language: 'de',
+      });
+      if (typeof result.text !== 'string' || !result.text.trim()) {
+        throw new Error('Die lokale Whisper-Runtime hat kein Transkript zurückgegeben.');
+      }
+      setTranscript(result.text);
+      setTranscriptSrt(result.srt ?? null);
+    } catch (err) {
+      setTranscribeError(
+        err instanceof Error ? err.message : 'Lokaler iOS-Audioimport oder Whisper-Transkription fehlgeschlagen.'
+      );
+    } finally {
+      setTranscribing(false);
+    }
   }
 
   async function sendAudioForTranscription(dataUrl: string) {
@@ -356,13 +428,9 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
             </button>
 
             {nativeIOSActive && (
-              <button
-                type="button"
-                onClick={() => void handleNativeIOSAudio('piper-tts-de')}
-                className="min-h-[44px] px-3.5 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-xs font-medium text-teal-300 whitespace-nowrap"
-              >
-                Piper ONNX (iOS Lokal)
-              </button>
+              <span className="min-h-[44px] px-3.5 rounded-xl border border-amber-500/20 text-xs text-amber-300 inline-flex items-center">
+                Piper iOS: nicht verfügbar (Runtime fehlt)
+              </span>
             )}
           </div>
 
@@ -382,7 +450,10 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                   <>
                     <select
                       value={targetProjectId || projects[0]?.id || ''}
-                      onChange={(e) => setTargetProjectId(e.target.value)}
+                      onChange={(e) => {
+                        setTargetProjectId(e.target.value);
+                        setSavedAudioMsg(null);
+                      }}
                       className="min-h-[40px] bg-[#090B10] border border-white/[0.1] rounded-xl px-2.5 text-xs text-slate-200"
                     >
                       {projects.map((p) => (
@@ -399,6 +470,7 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                         if (!pid || !audioUrl) return;
                         setSavingAudio(true);
                         setSavedAudioMsg(null);
+                        setTtsError(null);
                         try {
                           const res = await apiRequest<{ project: StudioProject }>(
                             `/api/projects/${pid}/assets`,
@@ -409,6 +481,8 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
                                 title: `Voiceover (${audioVoiceLabel}): ${text.slice(0, 36)}`,
                                 url: audioUrl,
                                 modelId: audioModelId,
+                                sourceText: text.slice(0, 5000),
+                                voiceLabel: audioVoiceLabel.slice(0, 100),
                               }),
                             }
                           );
@@ -463,6 +537,16 @@ export function AudioStudioView({ projects, onProjectUpdated }: AudioStudioViewP
               {recording ? 'Aufnahme stoppen' : 'Mikrofon aufnehmen'}
             </button>
 
+            {nativeIOSActive && (
+              <button
+                type="button"
+                onClick={() => void handleNativeIOSAudioImport()}
+                disabled={transcribing}
+                className="min-h-[44px] px-3.5 rounded-xl border border-teal-500/30 bg-teal-500/10 text-xs font-medium text-teal-200 disabled:opacity-50 whitespace-nowrap"
+              >
+                Native iOS-Dateiimport · lokal
+              </button>
+            )}
             <button
               type="button"
               onClick={handleToggleLocalDictation}

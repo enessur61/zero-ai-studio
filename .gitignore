@@ -7,6 +7,9 @@ coverage/
 
 # Local secrets and environment
 .env
+production.env
+.env.workers
+/searxng/searxng.env
 .env.*
 !.env.example
 

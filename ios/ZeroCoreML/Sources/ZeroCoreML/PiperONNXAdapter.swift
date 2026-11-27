@@ -61,7 +61,7 @@ public struct PiperDeploymentDiagnostics: Codable, Sendable {
 }
 
 /// Rhasspy Piper TTS Adapter (de_DE-thorsten-high ONNX Runtime iOS, 22.05 kHz WAV).
-public final class PiperONNXAdapter: @unchecked Sendable {
+public final class PiperONNXAdapter: Sendable {
     public let modelId = "piper-tts-de"
     public let onnxFilename = "de_DE-thorsten-high.onnx"
     public let configFilename = "de_DE-thorsten-high.onnx.json"

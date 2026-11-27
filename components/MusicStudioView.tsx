@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Download, Film, FolderPlus, Loader2, Music, Sparkles, Volume2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
+import { ObjectUrlLease } from '../lib/objectUrlLease.ts';
 import {
   type MusicParams,
   renderMusicToWavUrl,
@@ -50,6 +51,26 @@ export function MusicStudioView({
   const [rendering, setRendering] = useState(false);
   const [trackUrl, setTrackUrl] = useState<string | null>(null);
   const [sfxUrl, setSfxUrl] = useState<{ label: string; url: string } | null>(null);
+  const objectUrlLeaseRef = useRef(new ObjectUrlLease());
+  const trackUrlRef = useRef<string | null>(null);
+  const sfxUrlRef = useRef<string | null>(null);
+
+  useEffect(() => () => {
+    objectUrlLeaseRef.current.releaseAll();
+  }, []);
+
+  function replaceTrackUrl(url: string) {
+    objectUrlLeaseRef.current.replace(trackUrlRef.current, url);
+    trackUrlRef.current = url;
+    setTrackUrl(url);
+  }
+
+  function replaceSfxUrl(next: { label: string; url: string }) {
+    objectUrlLeaseRef.current.replace(sfxUrlRef.current, next.url);
+    sfxUrlRef.current = next.url;
+    setSfxUrl(next);
+  }
+
   const [error, setError] = useState<string | null>(null);
   const [targetProjectId, setTargetProjectId] = useState(projects[0]?.id ?? '');
   const [savingMusic, setSavingMusic] = useState(false);
@@ -69,7 +90,7 @@ export function MusicStudioView({
       setComposing(false);
       setRendering(true);
       const rendered = await renderMusicToWavUrl(data.composition);
-      setTrackUrl(rendered.url);
+      replaceTrackUrl(rendered.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Musikproduktion fehlgeschlagen');
     } finally {
@@ -83,7 +104,7 @@ export function MusicStudioView({
     setError(null);
     try {
       const rendered = await renderMusicToWavUrl({ ...params, durationSec });
-      setTrackUrl(rendered.url);
+      replaceTrackUrl(rendered.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Synthese fehlgeschlagen');
     } finally {
@@ -93,7 +114,7 @@ export function MusicStudioView({
 
   async function handleSfx(kind: SfxKind, label: string) {
     const res = await renderSfxToWavUrl(kind);
-    setSfxUrl({ label, url: res.url });
+    replaceSfxUrl({ label, url: res.url });
   }
 
   return (
@@ -225,7 +246,10 @@ export function MusicStudioView({
                   </a>
                   <button
                     type="button"
-                    onClick={() => onUseInVideoStudio(trackUrl, `${params.title} (${params.bpm} BPM)`)}
+                    onClick={() => {
+                      objectUrlLeaseRef.current.transfer(trackUrl);
+                      onUseInVideoStudio(trackUrl, `${params.title} (${params.bpm} BPM)`);
+                    }}
                     className="min-h-[42px] px-3.5 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-xs font-medium text-white inline-flex items-center gap-2"
                   >
                     <Film className="w-4 h-4" />

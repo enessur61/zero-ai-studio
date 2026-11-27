@@ -150,6 +150,10 @@ export interface ProjectAsset {
   title: string;
   url: string;
   modelId: string;
+  /** Original user-authored voiceover text, retained for exact project restoration. */
+  sourceText?: string;
+  /** Display label for the exact voice used to render this asset. */
+  voiceLabel?: string;
   durationSec?: number;
   createdAt: string;
 }
@@ -180,6 +184,8 @@ export interface ProjectSnapshot {
 
 export interface StudioProject {
   id: string;
+  /** Server-assigned; optional only while hydrating legacy persisted projects. */
+  ownerId?: string;
   title: string;
   logline: string;
   genre: string;
