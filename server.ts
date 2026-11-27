@@ -130,6 +130,8 @@ async function getProjectVideoBackupFiles(): Promise<Record<string, Buffer>> {
 
 async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () => Promise<T>): Promise<T> {
   const client = await getPostgresPool().connect();
+  let transactionOpen = true;
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query(
@@ -138,12 +140,20 @@ async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () =
     );
     const result = await callback();
     await client.query('COMMIT');
+    transactionOpen = false;
     return result;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+        transactionOpen = false;
+      } catch {
+        destroyClient = true;
+      }
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
