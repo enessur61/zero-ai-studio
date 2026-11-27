@@ -69,7 +69,7 @@ try {
     )
   `);
   await adminPool.query(`
-    CREATE INDEX "${schema}".zero_project_video_assets_project_idx_legacy
+    CREATE INDEX zero_project_video_assets_project_idx_legacy
     ON "${schema}".zero_project_video_assets (principal_hash, project_id, created_at DESC)
   `);
   // Simulate an installation where migration 3 is already recorded and the
