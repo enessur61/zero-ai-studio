@@ -322,6 +322,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
           WHERE c.conrelid = target_table AND c.contype = 'c'
         LOOP
           normalized_definition := lower(regexp_replace(strict_check.definition, '[[:space:]()]', '', 'g'));
+          normalized_definition := replace(normalized_definition, 'principal_hash::text', 'principal_hash');
           IF strict_check.conkey = ARRAY[principal_hash_att]::smallint[]
              AND (
                normalized_definition = 'checkprincipal_hash~' || quote_literal(strict_regex)
