@@ -346,19 +346,14 @@ def create_job(
     idempotency_key_hash: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> JSONResponse:
     require_auth(authorization)
-    require_cost_gate()
-    try:
-        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if not torch.cuda.is_available():
-        raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
-    if not has_sufficient_gpu_memory(gpu_vram_total_mb()):
-        raise HTTPException(status_code=503, detail=f"Wan GPU requires at least {12 * 1024} MB VRAM.")
     if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
         raise HTTPException(status_code=401, detail="Authenticated principal is required")
     if not idempotency_key_hash or len(idempotency_key_hash) != 64 or any(c not in "0123456789abcdef" for c in idempotency_key_hash.lower()):
         raise HTTPException(status_code=400, detail="A hashed idempotency key is required")
+    try:
+        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -376,6 +371,24 @@ def create_job(
         "request_fingerprint": fingerprint,
     }
     with _jobs_lock:
+        # A retry of an already accepted job must be replayable even when the
+        # queue is full, the cost gate was closed later, or GPU capacity changed.
+        # This path performs no new inference and is repeated atomically below
+        # by create_or_get_limited to cover concurrent first submissions.
+        existing, conflict = _JOB_STORE.get_idempotent(
+            principal_hash.lower(), idempotency_key_hash.lower(), fingerprint,
+        )
+        if existing:
+            if conflict:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
+            _jobs[str(existing["id"])] = existing
+            return JSONResponse(status_code=200, content={"job": public_job(existing), "replayed": True})
+
+        require_cost_gate()
+        if not torch.cuda.is_available():
+            raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
+        if not has_sufficient_gpu_memory(gpu_vram_total_mb()):
+            raise HTTPException(status_code=503, detail=f"Wan GPU requires at least {12 * 1024} MB VRAM.")
         if len(_jobs) >= 50:
             for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
                 old_id = str(old["id"])
