@@ -97,6 +97,38 @@ try {
   assert.ok(strictPrincipalCheck.definition.includes("'^[a-f0-9]{64}'"), 'strict check matches exactly 64 lowercase hex characters');
   assert.ok(strictPrincipalCheck.definition.includes('chr(36)'), 'strict check appends the dollar end anchor');
 
+  const videoColumns = await poolA.query<{ attname: string; data_type: string; attnotnull: boolean }>(
+    `SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS data_type, a.attnotnull
+     FROM pg_attribute a
+     WHERE a.attrelid = 'zero_project_video_assets'::regclass
+       AND a.attnum > 0 AND NOT a.attisdropped`
+  );
+  const videoColumnByName = new Map(videoColumns.rows.map((row) => [row.attname, row]));
+  assert.equal(videoColumnByName.get('principal_hash')?.data_type, 'character(64)');
+  assert.equal(videoColumnByName.get('sha256')?.data_type, 'character(64)');
+  assert.equal(videoColumnByName.get('job_id')?.attnotnull, false, 'job_id remains nullable for normal PostgreSQL UNIQUE semantics');
+  assert.equal(videoColumnByName.get('payload')?.data_type, 'bytea');
+  assert.equal(videoColumnByName.get('created_at')?.data_type, 'timestamp with time zone');
+
+  const createdAtDefault = await poolA.query<{ expression: string }>(
+    `SELECT pg_get_expr(d.adbin, d.adrelid) AS expression
+     FROM pg_attribute a JOIN pg_attrdef d
+       ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+     WHERE a.attrelid = 'zero_project_video_assets'::regclass AND a.attname = 'created_at'`
+  );
+  assert.equal(createdAtDefault.rows[0]?.expression, 'now()');
+
+  const videoKeys = await poolA.query<{ contype: string; key_columns: string[] }>(
+    `SELECT c.contype, array_agg(a.attname ORDER BY k.ordinality) AS key_columns
+     FROM pg_constraint c
+     CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality)
+     JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+     WHERE c.conrelid = 'zero_project_video_assets'::regclass AND c.contype IN ('p', 'u')
+     GROUP BY c.oid, c.contype`
+  );
+  assert.ok(videoKeys.rows.some((row) => row.contype === 'p' && row.key_columns.join(',') === 'asset_id'));
+  assert.ok(videoKeys.rows.some((row) => row.contype === 'u' && row.key_columns.join(',') === 'principal_hash,job_id'));
+
   const videoIndex = await poolA.query<{ indisvalid: boolean; indisready: boolean; indisunique: boolean; no_predicate: boolean; indnkeyatts: number; indnatts: number; options: number[]; definition: string }>(
     `SELECT i.indisvalid, i.indisready, i.indisunique, i.indpred IS NULL AS no_predicate,
             i.indnkeyatts, i.indnatts,
