@@ -199,6 +199,31 @@ class PersistentJobStore:
             )
             return dict(job), False, False
 
+    def get_idempotent(
+        self,
+        principal_hash: str,
+        idempotency_key_hash: str,
+        request_fingerprint: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Return an existing idempotent job before queue, cost or GPU admission checks."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload, request_fingerprint FROM zero_video_jobs
+                WHERE principal_hash = ? AND idempotency_key_hash = ?
+                """,
+                (principal_hash, idempotency_key_hash),
+            ).fetchone()
+        if not row:
+            return None, False
+        try:
+            existing = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Stored Wan idempotency record is invalid.") from exc
+        if not isinstance(existing, dict) or not existing.get("id"):
+            raise RuntimeError("Stored Wan idempotency record is invalid.")
+        return existing, str(row[1]) != request_fingerprint
+
     def create_or_get_limited(
         self,
         job: dict[str, Any],
