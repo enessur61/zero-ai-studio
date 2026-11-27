@@ -1,5 +1,5 @@
 import Foundation
-import CoreML
+@preconcurrency import CoreML
 
 public protocol LlamaTokenizer: Sendable {
     func encode(_ text: String) -> [Int32]
