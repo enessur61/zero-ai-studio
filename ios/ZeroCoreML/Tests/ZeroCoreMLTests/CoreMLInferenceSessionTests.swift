@@ -211,30 +211,45 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
         XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
-        func features(token: Int32) throws -> MLDictionaryFeatureProvider {
+        func features(token: Int32, startPosition: Int) throws -> MLDictionaryFeatureProvider {
             let ids = try MLMultiArray(shape: [1, 1], dataType: .int32)
             ids[[0, 0]] = NSNumber(value: token)
-            let mask = try MLMultiArray(shape: [1, 1, 1, 1], dataType: .float16)
-            mask[[0, 0, 0, 0]] = NSNumber(value: 0)
+            let mask = try CoreMLInferenceSession.makeCausalMask(
+                sequenceLength: 1,
+                startPosition: startPosition,
+                contextLimit: 8
+            )
+            XCTAssertEqual(mask.shape.map(\.intValue), [1, 1, 1, startPosition + 1])
+            for column in 0...startPosition {
+                XCTAssertEqual(
+                    mask[[0, 0, 0, NSNumber(value: column)]].floatValue,
+                    0,
+                    "Past and current positions must remain visible"
+                )
+            }
             return try MLDictionaryFeatureProvider(dictionary: [
                 "inputIds": MLFeatureValue(multiArray: ids),
                 "causalMask": MLFeatureValue(multiArray: mask)
             ])
         }
 
-        _ = try await model.prediction(from: features(token: 2), using: directStateA)
+        // Interleave two independent states while advancing each sequence position.
+        // The real Core ML model must accept causalMask widths 1, 2, then 3.
+        _ = try await model.prediction(from: features(token: 2, startPosition: 0), using: directStateA)
         XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 2)
         XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 4)
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
         XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
-        _ = try await model.prediction(from: features(token: 9), using: directStateB)
-        _ = try await model.prediction(from: features(token: 5), using: directStateA)
-        _ = try await model.prediction(from: features(token: 2), using: directStateB)
-        XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 7)
-        XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 14)
-        XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 11)
-        XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 22)
+        _ = try await model.prediction(from: features(token: 9, startPosition: 0), using: directStateB)
+        _ = try await model.prediction(from: features(token: 5, startPosition: 1), using: directStateA)
+        _ = try await model.prediction(from: features(token: 2, startPosition: 1), using: directStateB)
+        _ = try await model.prediction(from: features(token: 3, startPosition: 2), using: directStateA)
+        _ = try await model.prediction(from: features(token: 4, startPosition: 2), using: directStateB)
+        XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 10)
+        XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 20)
+        XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 15)
+        XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 30)
 
         // Exercise the production actor-owned session with two real K/V MLState instances.
         let session = CoreMLInferenceSession(
@@ -248,12 +263,16 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         let stateB = try await session.makeState()
         let aFirst = try await session.predictStep(inputIds: [2], startPosition: 0, stateID: stateA)
         let bFirst = try await session.predictStep(inputIds: [9], startPosition: 0, stateID: stateB)
-        let aSecond = try await session.predictStep(inputIds: [5], startPosition: 0, stateID: stateA)
-        let bSecond = try await session.predictStep(inputIds: [2], startPosition: 0, stateID: stateB)
+        let aSecond = try await session.predictStep(inputIds: [5], startPosition: 1, stateID: stateA)
+        let bSecond = try await session.predictStep(inputIds: [2], startPosition: 1, stateID: stateB)
+        let aThird = try await session.predictStep(inputIds: [3], startPosition: 2, stateID: stateA)
+        let bThird = try await session.predictStep(inputIds: [4], startPosition: 2, stateID: stateB)
         XCTAssertEqual(aFirst, [2])
         XCTAssertEqual(bFirst, [9])
         XCTAssertEqual(aSecond, [7])
         XCTAssertEqual(bSecond, [11])
+        XCTAssertEqual(aThird, [10])
+        XCTAssertEqual(bThird, [15])
         let bothStatesActive = await session.activeStateCount()
         XCTAssertEqual(bothStatesActive, 2)
 

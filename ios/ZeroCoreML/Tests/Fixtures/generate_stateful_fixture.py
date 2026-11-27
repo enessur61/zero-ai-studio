@@ -15,7 +15,15 @@ def build_model():
         opset_version=ct.target.iOS18,
         input_specs=[
             mb.TensorSpec(shape=(1, 1), dtype=types.int32),
-            mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16),
+            mb.TensorSpec(
+                shape=(
+                    1,
+                    1,
+                    1,
+                    ct.RangeDim(lower_bound=1, upper_bound=4096, default=1).symbol,
+                ),
+                dtype=types.fp16,
+            ),
             mb.StateTensorSpec(shape=(1,), dtype=types.fp16),
             mb.StateTensorSpec(shape=(1,), dtype=types.fp16),
         ],
@@ -38,7 +46,8 @@ def build_model():
         mb.coreml_update_state(state=v_cache, value=updated_v)
         return mb.reshape(x=updated_k, shape=[1, 1], name="logits")
 
-    # This fixture intentionally keeps the small MIL graph unchanged.
+    # The final causal-mask dimension is flexible (1...4096) so XCTest can
+    # pass the growing attention window from successive decode positions.
     # Core ML Tools 8.3.0's default canonicalize_inplace_pattern pass crashes
     # when canonicalizing the two independent state updates in this model.
     return ct.convert(
