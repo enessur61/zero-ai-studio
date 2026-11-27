@@ -127,7 +127,7 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         let fixtureURL = URL(fileURLWithPath: fixturePath, isDirectory: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixtureURL.path))
 
-        let compiledURL = try MLModel.compileModel(at: fixtureURL)
+        let compiledURL = try await MLModel.compileModel(at: fixtureURL)
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuOnly
         let model = try MLModel(contentsOf: compiledURL, configuration: configuration)
@@ -155,15 +155,15 @@ final class CoreMLInferenceSessionTests: XCTestCase {
             ])
         }
 
-        _ = try model.prediction(from: features(token: 2), using: directStateA)
+        _ = try await model.prediction(from: features(token: 2), using: directStateA)
         XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 2)
         XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 4)
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 0)
         XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 0)
 
-        _ = try model.prediction(from: features(token: 9), using: directStateB)
-        _ = try model.prediction(from: features(token: 5), using: directStateA)
-        _ = try model.prediction(from: features(token: 2), using: directStateB)
+        _ = try await model.prediction(from: features(token: 9), using: directStateB)
+        _ = try await model.prediction(from: features(token: 5), using: directStateA)
+        _ = try await model.prediction(from: features(token: 2), using: directStateB)
         XCTAssertEqual(cacheValue(directStateA, name: "k_cache"), 7)
         XCTAssertEqual(cacheValue(directStateA, name: "v_cache"), 14)
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 11)
