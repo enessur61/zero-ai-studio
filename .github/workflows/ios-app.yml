@@ -81,7 +81,12 @@ jobs:
           test -d "$APP_PATH"
           APP_URL="$(/usr/libexec/PlistBuddy -c 'Print :ZERO_APP_URL' "$APP_PATH/Info.plist")"
           [[ "$APP_URL" == "https://zero-ai-studio.onrender.com" ]]
-          printf 'Verified ZERO_APP_URL in app bundle.\\n'
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")"
+          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")"
+          EXPECTED_APP_VERSION="$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' package.json)"
+          [[ -n "$EXPECTED_APP_VERSION" && "$APP_VERSION" == "$EXPECTED_APP_VERSION" ]]
+          [[ "$APP_BUILD" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]
+          printf 'Verified ZERO_APP_URL and app version %s (%s).\\n' "$APP_VERSION" "$APP_BUILD"
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
