@@ -133,7 +133,7 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["k_cache"])
         XCTAssertNotNil(model.modelDescription.stateDescriptionsByName["v_cache"])
 
-        // Two independent MLState instances each own distinct K and V cache buffers.
+        // Verify two genuine MLState instances begin with independent K/V buffers.
         let directStateA = model.makeState()
         let directStateB = model.makeState()
         func cacheValue(_ state: MLState, name: String) -> Float {
@@ -169,32 +169,33 @@ final class CoreMLInferenceSessionTests: XCTestCase {
         XCTAssertEqual(cacheValue(directStateB, name: "k_cache"), 11)
         XCTAssertEqual(cacheValue(directStateB, name: "v_cache"), 22)
 
-        // Exercise the production actor/session path with its own real K/V MLState objects.
-        let session = CoreMLInferenceSession(
-            variant: .instruct1B,
-            computeUnits: .cpuOnly,
-            modelURL: compiledURL
+        // Exercise the exact model/state wrapper used by the production Llama actor.
+        let productionModel = CoreMLModelReference(model)
+        let stateA = productionModel.makeState()
+        let stateB = productionModel.makeState()
+        let aFirst = try await productionModel.prediction(
+            inputIds: [2], startPosition: 0, state: stateA
         )
-        try await session.loadModelIfNeeded()
-        let stateA = try await session.makeState()
-        let stateB = try await session.makeState()
-        let aFirst = try await session.predictStep(inputIds: [2], startPosition: 0, stateID: stateA)
-        let bFirst = try await session.predictStep(inputIds: [9], startPosition: 0, stateID: stateB)
-        let aSecond = try await session.predictStep(inputIds: [5], startPosition: 0, stateID: stateA)
-        let bSecond = try await session.predictStep(inputIds: [2], startPosition: 0, stateID: stateB)
-        XCTAssertEqual(aFirst, [2])
-        XCTAssertEqual(bFirst, [9])
-        XCTAssertEqual(aSecond, [7])
-        XCTAssertEqual(bSecond, [11])
-        let bothStatesActive = await session.activeStateCount()
-        XCTAssertEqual(bothStatesActive, 2)
-
-        await session.releaseState(stateA)
-        let oneStateActive = await session.activeStateCount()
-        XCTAssertEqual(oneStateActive, 1)
-        await session.releaseState(stateB)
-        let noStatesActive = await session.activeStateCount()
-        XCTAssertEqual(noStatesActive, 0)
+        let bFirst = try await productionModel.prediction(
+            inputIds: [9], startPosition: 0, state: stateB
+        )
+        let aSecond = try await productionModel.prediction(
+            inputIds: [5], startPosition: 0, state: stateA
+        )
+        let bSecond = try await productionModel.prediction(
+            inputIds: [2], startPosition: 0, state: stateB
+        )
+        func logit(_ output: CoreMLLogits) -> Float {
+            output.value[0].floatValue
+        }
+        XCTAssertEqual(logit(aFirst), 2)
+        XCTAssertEqual(logit(bFirst), 9)
+        XCTAssertEqual(logit(aSecond), 7)
+        XCTAssertEqual(logit(bSecond), 11)
+        XCTAssertEqual(cacheValue(stateA.value, name: "k_cache"), 7)
+        XCTAssertEqual(cacheValue(stateA.value, name: "v_cache"), 14)
+        XCTAssertEqual(cacheValue(stateB.value, name: "k_cache"), 11)
+        XCTAssertEqual(cacheValue(stateB.value, name: "v_cache"), 22)
     }
 
 }

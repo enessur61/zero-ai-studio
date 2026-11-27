@@ -40,17 +40,17 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
 // declare Swift Sendable conformance. The wrapper keeps them behind a narrow async API:
 // each generation owns a distinct MLState, while CoreML's MLModel supports concurrent
 // predictions when callers do not share mutable state.
-private final class CoreMLStateReference: @unchecked Sendable {
-    fileprivate let value: MLState
+final class CoreMLStateReference: @unchecked Sendable {
+    let value: MLState
     init(_ value: MLState) { self.value = value }
 }
 
-private final class CoreMLLogits: @unchecked Sendable {
-    fileprivate let value: MLMultiArray
+final class CoreMLLogits: @unchecked Sendable {
+    let value: MLMultiArray
     init(_ value: MLMultiArray) { self.value = value }
 }
 
-private final class CoreMLModelReference: @unchecked Sendable {
+final class CoreMLModelReference: @unchecked Sendable {
     private let model: MLModel
     init(_ model: MLModel) { self.model = model }
 
