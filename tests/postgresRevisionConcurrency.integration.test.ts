@@ -22,6 +22,7 @@ import { createPostgresAuthStore } from '../server/postgresAuthStore.ts';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError } from '../server/projectVideoStore.ts';
 import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
 import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
+import { ZERO_SCHEMA_MIGRATIONS, getZeroSchemaMigrationChecksum } from '../server/schemaMigrations.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
@@ -69,6 +70,23 @@ try {
     CREATE INDEX "${schema}".zero_project_video_assets_project_idx_legacy
     ON "${schema}".zero_project_video_assets (principal_hash, project_id, created_at DESC)
   `);
+  // Simulate an installation where migration 3 is already recorded and the
+  // equivalent index exists under a legacy name. This keeps migration 3 from
+  // creating its canonical index before migration 4 can inspect the catalog.
+  const migration3 = ZERO_SCHEMA_MIGRATIONS.find((migration) => migration.version === 3);
+  assert.ok(migration3);
+  await adminPool.query(`
+    CREATE TABLE "${schema}".zero_schema_migrations (
+      version INTEGER PRIMARY KEY CHECK (version > 0),
+      name TEXT NOT NULL,
+      checksum CHAR(64) NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await adminPool.query(
+    `INSERT INTO "${schema}".zero_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)`,
+    [migration3.version, migration3.name, getZeroSchemaMigrationChecksum(migration3)],
+  );
   const storeA = createPostgresStateStore(poolA);
   const storeB = createPostgresStateStore(poolB);
 
