@@ -876,6 +876,8 @@ jobs:
                   condition: service_healthy
               environment:
                 DATABASE_URL: postgresql://zero:zero-ci-password@zero-db:5432/zero_ci
+                ZERO_ADMIN_PASSWORD: zero-ci-password-123
+                ZERO_SESSION_SECRET: zero-ci-session-secret-012345678901234567890123456789
             zero-db:
               image: postgres:16.16
               environment:
@@ -939,6 +941,7 @@ jobs:
             exit 1
           fi
           compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
+          compose exec --no-TTY zero-app node -e "const u=new URL(process.env.DATABASE_URL); console.log('Production smoke auth configured:', (process.env.ZERO_ADMIN_PASSWORD||'').length >= 12 && (process.env.ZERO_SESSION_SECRET||'').length >= 32, 'PostgreSQL host:', u.hostname)"
           LIVE_STATUS=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
           echo "Compose /api/live HTTP status: $LIVE_STATUS"
           test "$LIVE_STATUS" = 200
