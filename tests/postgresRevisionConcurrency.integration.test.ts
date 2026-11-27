@@ -651,13 +651,21 @@ try {
   // Wan GPU jobs hold their concurrency reservation until the durable worker
   // reaches a terminal state. The mapping must survive instance changes and retries.
   await ensureWanJobReservationSchemaWithPool(poolA);
-  const wanReservation = await reserveZeroResourceWithPool(poolA, {
+  const wanInput = {
     principalId: 'admin:primary',
-    resourceId: 'wan-video',
+    resourceId: 'wan-video' as const,
     idempotencyKey: `wan-job-link-${randomUUID()}`,
     units: 1,
     requestFingerprint: createHash('sha256').update('wan-job-request').digest('hex'),
-  });
+  };
+  const [wanReservation, wanRetryReservation] = await Promise.all([
+    reserveZeroResourceWithPool(poolA, wanInput),
+    reserveZeroResourceWithPool(poolB, wanInput),
+  ]);
+  assert.equal(wanRetryReservation.reservationId, wanReservation.reservationId,
+    'Wan retries across instances must share one durable reservation');
+  assert.equal([wanReservation, wanRetryReservation].filter((entry) => !entry.duplicate).length, 1,
+    'exactly one concurrent Wan request creates the reservation');
   const workerJobId = randomUUID();
   await linkWanJobReservationWithPool(poolA, {
     workerJobId, reservationId: wanReservation.reservationId, principalId: 'admin:primary',
