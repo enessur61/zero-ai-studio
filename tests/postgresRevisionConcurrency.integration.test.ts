@@ -1277,10 +1277,12 @@ try {
     orphanedBlobIds: [],
     missingBlobIds: [],
   });
-  assert.equal(
-    reconciliationSql[0],
-    'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
-    'reconciliation must start a stable read-only transaction'
+  const snapshotBeginIndex = reconciliationSql.indexOf('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const stateReadIndex = reconciliationSql.findIndex((sql) => sql.includes('FROM zero_app_state'));
+  const blobReadIndex = reconciliationSql.findIndex((sql) => sql.includes('FROM zero_backup_files'));
+  assert.ok(
+    snapshotBeginIndex >= 0 && snapshotBeginIndex < stateReadIndex && stateReadIndex < blobReadIndex,
+    'reconciliation must read metadata and blobs inside one stable read-only transaction'
   );
   assert.ok(reconciliationSql.includes('COMMIT'));
   assert.equal(reconciliationClientReleased, true, 'reconciliation must always release its checked-out client');
