@@ -2214,7 +2214,9 @@ try {
 
   // The successful restore-race fixture above left its safety ZIP blob behind;
   // this next fixture replaces the metadata state, so remove that test-only blob first.
-  await poolB.query("DELETE FROM zero_backup_files WHERE id = 'verified-restore-safety'");
+  await poolB.query(
+    "DELETE FROM zero_backup_files WHERE id IN ('verified-restore-safety', 'valid-video-zip-safety', 'video-restore-revision-conflict-safety')"
+  );
 
   // The exact production ZIP-backup service is run against this isolated schema.
   // Its build and verification use the production ZIP builder/verifier; its save
