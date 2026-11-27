@@ -34,3 +34,14 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         SWIFT_STRICT_CONCURRENCY: complete
         INFOPLIST_KEY_ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
+        ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
+    postBuildScripts:
+      - name: Embed ZERO_APP_URL in the app bundle
+        script: |
+          set -eu
+          test -n "$ZERO_APP_URL"
+          if /usr/libexec/PlistBuddy -c "Print :ZERO_APP_URL" "$INFOPLIST_PATH" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :ZERO_APP_URL $ZERO_APP_URL" "$INFOPLIST_PATH"
+          else
+            /usr/libexec/PlistBuddy -c "Add :ZERO_APP_URL string $ZERO_APP_URL" "$INFOPLIST_PATH"
+          fi
