@@ -186,12 +186,12 @@ jobs:
           const authInfo = await authStatus.json();
           if (!authInfo.required || !authInfo.configured || authInfo.authenticated) throw new Error('Production auth status is incorrect');
           const badLogin = await fetch(base + '/api/auth/login', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
+            method: 'POST', headers: { 'content-type': 'application/json', origin: base },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
-          if (badLogin.status !== 401) throw new Error('Invalid password was not rejected');
+          if (badLogin.status !== 401) throw new Error('Invalid password was not rejected: HTTP ' + badLogin.status + ' ' + await badLogin.text());
           const login = await fetch(base + '/api/auth/login', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
+            method: 'POST', headers: { 'content-type': 'application/json', origin: base },
             body: JSON.stringify({ password: 'zero-ci-password-123' })
           });
           if (!login.ok) throw new Error('Production login failed');
