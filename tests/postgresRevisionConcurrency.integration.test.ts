@@ -694,6 +694,10 @@ try {
   assert.equal(await getZeroResourceReservationWithPool(poolA, {
     principalId: 'admin:primary', reservationId: wanReservation.reservationId,
   }).then((value) => value?.status), 'completed');
+  const completedWanRetry = await reserveZeroResourceWithPool(poolB, wanInput);
+  assert.equal(completedWanRetry.duplicate, true);
+  assert.equal(completedWanRetry.status, 'completed',
+    'a completed Wan idempotency key must remain terminal and must never admit a new worker job');
   assert.equal(await settleWanJobReservationWithPool(poolA, {
     workerJobId, principalId: 'admin:primary', outcome: 'completed',
   }), false, 'terminal job settlement is idempotent');
