@@ -11,6 +11,7 @@ public enum CoreMLAdapterError: Error, LocalizedError, Sendable {
     case insufficientDeviceMemory(requiredGB: Double, availableGB: Double)
     case invalidInputTensor(String)
     case missingOutputLogits
+    case modelContractUnverified(String, String)
 
     public var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ public enum CoreMLAdapterError: Error, LocalizedError, Sendable {
             return "Ungültiger CoreML Input-Tensor: \(detail)"
         case .missingOutputLogits:
             return "CoreML-Modell hat keine 'logits' Ausgabe zurückgegeben."
+        case .modelContractUnverified(let variant, let reason):
+            return "CoreML-Modellvertrag für \(variant) ist nicht freigegeben: \(reason)"
         }
     }
 }
