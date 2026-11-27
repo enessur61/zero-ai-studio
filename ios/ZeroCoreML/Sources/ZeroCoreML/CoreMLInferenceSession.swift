@@ -8,21 +8,31 @@ actor CoreMLInferenceSession {
     private let variant: Llama32Variant
     private let computeUnits: MLComputeUnits
     private let modelURL: URL?
+    private let permitsSyntheticFixture: Bool
     private var model: MLModel?
     private var states: [UUID: MLState] = [:]
 
     init(
         variant: Llama32Variant,
         computeUnits: MLComputeUnits,
-        modelURL: URL? = nil
+        modelURL: URL? = nil,
+        permitsSyntheticFixture: Bool = false
     ) {
         self.variant = variant
         self.computeUnits = computeUnits
         self.modelURL = modelURL
+        self.permitsSyntheticFixture = permitsSyntheticFixture
     }
 
     func loadModelIfNeeded() throws {
         guard model == nil else { return }
+        // The tiny accumulator fixture is deliberately opt-in and test-only.
+        // Real Llama packages remain blocked until their own artifact-bound
+        // tensor contract has been extracted and reviewed.
+        if !permitsSyntheticFixture {
+            try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
+        }
+
         let resolvedURL: URL?
         if let modelURL {
             resolvedURL = modelURL
@@ -67,27 +77,21 @@ actor CoreMLInferenceSession {
         guard let model, let state = states[stateID] else {
             throw CoreMLAdapterError.invalidInputTensor("Unbekannter oder freigegebener KV-Cache-State.")
         }
-        guard !inputIds.isEmpty, startPosition >= 0 else {
-            throw CoreMLAdapterError.invalidInputTensor("Leere Tokenfolge oder negative Cache-Position.")
+        guard !inputIds.isEmpty else {
+            throw CoreMLAdapterError.invalidInputTensor("Leere Tokenfolge.")
         }
 
-        let sequenceLength = inputIds.count
-        let idsArray = try MLMultiArray(shape: [1, NSNumber(value: sequenceLength)], dataType: .int32)
+        let maskArray = try Self.makeCausalMask(
+            sequenceLength: inputIds.count,
+            startPosition: startPosition,
+            contextLimit: variant.contextLength
+        )
+        let idsArray = try MLMultiArray(
+            shape: [1, NSNumber(value: inputIds.count)],
+            dataType: .int32
+        )
         for (index, token) in inputIds.enumerated() {
             idsArray[[0, NSNumber(value: index)]] = NSNumber(value: token)
-        }
-
-        let totalColumns = startPosition + sequenceLength
-        let maskArray = try MLMultiArray(
-            shape: [1, 1, NSNumber(value: sequenceLength), NSNumber(value: totalColumns)],
-            dataType: .float16
-        )
-        for row in 0..<sequenceLength {
-            for column in 0..<totalColumns {
-                let allowed = column <= startPosition + row
-                maskArray[[0, 0, NSNumber(value: row), NSNumber(value: column)]] =
-                    NSNumber(value: allowed ? 0.0 : -65504.0)
-            }
         }
 
         let provider = try MLDictionaryFeatureProvider(dictionary: [
@@ -101,8 +105,37 @@ actor CoreMLInferenceSession {
         guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
             throw CoreMLAdapterError.missingOutputLogits
         }
-
         return Self.copyLogits(logits)
+    }
+
+    /// Current 4-D additive mask builder. This layout and fp16 convention are
+    /// validated only against the synthetic fixture, not a production Llama artifact.
+    static func makeCausalMask(
+        sequenceLength: Int,
+        startPosition: Int,
+        contextLimit: Int
+    ) throws -> MLMultiArray {
+        let (totalColumns, overflow) = startPosition.addingReportingOverflow(sequenceLength)
+        guard sequenceLength > 0,
+              startPosition >= 0,
+              contextLimit > 0,
+              !overflow,
+              totalColumns <= contextLimit else {
+            throw CoreMLAdapterError.invalidInputTensor("Sequenzfenster überschreitet das konfigurierte Kontextlimit.")
+        }
+
+        let mask = try MLMultiArray(
+            shape: [1, 1, NSNumber(value: sequenceLength), NSNumber(value: totalColumns)],
+            dataType: .float16
+        )
+        for row in 0..<sequenceLength {
+            for column in 0..<totalColumns {
+                let allowed = column <= startPosition + row
+                mask[[0, 0, NSNumber(value: row), NSNumber(value: column)]] =
+                    NSNumber(value: allowed ? 0.0 : -65504.0)
+            }
+        }
+        return mask
     }
 
     static func copyLogits(_ logits: MLMultiArray) -> [Float] {
