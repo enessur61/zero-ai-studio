@@ -2219,8 +2219,8 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const rawIdempotencyKey = req.get('Idempotency-Key')?.trim() ?? '';
-  if (!rawIdempotencyKey || rawIdempotencyKey.length > 256) {
-    return res.status(400).json({ error: 'Für Wan-Aufträge ist ein stabiler Idempotency-Key erforderlich.' });
+  if (!/^[A-Za-z0-9._:-]{8,200}$/.test(rawIdempotencyKey)) {
+    return res.status(400).json({ error: 'Für Wan-Aufträge ist ein gültiger Idempotency-Key mit 8 bis 200 sicheren Zeichen erforderlich.' });
   }
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
   const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
@@ -2344,6 +2344,13 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     });
     if (loaded.kind === 'unavailable') return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
     if (loaded.kind !== 'ok') return res.status(502).json({ error: 'Gespeicherte Wan-Aufträge enthalten ungültige Daten.' });
+    const principalId = getZeroPrincipal(res.locals)?.id;
+    if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    await Promise.all(loaded.jobs
+      .filter((job) => ['cancelled', 'succeeded', 'failed'].includes(job.status))
+      .map((job) => settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: job.id, principalId,
+      })));
     return res.json({ jobs: loaded.jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
