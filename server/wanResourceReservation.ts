@@ -11,12 +11,13 @@ export async function ensureWanJobReservationSchemaWithPool(pool: Pool): Promise
     await client.query(`
       CREATE TABLE IF NOT EXISTS zero_wan_job_reservations (
         worker_job_id UUID PRIMARY KEY,
-        reservation_id TEXT NOT NULL UNIQUE,
+        reservation_id TEXT NOT NULL UNIQUE REFERENCES zero_resource_reservations(reservation_id) ON DELETE CASCADE,
         principal_id TEXT NOT NULL CHECK (length(btrim(principal_id)) BETWEEN 1 AND 128),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         settled_at TIMESTAMPTZ
       )
     `);
+    await client.query(`DELETE FROM zero_wan_job_reservations WHERE settled_at < NOW() - INTERVAL '30 days'`);
     await client.query('COMMIT');
     transactionOpen = false;
   } catch (error) {
