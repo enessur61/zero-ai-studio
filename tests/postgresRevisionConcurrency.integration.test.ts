@@ -23,6 +23,7 @@ import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProje
 import { sendProjectVideoStream } from '../server/projectVideoHttp.ts';
 import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts';
 import { ZERO_SCHEMA_MIGRATIONS, getZeroSchemaMigrationChecksum } from '../server/schemaMigrations.ts';
+import { ensureZeroResourceSchemaWithPool, reserveZeroResourceWithPool, settleZeroResourceReservationWithPool, getZeroResourceReservationWithPool } from '../server/zeroResourceGuard.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
 import {
   createPostgresStateStore,
@@ -530,6 +531,115 @@ try {
     loginKeyHash, new Date(loginNow.getTime() + 16 * 60 * 1000), 15 * 60 * 1000, 8
   );
   assert.equal(expiredWindow.attempts, 1, 'expired login windows must reset atomically across pools');
+
+  // Shared resource reservations are idempotent and transactional across
+  // independent instances. This fixture performs database-only operations.
+  await ensureZeroResourceSchemaWithPool(poolA);
+  const resourceKey = `resource-idempotency-${randomUUID()}`;
+  const resourceInput = {
+    principalId: 'admin:primary',
+    resourceId: 'piper-tts' as const,
+    idempotencyKey: resourceKey,
+    units: 12,
+    requestFingerprint: createHash('sha256').update('same-piper-request').digest('hex'),
+  };
+  const [resourceReservationA, resourceReservationB] = await Promise.all([
+    reserveZeroResourceWithPool(poolA, resourceInput),
+    reserveZeroResourceWithPool(poolB, resourceInput),
+  ]);
+  assert.equal(resourceReservationA.reservationId, resourceReservationB.reservationId,
+    'concurrent same-key requests across instances must resolve to one reservation');
+  assert.equal([resourceReservationA, resourceReservationB].filter((entry) => !entry.duplicate).length, 1,
+    'exactly one same-key request creates the reservation');
+  await assert.rejects(
+    () => reserveZeroResourceWithPool(poolB, {
+      ...resourceInput,
+      requestFingerprint: createHash('sha256').update('different-piper-request').digest('hex'),
+    }),
+    /Idempotenzschlüssel wurde bereits mit anderen Parametern verwendet/,
+    'an idempotency key must not be replayed with a different request fingerprint',
+  );
+  assert.equal(
+    await settleZeroResourceReservationWithPool(poolB, {
+      principalId: 'admin:primary', reservationId: resourceReservationA.reservationId, outcome: 'completed',
+    }),
+    true,
+    'a reservation can be completed from a second instance',
+  );
+  assert.equal(
+    await settleZeroResourceReservationWithPool(poolA, {
+      principalId: 'admin:primary', reservationId: resourceReservationA.reservationId, outcome: 'released',
+    }),
+    false,
+    'a completed reservation cannot be settled a second time',
+  );
+  const recoveredResourceReservation = await getZeroResourceReservationWithPool(poolB, {
+    principalId: 'admin:primary', reservationId: resourceReservationA.reservationId,
+  });
+  assert.equal(recoveredResourceReservation?.status, 'completed',
+    'reservation status must survive independent-pool reads');
+
+  // A database-side failure during reservation must roll back the reservation,
+  // daily usage and rate-window increment together; the same pool remains usable.
+  await poolA.query(`
+    CREATE FUNCTION reject_zero_resource_reservation() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected resource reservation failure' USING ERRCODE = 'P0001';
+    END;
+    $$;
+    CREATE TRIGGER reject_zero_resource_reservation
+    BEFORE INSERT ON zero_resource_reservations
+    FOR EACH ROW EXECUTE FUNCTION reject_zero_resource_reservation();
+  `);
+  const failedResourceKey = `resource-failure-${randomUUID()}`;
+  const resourceUsageBeforeFailure = await poolA.query<{ jobs_started: string; units_used: string }>(
+    `SELECT jobs_started::text, units_used::text FROM zero_resource_daily_usage
+     WHERE principal_id = 'admin:primary' AND resource_id = 'piper-tts'
+       AND day_utc = (NOW() AT TIME ZONE 'UTC')::date`,
+  );
+  const rateBeforeFailure = await poolA.query<{ request_count: number }>(
+    `SELECT request_count FROM zero_resource_rate_windows
+     WHERE principal_id = 'admin:primary' AND resource_id = 'piper-tts'
+       AND window_start = date_trunc('minute', NOW())`,
+  );
+  await assert.rejects(
+    () => reserveZeroResourceWithPool(poolA, { ...resourceInput, idempotencyKey: failedResourceKey }),
+    /Reservierung fehlgeschlagen/,
+    'a PostgreSQL trigger failure must fail the reservation closed',
+  );
+  await poolA.query('DROP TRIGGER reject_zero_resource_reservation ON zero_resource_reservations');
+  await poolA.query('DROP FUNCTION reject_zero_resource_reservation()');
+  const resourceUsageAfterFailure = await poolB.query<{ jobs_started: string; units_used: string }>(
+    `SELECT jobs_started::text, units_used::text FROM zero_resource_daily_usage
+     WHERE principal_id = 'admin:primary' AND resource_id = 'piper-tts'
+       AND day_utc = (NOW() AT TIME ZONE 'UTC')::date`,
+  );
+  const rateAfterFailure = await poolB.query<{ request_count: number }>(
+    `SELECT request_count FROM zero_resource_rate_windows
+     WHERE principal_id = 'admin:primary' AND resource_id = 'piper-tts'
+       AND window_start = date_trunc('minute', NOW())`,
+  );
+  assert.deepEqual(resourceUsageAfterFailure.rows, resourceUsageBeforeFailure.rows,
+    'failed reservation must not consume daily job or unit budget');
+  assert.deepEqual(rateAfterFailure.rows, rateBeforeFailure.rows,
+    'failed reservation must not consume the minute rate limit');
+  const afterResourceRollback = await reserveZeroResourceWithPool(poolB, {
+    ...resourceInput, idempotencyKey: failedResourceKey,
+  });
+  assert.equal(afterResourceRollback.duplicate, false,
+    'a rolled-back idempotency key must remain available for a later successful request');
+  await settleZeroResourceReservationWithPool(poolA, {
+    principalId: 'admin:primary', reservationId: afterResourceRollback.reservationId, outcome: 'released',
+  });
+
+  // Simulated pool failures must fail closed without provider execution.
+  const unavailablePool = { connect: async () => { throw new Error('injected unavailable PostgreSQL'); } } as unknown as Pool;
+  await assert.rejects(
+    () => reserveZeroResourceWithPool(unavailablePool, { ...resourceInput, idempotencyKey: `db-down-${randomUUID()}` }),
+    /PostgreSQL nicht verfügbar/,
+    'resource reservation must remain blocked when PostgreSQL is unreachable',
+  );
 
   // The shared ZERO cost ledger is atomic across independent pools and survives
   // a fresh pool (process-restart simulation). No provider or network is called.
