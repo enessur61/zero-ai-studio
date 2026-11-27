@@ -37,35 +37,57 @@ export function createPostgresStateStore(database: Pool) {
   async function ensureSchema(): Promise<void> {
     if (!schemaReady) {
       schemaReady = (async () => {
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_app_state (
-            id TEXT PRIMARY KEY CHECK (id = 'primary'),
-            payload JSONB NOT NULL,
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-        // Backward-compatible migration for databases created before revisions.
-        await database.query(`
-          ALTER TABLE zero_app_state
-          ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1
-        `);
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_backup_files (
-            id TEXT PRIMARY KEY,
-            filename TEXT NOT NULL,
-            content_type TEXT NOT NULL,
-            payload BYTEA NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_backup_auto_state (
-            id TEXT PRIMARY KEY CHECK (id = 'zip-auto'),
-            last_success_at TIMESTAMPTZ
-          )
-        `);
-        // Project-video schema is owned by the versioned migration chain.
+        const client = await database.connect();
+        let transactionOpen = false;
+        let destroyClient = false;
+        try {
+          await client.query('BEGIN');
+          transactionOpen = true;
+          // Serialize first-use DDL across independent production instances.
+          await client.query('SELECT pg_advisory_xact_lock(1514480207, 73)');
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_app_state (
+              id TEXT PRIMARY KEY CHECK (id = 'primary'),
+              payload JSONB NOT NULL,
+              revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          // Backward-compatible migration for databases created before revisions.
+          await client.query(`
+            ALTER TABLE zero_app_state
+            ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1
+          `);
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_backup_files (
+              id TEXT PRIMARY KEY,
+              filename TEXT NOT NULL,
+              content_type TEXT NOT NULL,
+              payload BYTEA NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_backup_auto_state (
+              id TEXT PRIMARY KEY CHECK (id = 'zip-auto'),
+              last_success_at TIMESTAMPTZ
+            )
+          `);
+          // Project-video schema is owned by the versioned migration chain.
+          await client.query('COMMIT');
+          transactionOpen = false;
+        } catch (error) {
+          if (transactionOpen) {
+            try {
+              await client.query('ROLLBACK');
+            } catch {
+              destroyClient = true;
+            }
+          }
+          throw error;
+        } finally {
+          client.release(destroyClient);
+        }
       })().catch((error) => {
         schemaReady = null;
         throw error;
