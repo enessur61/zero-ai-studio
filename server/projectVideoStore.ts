@@ -106,28 +106,6 @@ function toAsset(row: ProjectVideoRow): ProjectVideoAsset {
   };
 }
 
-async function ensureSchema(database: Pool): Promise<void> {
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS zero_project_video_assets (
-      asset_id UUID PRIMARY KEY,
-      project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 128),
-      scene_id TEXT NOT NULL CHECK (length(scene_id) BETWEEN 1 AND 128),
-      principal_hash CHAR(64) NOT NULL CHECK (principal_hash ~ '^[a-f0-9]{64}$'),
-      job_id UUID,
-      content_type TEXT NOT NULL CHECK (content_type IN ('video/mp4', 'video/webm')),
-      size_bytes BIGINT NOT NULL CHECK (size_bytes BETWEEN 1024 AND ${MAX_PROJECT_VIDEO_BYTES}),
-      sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
-      payload BYTEA NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (principal_hash, job_id)
-    )
-  `);
-  await database.query(`
-    CREATE INDEX IF NOT EXISTS zero_project_video_assets_project_idx
-    ON zero_project_video_assets (principal_hash, project_id, created_at DESC)
-  `);
-}
-
 export interface ProjectVideoStoreLimits {
   maxProjectVideoBytes?: number;
   maxProjectStorageBytes?: number;
@@ -151,14 +129,6 @@ export function createProjectVideoAssetStore(
     !Number.isSafeInteger(limits.maxProjectVideoCount) || limits.maxProjectVideoCount < 1 ||
     limits.maxProjectVideoCount > MAX_PROJECT_VIDEO_COUNT
   ) throw new Error('Invalid project video storage limits.');
-  let schemaReady: Promise<void> | null = null;
-  const ready = async () => {
-    if (!schemaReady) schemaReady = ensureSchema(database).catch((error) => {
-      schemaReady = null;
-      throw error;
-    });
-    await schemaReady;
-  };
 
   async function put(input: {
     projectId: string;
@@ -177,7 +147,6 @@ export function createProjectVideoAssetStore(
     if (!isValidProjectVideoPayload(input.payload, input.contentType) || input.payload.length > limits.maxProjectVideoBytes) {
       throw new Error('Invalid or oversized project video payload.');
     }
-    await ready();
     const client = await database.connect();
     let inTransaction = false;
     try {
@@ -261,7 +230,6 @@ export function createProjectVideoAssetStore(
   }
 
   async function list(projectId: string, principalHash: string): Promise<ProjectVideoAsset[]> {
-    await ready();
     const result = await database.query<ProjectVideoRow>(
       `SELECT * FROM zero_project_video_assets
        WHERE project_id = $1 AND principal_hash = $2
@@ -277,7 +245,6 @@ export function createProjectVideoAssetStore(
     if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 0 || maxTotalBytes > 128 * 1024 * 1024) {
       throw new Error('Invalid project video backup size limit.');
     }
-    await ready();
     const client = await database.connect();
     let inTransaction = false;
     try {
@@ -322,7 +289,6 @@ export function createProjectVideoAssetStore(
     query: string,
     values: unknown[],
   ): Promise<(ProjectVideoAsset & { payload: Buffer }) | null> {
-    await ready();
     const client = await database.connect();
     let inTransaction = false;
     try {
@@ -360,7 +326,6 @@ export function createProjectVideoAssetStore(
   }
 
   async function remove(assetId: string, projectId: string, principalHash: string): Promise<boolean> {
-    await ready();
     const client = await database.connect();
     let inTransaction = false;
     try {
@@ -388,7 +353,6 @@ export function createProjectVideoAssetStore(
   async function removeProject(projectId: string, principalHash: string): Promise<number> {
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw new Error('Invalid project identifier.');
-    await ready();
     const client = await database.connect();
     let inTransaction = false;
     try {
@@ -420,7 +384,6 @@ export function createProjectVideoAssetStore(
     principalHash: string,
   ): Promise<(ProjectVideoAsset & { chunksForRange: (start?: number, end?: number) => AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
     if (!/^[a-f0-9]{64}$/.test(principalHash)) throw new Error('Authenticated principal is required.');
-    await ready();
     const releaseAdmission = await acquireProjectVideoStreamSlot(database);
     let client: PoolClient | null = null;
     let inTransaction = false;
@@ -482,7 +445,6 @@ export function createProjectVideoAssetStore(
     sceneId: string,
     principalHash: string,
   ): Promise<(ProjectVideoAsset & { chunksForRange: (start?: number, end?: number) => AsyncIterable<Buffer>; close: () => Promise<void> }) | null> {
-    await ready();
     const lookup = await database.query<{ asset_id: string }>(
       `SELECT asset_id FROM zero_project_video_assets
        WHERE project_id = $1 AND scene_id = $2 AND principal_hash = $3
