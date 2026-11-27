@@ -351,7 +351,9 @@ def create_job(
     if not idempotency_key_hash or len(idempotency_key_hash) != 64 or any(c not in "0123456789abcdef" for c in idempotency_key_hash.lower()):
         raise HTTPException(status_code=400, detail="A hashed idempotency key is required")
     try:
-        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
+        # The durable job store is needed for replay. Model-cache persistence is
+        # required only for a new inference, not for returning an accepted job.
+        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -385,6 +387,10 @@ def create_job(
             return JSONResponse(status_code=200, content={"job": public_job(existing), "replayed": True})
 
         require_cost_gate()
+        try:
+            require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if not torch.cuda.is_available():
             raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
         if not has_sufficient_gpu_memory(gpu_vram_total_mb()):
