@@ -4,13 +4,20 @@ import {
   scrypt as scryptCallback,
   timingSafeEqual,
 } from 'node:crypto';
-import { promisify } from 'node:util';
 import type { Pool } from 'pg';
 
-const scrypt = promisify(scryptCallback);
 const ADMIN_ID = 'admin:primary';
 const PASSWORD_BYTES = 64;
 const PASSWORD_SALT_BYTES = 16;
+
+function derivePasswordHash(password: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCallback(password, salt, PASSWORD_BYTES, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey);
+    });
+  });
+}
 
 export type ZeroAccountRole = 'admin' | 'user';
 export interface ZeroUserPrincipal {
@@ -48,7 +55,7 @@ async function hashPassword(password: string): Promise<{ salt: Buffer; hash: Buf
     throw new Error('Das Passwort muss zwischen 12 und 1024 Zeichen lang sein.');
   }
   const salt = randomBytes(PASSWORD_SALT_BYTES);
-  const hash = Buffer.from(await scrypt(password, salt, PASSWORD_BYTES));
+  const hash = await derivePasswordHash(password, salt);
   return { salt, hash };
 }
 
