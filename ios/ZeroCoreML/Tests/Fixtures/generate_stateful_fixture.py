@@ -11,6 +11,8 @@ from coremltools.converters.mil.mil import types
 
 
 def build_model():
+    mask_width = ct.RangeDim(lower_bound=1, upper_bound=4096, default=1)
+
     @mb.program(
         opset_version=ct.target.iOS18,
         input_specs=[
@@ -20,7 +22,7 @@ def build_model():
                     1,
                     1,
                     1,
-                    ct.RangeDim(lower_bound=1, upper_bound=4096, default=1).symbol,
+                    mask_width.symbol,
                 ),
                 dtype=types.fp16,
             ),
@@ -50,11 +52,38 @@ def build_model():
     # pass the growing attention window from successive decode positions.
     # Core ML Tools 8.3.0's default canonicalize_inplace_pattern pass crashes
     # when canonicalizing the two independent state updates in this model.
-    return ct.convert(
+    model = ct.convert(
         stateful_kv_cache,
+        inputs=[
+            ct.TensorType(name="inputIds", shape=(1, 1), dtype=types.int32),
+            ct.TensorType(
+                name="causalMask",
+                shape=(1, 1, 1, mask_width),
+                dtype=types.fp16,
+            ),
+        ],
         minimum_deployment_target=ct.target.iOS18,
         pass_pipeline=ct.PassPipeline.EMPTY,
     )
+
+    # MIL symbolic dimensions alone are not sufficient: assert that the exported
+    # Core ML feature contract retained the requested runtime range.
+    mask_feature = next(
+        (feature for feature in model.get_spec().description.input if feature.name == "causalMask"),
+        None,
+    )
+    if mask_feature is None:
+        raise RuntimeError("Core ML model is missing its causalMask input.")
+    mask_ranges = mask_feature.type.multiArrayType.shapeRange.sizeRanges
+    if len(mask_ranges) != 4:
+        raise RuntimeError(f"Unexpected causalMask rank/range metadata: {len(mask_ranges)}")
+    final_range = mask_ranges[3]
+    if final_range.lowerBound != 1 or final_range.upperBound != 4096:
+        raise RuntimeError(
+            "Core ML causalMask width range was not preserved: "
+            f"{final_range.lowerBound}...{final_range.upperBound}"
+        )
+    return model
 
 
 def main() -> None:
