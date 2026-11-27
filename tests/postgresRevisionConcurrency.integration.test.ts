@@ -718,6 +718,12 @@ try {
   await settleZeroResourceReservationWithPool(poolA, {
     principalId: 'admin:primary', reservationId: conflictingWanReservation.reservationId, outcome: 'released',
   });
+  // The next assertions exercise a separate worker lifecycle. Reset only the
+  // minute bucket so this scenario does not inherit the two reservations used
+  // above; daily usage and all reservation history remain intact.
+  await poolA.query(
+    "DELETE FROM zero_resource_rate_windows WHERE principal_id = 'admin:primary' AND resource_id = 'wan-video'"
+  );
   const failedWanReservation = await reserveZeroResourceWithPool(poolA, {
     principalId: 'admin:primary', resourceId: 'wan-video',
     idempotencyKey: `wan-job-failed-${randomUUID()}`, units: 1,
