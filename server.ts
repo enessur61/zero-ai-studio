@@ -2371,6 +2371,11 @@ app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
     if (payload.id !== id || !['cancelled', 'cancel_requested', 'succeeded', 'failed'].includes(String(payload.status))) {
       return res.status(502).json({ error: 'Ungültige Abbruchbestätigung vom Wan-Worker.' });
     }
+    if (['cancelled', 'succeeded', 'failed'].includes(String(payload.status))) {
+      const principalId = getZeroPrincipal(res.locals)?.id;
+      if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+      await settleWanJobReservationWithPool(getPostgresPool(), { workerJobId: id, principalId });
+    }
     const statusCode = payload.status === 'cancel_requested' ? 202 : 200;
     return res.status(statusCode).json({
       job: {
@@ -2405,6 +2410,11 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
     const job = normalizeWanJobStatus(payload, id);
     if (!job) return res.status(502).json({ error: 'Wan-Worker hat einen ungültigen Jobstatus zurückgegeben.' });
+    if (['cancelled', 'succeeded', 'failed'].includes(job.status)) {
+      const principalId = getZeroPrincipal(res.locals)?.id;
+      if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+      await settleWanJobReservationWithPool(getPostgresPool(), { workerJobId: id, principalId });
+    }
     return res.json({ job, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
