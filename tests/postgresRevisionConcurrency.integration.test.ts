@@ -196,7 +196,7 @@ try {
     );
     await assert.rejects(
       () => ensureZeroCostResourceSchema(invalidPool),
-      /ZERO-Ressourcenschema konnte nicht sicher initialisiert werden/;
+      /ZERO-Ressourcenschema konnte nicht sicher initialisiert werden/,
     );
     const migrationTable = await invalidPool.query<{ migration_table: string | null }>(
       "SELECT to_regclass('zero_schema_migrations')::text AS migration_table"
