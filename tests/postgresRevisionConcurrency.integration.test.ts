@@ -25,6 +25,7 @@ import { ensureZeroCostResourceSchema } from '../server/zeroCostResourceGuard.ts
 import { ZERO_SCHEMA_MIGRATIONS, getZeroSchemaMigrationChecksum } from '../server/schemaMigrations.ts';
 import { ensureZeroResourceSchemaWithPool, reserveZeroResourceWithPool, settleZeroResourceReservationWithPool, getZeroResourceReservationWithPool } from '../server/zeroResourceGuard.ts';
 import { getZeroCostGuardStatus, reserveZeroCostProviderRequestWithPool, setZeroCostGuardPaused } from '../server/zeroCostGuard.ts';
+import { ensureWanJobReservationSchemaWithPool, linkWanJobReservationWithPool, settleWanJobReservationWithPool } from '../server/wanResourceReservation.ts';
 import {
   createPostgresStateStore,
   PersistentStateConflictError,
@@ -646,6 +647,51 @@ try {
   });
   assert.equal(recoveredResourceReservation?.status, 'completed',
     'reservation status must survive independent-pool reads');
+
+  // Wan GPU jobs hold their concurrency reservation until the durable worker
+  // reaches a terminal state. The mapping must survive instance changes and retries.
+  await ensureWanJobReservationSchemaWithPool(poolA);
+  const wanReservation = await reserveZeroResourceWithPool(poolA, {
+    principalId: 'admin:primary',
+    resourceId: 'wan-video',
+    idempotencyKey: `wan-job-link-${randomUUID()}`,
+    units: 1,
+    requestFingerprint: createHash('sha256').update('wan-job-request').digest('hex'),
+  });
+  const workerJobId = randomUUID();
+  await linkWanJobReservationWithPool(poolA, {
+    workerJobId, reservationId: wanReservation.reservationId, principalId: 'admin:primary',
+  });
+  await linkWanJobReservationWithPool(poolB, {
+    workerJobId, reservationId: wanReservation.reservationId, principalId: 'admin:primary',
+  });
+  const conflictingWanReservation = await reserveZeroResourceWithPool(poolA, {
+    principalId: 'admin:primary',
+    resourceId: 'wan-video',
+    idempotencyKey: `wan-job-conflict-${randomUUID()}`,
+    units: 1,
+    requestFingerprint: createHash('sha256').update('other-wan-request').digest('hex'),
+  });
+  await assert.rejects(
+    () => linkWanJobReservationWithPool(poolB, {
+      workerJobId, reservationId: conflictingWanReservation.reservationId, principalId: 'admin:primary',
+    }),
+    /already linked to a different resource reservation/,
+    'a worker job must never be rebound to a different resource reservation',
+  );
+  assert.equal(await getZeroResourceReservationWithPool(poolA, {
+    principalId: 'admin:primary', reservationId: wanReservation.reservationId,
+  }).then((value) => value?.status), 'reserved',
+  'Wan reservation remains active while its worker job is queued or running');
+  assert.equal(await settleWanJobReservationWithPool(poolB, {
+    workerJobId, principalId: 'admin:primary',
+  }), true, 'terminal job settlement releases the active slot from another instance');
+  assert.equal(await getZeroResourceReservationWithPool(poolA, {
+    principalId: 'admin:primary', reservationId: wanReservation.reservationId,
+  }).then((value) => value?.status), 'completed');
+  assert.equal(await settleWanJobReservationWithPool(poolA, {
+    workerJobId, principalId: 'admin:primary',
+  }), false, 'terminal job settlement is idempotent');
 
   // A database-side failure during reservation must roll back the reservation,
   // daily usage and rate-window increment together; the same pool remains usable.
