@@ -190,6 +190,19 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
           RAISE EXCEPTION 'Migration 4: unexpected created_at default: %', created_at_default;
         END IF;
 
+        IF EXISTS (
+          SELECT 1
+          FROM pg_attrdef d
+          JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+          WHERE d.adrelid = target_table
+            AND a.attname IN (
+              'asset_id', 'project_id', 'scene_id', 'principal_hash',
+              'job_id', 'content_type', 'size_bytes', 'sha256', 'payload'
+            )
+        ) THEN
+          RAISE EXCEPTION 'Migration 4: unexpected default on a non-created_at column';
+        END IF;
+
         SELECT max(a.attnum) FILTER (WHERE a.attname = 'asset_id'),
                max(a.attnum) FILTER (WHERE a.attname = 'principal_hash'),
                max(a.attnum) FILTER (WHERE a.attname = 'job_id')
