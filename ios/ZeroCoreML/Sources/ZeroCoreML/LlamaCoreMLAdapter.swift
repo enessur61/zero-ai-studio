@@ -36,7 +36,7 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
     public let estimatedRamGB: Double
 }
 
-/// Main-actor facade. Non-Sendable Core ML objects are owned exclusively by
+/// Actor facade. Non-Sendable Core ML objects are owned exclusively by
 /// CoreMLInferenceSession and never escape that actor.
 public actor LlamaCoreMLAdapter {
     private let config: LlamaCoreMLConfig
