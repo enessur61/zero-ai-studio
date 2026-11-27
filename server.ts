@@ -185,7 +185,7 @@ async function hasValidSession(req: express.Request): Promise<boolean> {
   const tokenParts = token.split('.');
   if (tokenParts.length !== 3) return false;
   const [expiresAt, nonce, signature] = tokenParts;
-  if (!/^\\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now() ||
+  if (!/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now() ||
       !/^[a-f0-9]{48}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(signature)) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
