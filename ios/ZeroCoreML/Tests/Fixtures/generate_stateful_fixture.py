@@ -17,17 +17,17 @@ from coremltools.converters.mil.mil import types
 def build_model():
     @mb.program(
         input_specs=[
-            mb.TensorSpec(shape=(1, 1), dtype=types.int32, name="inputIds"),
-            mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16, name="causalMask"),
-            mb.StateTensorSpec(shape=(1,), dtype=types.fp32, name="accumulator"),
+            mb.TensorSpec(shape=(1, 1), dtype=types.int32),
+            mb.TensorSpec(shape=(1, 1, 1, 1), dtype=types.fp16),
+            mb.StateTensorSpec(shape=(1,), dtype=types.fp32),
         ]
     )
-    def stateful_accumulator(input_ids, causal_mask, accumulator):
+    def stateful_accumulator(inputIds, causalMask, accumulator):
         previous = mb.read_state(input=accumulator)
-        token_values = mb.cast(x=input_ids, dtype=types.fp32)
+        token_values = mb.cast(x=inputIds, dtype=types.fp32)
         token_sum = mb.reduce_sum(x=token_values, axes=[0, 1])
         mask_sum = mb.cast(
-            x=mb.reduce_sum(x=causal_mask, axes=[0, 1, 2, 3]),
+            x=mb.reduce_sum(x=causalMask, axes=[0, 1, 2, 3]),
             dtype=types.fp32,
         )
         increment = mb.add(x=token_sum, y=mask_sum)
