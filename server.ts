@@ -2349,8 +2349,9 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       principalId,
     });
     if (['cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
-      await settleZeroResourceReservation({
-        principalId, reservationId: reservation.reservationId,
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: job.id,
+        principalId,
         outcome: job.status === 'succeeded' ? 'completed' : 'released',
       });
     }
