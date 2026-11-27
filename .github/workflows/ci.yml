@@ -275,7 +275,9 @@ jobs:
           const crossInstanceLogout = await fetch(baseB + '/api/auth/logout', {
             method: 'POST', headers: { cookie: crossInstanceCookie, origin: baseB }
           });
-          if (!crossInstanceLogout.ok) throw new Error('Logout on instance B failed');
+          if (!crossInstanceLogout.ok) {
+            throw new Error('Logout on instance B failed: HTTP ' + crossInstanceLogout.status + ' ' + await crossInstanceLogout.text());
+          }
           const revokedOnA = await fetch(base + '/api/projects', { headers: { cookie: crossInstanceCookie } });
           if (revokedOnA.status !== 401) throw new Error('Logout on instance B did not revoke the session on instance A');
           const securityHeaders = await fetch(base + '/api/health');
@@ -738,7 +740,9 @@ jobs:
             method: 'POST',
             headers: { origin: base }
           });
-          if (!logout.ok) throw new Error('Logout failed');
+          if (!logout.ok) {
+            throw new Error('Logout failed: HTTP ' + logout.status + ' ' + await logout.text());
+          }
           const clearedCookie = logout.headers.get('set-cookie') ?? '';
           if (!clearedCookie.includes('Max-Age=0')) throw new Error('Logout did not clear the session cookie');
           const afterLogout = await fetch(base + '/api/projects', { headers: { cookie } });
