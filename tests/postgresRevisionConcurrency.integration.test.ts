@@ -2829,7 +2829,7 @@ try {
   const failingAcquireClient = {
     query: async (sql: string) => {
       if (sql.includes('pg_try_advisory_lock')) return { rows: [{ locked: true }] };
-      if (sql.includes('last_success_at')) throw new Error('injected lease-state query failure');
+      if (sql.includes("SELECT last_success_at FROM zero_backup_auto_state")) throw new Error('injected lease-state query failure');
       if (sql.includes('pg_advisory_unlock')) throw new Error('injected compensating unlock failure');
       return { rows: [] };
     },
