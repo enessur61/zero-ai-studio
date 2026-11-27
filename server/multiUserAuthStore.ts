@@ -12,7 +12,7 @@ const PASSWORD_SALT_BYTES = 16;
 
 function derivePasswordHash(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    scryptCallback(password, salt, PASSWORD_BYTES, (error, derivedKey) => {
+    scryptCallback(password, salt, PASSWORD_BYTES, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, derivedKey) => {
       if (error) reject(error);
       else resolve(derivedKey);
     });
