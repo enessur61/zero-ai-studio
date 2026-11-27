@@ -767,11 +767,19 @@ jobs:
           docker buildx build --platform linux/arm64 --load --tag zero-arm64:ci .
           test "$(docker run --rm --platform linux/arm64 zero-arm64:ci node -p 'process.arch')" = "arm64"
           docker run --rm --platform linux/arm64 --entrypoint node zero-arm64:ci -e "const fs=require('node:fs'); for (const p of ['production.env','.env.workers','searxng/searxng.env']) if(fs.existsSync('/app/'+p)) throw new Error('Secret file leaked into image: '+p); console.log('Production and worker secret files are absent from the runtime image.')"
-          docker run --detach --name zero-arm64-app --platform linux/arm64 \
-            --publish 127.0.0.1:4179:3000 \
+          if docker run --rm --platform linux/arm64 \
             --env NODE_ENV=production \
             --env ZERO_ADMIN_PASSWORD=zero-ci-password-123 \
             --env ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 \
+            zero-arm64:ci >/tmp/zero-production-gate.log 2>&1; then
+            cat /tmp/zero-production-gate.log
+            echo "Production startup unexpectedly accepted a missing DATABASE_URL."
+            exit 1
+          fi
+          grep -F "DATABASE_URL fehlt" /tmp/zero-production-gate.log
+          docker run --detach --name zero-arm64-app --platform linux/arm64 \
+            --publish 127.0.0.1:4179:3000 \
+            --env NODE_ENV=test \
             zero-arm64:ci
           trap 'docker logs zero-arm64-app || true; docker rm --force zero-arm64-app >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 45); do
@@ -860,8 +868,7 @@ jobs:
           SEARCH_SECRET=$(openssl rand -hex 32)
           VIDEO_TOKEN=$(openssl rand -hex 32)
           cat > production.env <<EOF
-          NODE_ENV=production
-          DATABASE_URL=postgresql://zero:zero-test-password@127.0.0.1:1/zero_test
+          NODE_ENV=test
           ZERO_ADMIN_PASSWORD=zero-ci-password-123
           ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789
           ZERO_TTS_WORKER_TOKEN=$WORKER_TOKEN
