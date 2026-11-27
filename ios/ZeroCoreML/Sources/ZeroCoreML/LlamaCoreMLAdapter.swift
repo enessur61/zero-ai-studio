@@ -1,5 +1,5 @@
 import Foundation
-@preconcurrency import CoreML
+import CoreML
 
 public protocol LlamaTokenizer: Sendable {
     func encode(_ text: String) -> [Int32]
@@ -36,73 +36,20 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
     public let estimatedRamGB: Double
 }
 
-// CoreML model/state objects are Objective-C runtime references and do not currently
-// declare Swift Sendable conformance. The wrapper keeps them behind a narrow async API:
-// each generation owns a distinct MLState, while CoreML's MLModel supports concurrent
-// predictions when callers do not share mutable state.
-final class CoreMLStateReference: @unchecked Sendable {
-    let value: MLState
-    init(_ value: MLState) { self.value = value }
-}
-
-final class CoreMLLogits: @unchecked Sendable {
-    let value: MLMultiArray
-    init(_ value: MLMultiArray) { self.value = value }
-}
-
-final class CoreMLModelReference: @unchecked Sendable {
-    private let model: MLModel
-    init(_ model: MLModel) { self.model = model }
-
-    func makeState() -> CoreMLStateReference {
-        CoreMLStateReference(model.makeState())
-    }
-
-    func prediction(
-        inputIds: [Int32],
-        startPosition: Int,
-        state: CoreMLStateReference
-    ) async throws -> CoreMLLogits {
-        let seqLen = inputIds.count
-        let idsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .int32)
-        for (idx, token) in inputIds.enumerated() {
-            idsArray[[0, NSNumber(value: idx)]] = NSNumber(value: token)
-        }
-
-        let maskArray = try MLMultiArray(
-            shape: [1, 1, NSNumber(value: seqLen), NSNumber(value: startPosition + seqLen)],
-            dataType: .float16
-        )
-        for row in 0..<seqLen {
-            for col in 0..<(startPosition + seqLen) {
-                let allowed = col <= (startPosition + row)
-                maskArray[[0, 0, NSNumber(value: row), NSNumber(value: col)]] =
-                    NSNumber(value: allowed ? 0.0 : -65504.0)
-            }
-        }
-
-        let provider = try MLDictionaryFeatureProvider(dictionary: [
-            "inputIds": MLFeatureValue(multiArray: idsArray),
-            "causalMask": MLFeatureValue(multiArray: maskArray)
-        ])
-        let output = try await model.prediction(from: provider, using: state.value)
-        guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
-            throw CoreMLAdapterError.missingOutputLogits
-        }
-        return CoreMLLogits(logits)
-    }
-}
-
-/// Lokaler CoreML-Adapter für Meta Llama 3.2 (1B / 3B Instruct, 4-bit quantisiert)
-/// Optimiert für Apple A18 Pro Neural Engine auf iPhone 16 Pro Max (8 GB Unified Memory).
+/// Actor facade. Non-Sendable Core ML objects are owned exclusively by
+/// CoreMLInferenceSession and never escape that actor.
 public actor LlamaCoreMLAdapter {
     private let config: LlamaCoreMLConfig
     private let tokenizer: LlamaTokenizer?
-    private var model: CoreMLModelReference?
+    private let inferenceSession: CoreMLInferenceSession
 
     public init(config: LlamaCoreMLConfig = .init(), tokenizer: LlamaTokenizer? = nil) {
         self.config = config
         self.tokenizer = tokenizer
+        self.inferenceSession = CoreMLInferenceSession(
+            variant: config.variant,
+            computeUnits: config.computeUnits
+        )
     }
 
     public static func locateCompiledModelURL(
@@ -139,8 +86,6 @@ public actor LlamaCoreMLAdapter {
     }
 
     public func loadModelIfNeeded() async throws {
-        if model != nil { return }
-
         let totalRamGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
         if totalRamGB > 0 && totalRamGB < config.variant.estimatedPeakRAMGB {
             throw CoreMLAdapterError.insufficientDeviceMemory(
@@ -148,28 +93,20 @@ public actor LlamaCoreMLAdapter {
                 availableGB: totalRamGB
             )
         }
-
-        guard let modelURL = Self.locateCompiledModelURL(for: config.variant) else {
-            throw CoreMLAdapterError.modelBundleMissing(config.variant.bundleModelFilename)
-        }
-
-        let mlConfig = config.makeMLModelConfiguration()
-        self.model = CoreMLModelReference(try await MLModel.load(contentsOf: modelURL, configuration: mlConfig))
+        try await inferenceSession.loadModelIfNeeded()
     }
 
-    public func unloadModel() {
-        self.model = nil
+    public func unloadModel() async {
+        await inferenceSession.unloadModel()
     }
 
-    /// Führt autoregressives Next-Token-Sampling mit CoreML MLState KV-Cache aus.
+    /// Autoregressive next-token sampling. Model and KV-cache state remain actor-owned.
     public func generate(
         prompt: String,
         onToken: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         try await loadModelIfNeeded()
-        guard let loadedModel = model else {
-            throw CoreMLAdapterError.modelBundleMissing(config.variant.bundleModelFilename)
-        }
+        try Task.checkCancellation()
         guard let tokenizer else {
             throw CoreMLAdapterError.invalidInputTensor("Tokenizer-Implementierung nicht initialisiert.")
         }
@@ -179,108 +116,100 @@ public actor LlamaCoreMLAdapter {
         if promptTokens.count > config.variant.contextLength - 64 {
             promptTokens = Array(promptTokens.suffix(config.variant.contextLength - 64))
         }
-
-        let kvState = loadedModel.makeState()
-        var generatedIds: [Int32] = []
-
-        // 1. Prefill-Phase über alle Prompt-Tokens
-        var nextLogits = try await predictStep(
-            model: loadedModel,
-            inputIds: promptTokens,
-            startPosition: 0,
-            state: kvState
-        )
-
-        // 2. Autoregressive Decode-Schleife
-        var cursor = promptTokens.count
-        for _ in 0..<config.maxNewTokens {
-            try Task.checkCancellation()
-            let nextId = sampleTopP(logits: nextLogits, temperature: config.temperature, topP: config.topP)
-            if config.variant.eosTokenIds.contains(nextId) {
-                break
-            }
-            generatedIds.append(nextId)
-            let piece = tokenizer.decode([nextId])
-            onToken?(piece)
-
-            if cursor >= config.variant.contextLength - 1 {
-                break
-            }
-            nextLogits = try await predictStep(
-                model: loadedModel,
-                inputIds: [nextId],
-                startPosition: cursor,
-                state: kvState
-            )
-            cursor += 1
+        guard !promptTokens.isEmpty else {
+            throw CoreMLAdapterError.invalidInputTensor("Tokenizer lieferte keine Prompt-Tokens.")
         }
 
-        return tokenizer.decode(generatedIds).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stateID = try await inferenceSession.makeState()
+        do {
+            var generatedIds: [Int32] = []
+            try await inferenceSession.cancellationCheckpoint()
+            var nextLogits = try await inferenceSession.predictStep(
+                inputIds: promptTokens,
+                startPosition: 0,
+                stateID: stateID
+            )
+
+            var cursor = promptTokens.count
+            for _ in 0..<config.maxNewTokens {
+                try await inferenceSession.cancellationCheckpoint()
+                let nextID = sampleTopP(
+                    logits: nextLogits,
+                    temperature: config.temperature,
+                    topP: config.topP
+                )
+                if config.variant.eosTokenIds.contains(nextID) { break }
+
+                generatedIds.append(nextID)
+                onToken?(tokenizer.decode([nextID]))
+                if cursor >= config.variant.contextLength - 1 { break }
+
+                try await inferenceSession.cancellationCheckpoint()
+                nextLogits = try await inferenceSession.predictStep(
+                    inputIds: [nextID],
+                    startPosition: cursor,
+                    stateID: stateID
+                )
+                cursor += 1
+            }
+
+            await inferenceSession.releaseState(stateID)
+            return tokenizer.decode(generatedIds).trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            await inferenceSession.releaseState(stateID)
+            throw error
+        }
     }
 
-    private func predictStep(
-        model: CoreMLModelReference,
-        inputIds: [Int32],
-        startPosition: Int,
-        state: CoreMLStateReference
-    ) async throws -> CoreMLLogits {
-        try await model.prediction(inputIds: inputIds, startPosition: startPosition, state: state)
-    }
-
-    private func sampleTopP(logits: CoreMLLogits, temperature: Float, topP: Float) -> Int32 {
-        let logits = logits.value
-        let vocabCount = config.variant.vocabSize
-        let count = min(vocabCount, logits.count)
-        let offset = max(0, logits.count - vocabCount)
+    private func sampleTopP(logits: [Float], temperature: Float, topP: Float) -> Int32 {
+        let count = min(config.variant.vocabSize, logits.count)
+        let offset = max(0, logits.count - config.variant.vocabSize)
+        guard count > 0 else { return 0 }
 
         if temperature <= 0.05 {
-            var bestIdx = 0
-            var bestVal: Float = -.greatestFiniteMagnitude
-            for i in 0..<count {
-                let v = logits[offset + i].floatValue
-                if v > bestVal {
-                    bestVal = v
-                    bestIdx = i
+            var bestIndex = 0
+            var bestValue: Float = -.greatestFiniteMagnitude
+            for index in 0..<count {
+                let value = logits[offset + index]
+                if value > bestValue {
+                    bestValue = value
+                    bestIndex = index
                 }
             }
-            return Int32(bestIdx)
+            return Int32(bestIndex)
         }
 
-        var scaled = [(index: Int, prob: Float)]()
-        scaled.reserveCapacity(count)
+        var candidates: [(index: Int, weight: Float)] = []
+        candidates.reserveCapacity(count)
         var maxLogit: Float = -.greatestFiniteMagnitude
-        for i in 0..<count {
-            let v = logits[offset + i].floatValue / temperature
-            if v > maxLogit { maxLogit = v }
+        for index in 0..<count {
+            maxLogit = max(maxLogit, logits[offset + index] / temperature)
         }
 
         var sumExp: Float = 0
-        for i in 0..<count {
-            let v = logits[offset + i].floatValue / temperature
-            let e = expf(v - maxLogit)
-            sumExp += e
-            scaled.append((i, e))
+        for index in 0..<count {
+            let weight = expf(logits[offset + index] / temperature - maxLogit)
+            sumExp += weight
+            candidates.append((index, weight))
         }
+        candidates.sort { $0.weight > $1.weight }
 
-        scaled.sort { $0.prob > $1.prob }
         var cumulative: Float = 0
         var cutoff = 0
-        for (idx, item) in scaled.enumerated() {
-            cumulative += item.prob / max(sumExp, 1e-6)
-            cutoff = idx + 1
+        for (index, candidate) in candidates.enumerated() {
+            cumulative += candidate.weight / max(sumExp, 1e-6)
+            cutoff = index + 1
             if cumulative >= topP { break }
         }
 
-        let candidates = scaled.prefix(max(1, cutoff))
-        let totalMass = candidates.reduce(Float(0)) { $0 + $1.prob }
-        let r = Float.random(in: 0..<max(totalMass, 1e-6))
-        var acc: Float = 0
-        for item in candidates {
-            acc += item.prob
-            if acc >= r {
-                return Int32(item.index)
-            }
+        let nucleus = candidates.prefix(max(1, cutoff))
+        let totalMass = nucleus.reduce(Float(0)) { $0 + $1.weight }
+        let randomValue = Float.random(in: 0..<max(totalMass, 1e-6))
+        var accumulated: Float = 0
+        for candidate in nucleus {
+            accumulated += candidate.weight
+            if accumulated >= randomValue { return Int32(candidate.index) }
         }
-        return Int32(candidates.first?.index ?? 0)
+        return Int32(nucleus.first?.index ?? 0)
     }
 }
