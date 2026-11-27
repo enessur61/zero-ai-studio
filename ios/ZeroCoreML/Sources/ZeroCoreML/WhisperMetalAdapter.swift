@@ -76,11 +76,12 @@ public struct WhisperDeploymentDiagnostics: Codable, Sendable {
     public let runtime: String
     public let deviceModel: String
     public let weightsPresent: Bool
+    public let runtimeLinked: Bool
     public let estimatedRamGB: Double
 }
 
-/// Native iOS whisper.cpp (small.q5_1 Metal + CoreML Encoder) Adapter für iPhone 16 Pro Max.
-public final class WhisperMetalAdapter: @unchecked Sendable {
+/// Whisper audio preparation and guarded bridge adapter. No concrete whisper.cpp runtime is bundled or linked by this package.
+public final class WhisperMetalAdapter: Sendable {
     public let modelId = "whisper-cpp-small"
     public let weightsFilename = "ggml-small.q5_1.bin"
     public let estimatedRamGB = 0.50
@@ -112,18 +113,39 @@ public final class WhisperMetalAdapter: @unchecked Sendable {
 
     public func deploymentDiagnostics() -> WhisperDeploymentDiagnostics {
         let url = Self.locateModelURL(filename: weightsFilename)
+        let runtimeLinked = bridge != nil
+        let weightsPresent = url != nil
+        let status = runtimeLinked && weightsPresent
+            ? "RUNTIME_UND_MODELLGEWICHTE_VORHANDEN"
+            : (!runtimeLinked ? "WHISPER_CPP_RUNTIME_NICHT_VERLINKT" : "WHISPER_MODELLGEWICHTE_FEHLEN")
         return WhisperDeploymentDiagnostics(
             modelId: modelId,
-            status: "NATIVE APP INTEGRATION ERFORDERLICH",
-            runtime: "whisper.cpp Metal GPU + CoreML ANE Encoder (16 kHz PCM -> SRT)",
-            deviceModel: "iPhone 16 Pro Max (A18 Pro · ~0,2x Echtzeit)",
-            weightsPresent: url != nil,
+            status: status,
+            runtime: runtimeLinked
+                ? "whisper.cpp Bridge injiziert; Metal/CoreML-Inferenz separat zu verifizieren"
+                : "Keine konkrete whisper.cpp XCFramework-/C-Bridge-Implementierung verlinkt",
+            deviceModel: "Gerätemodell und Echtzeitfaktor nicht verifiziert",
+            weightsPresent: weightsPresent,
+            runtimeLinked: runtimeLinked,
             estimatedRamGB: estimatedRamGB
         )
     }
 
     public func loadAudioAs16kMonoFloat(audioURL: URL) throws -> [Float] {
-        let file = try AVAudioFile(forReading: audioURL)
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: audioURL)
+        } catch {
+            throw WhisperAdapterError.invalidAudioFormat(
+                "Audiodatei kann nicht geöffnet werden: \(error.localizedDescription)"
+            )
+        }
+        guard file.length > 0 else {
+            throw WhisperAdapterError.invalidAudioFormat("Audiodatei enthält keine Audio-Frames.")
+        }
+        guard file.length <= Int64(UInt32.max) else {
+            throw WhisperAdapterError.invalidAudioFormat("Audiodatei ist für einen einzelnen PCM-Puffer zu groß.")
+        }
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 16_000,
@@ -136,8 +158,16 @@ public final class WhisperMetalAdapter: @unchecked Sendable {
             throw WhisperAdapterError.invalidAudioFormat("AVAudioConverter fehlgeschlagen.")
         }
 
-        let ratio = 16_000.0 / file.processingFormat.sampleRate
-        let outFrameCapacity = AVAudioFrameCount(Double(file.length) * ratio) + 1024
+        let sourceSampleRate = file.processingFormat.sampleRate
+        guard sourceSampleRate.isFinite, sourceSampleRate > 0 else {
+            throw WhisperAdapterError.invalidAudioFormat("Ungültige Abtastrate der Audiodatei.")
+        }
+        let ratio = 16_000.0 / sourceSampleRate
+        let outputCapacity = Double(file.length) * ratio + 1024
+        guard outputCapacity.isFinite, outputCapacity > 0, outputCapacity <= Double(UInt32.max) else {
+            throw WhisperAdapterError.invalidAudioFormat("PCM-Ausgabepuffer überschreitet die unterstützte Größe.")
+        }
+        let outFrameCapacity = AVAudioFrameCount(outputCapacity)
         guard let inputBuf = AVAudioPCMBuffer(
             pcmFormat: file.processingFormat,
             frameCapacity: AVAudioFrameCount(file.length)
@@ -152,16 +182,26 @@ public final class WhisperMetalAdapter: @unchecked Sendable {
         try file.read(into: inputBuf)
         let inputState = AudioConverterInputState(buffer: inputBuf)
         var err: NSError?
-        converter.convert(to: outputBuf, error: &err) { _, outStatus in
+        let conversionStatus = converter.convert(to: outputBuf, error: &err) { _, outStatus in
             inputState.nextBuffer(status: outStatus)
         }
         if let err {
             throw WhisperAdapterError.invalidAudioFormat(err.localizedDescription)
         }
+        guard conversionStatus != .error else {
+            throw WhisperAdapterError.invalidAudioFormat("AVAudioConverter meldet einen Fehler ohne Detailmeldung.")
+        }
+        guard outputBuf.frameLength > 0 else {
+            throw WhisperAdapterError.invalidAudioFormat("Audio enthält keine verwertbaren PCM-Samples.")
+        }
         guard let ptr = outputBuf.floatChannelData?[0] else {
             throw WhisperAdapterError.invalidAudioFormat("Keine Float-Samples erhalten.")
         }
-        return Array(UnsafeBufferPointer(start: ptr, count: Int(outputBuf.frameLength)))
+        let samples = Array(UnsafeBufferPointer(start: ptr, count: Int(outputBuf.frameLength)))
+        guard samples.allSatisfy(\.isFinite) else {
+            throw WhisperAdapterError.invalidAudioFormat("Audio enthält ungültige Float-Samples.")
+        }
+        return samples
     }
 
     public func transcribe(

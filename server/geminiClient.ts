@@ -77,12 +77,12 @@ export function getGeminiClient(): GoogleGenAI {
       const resourceType = classifyGeminiResourceType(modelId, payload);
       const operationInput = {
         provider: 'google-gemini-free' as const, modelId, resourceType, studio: 'ZERO CORE', action: 'GEMINI_GENERATE',
-        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload),
+        payload: request, inputBytes: Buffer.byteLength(payload),
         inputChars: resourceType === 'text' ? payload.length : undefined,
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey() },
+          idempotencyKey: createZeroIdempotencyKey(`gemini.generateContent:${modelId}:${payload}`) },
         () => originalGenerateContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
@@ -96,11 +96,11 @@ export function getGeminiClient(): GoogleGenAI {
       const payload = JSON.stringify(request);
       const operationInput = {
         provider: 'google-gemini-free' as const, modelId, resourceType: 'text' as const, studio: 'ZERO MEMORY', action: 'GEMINI_EMBED',
-        payload: { model: modelId, contents: request.contents }, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
+        payload: request, inputBytes: Buffer.byteLength(payload), inputChars: payload.length,
       };
       const operationResult = await withZeroCostResourceOperation(
         { ...operationInput, principal: requireZeroPrincipal(),
-          idempotencyKey: createZeroIdempotencyKey() },
+          idempotencyKey: createZeroIdempotencyKey(`gemini.embedContent:${modelId}:${payload}`) },
         () => originalEmbedContent(request), process.env, undefined, undefined, classifyGeminiResourceError,
       );
       if (isZeroResourceOperationReplay(operationResult)) throw new ZeroResourceOperationReplayError(operationResult.operation);
@@ -412,7 +412,7 @@ export function formatGermanApiError(err: unknown): string {
     case 'rate-limited':
       return 'Free-Tier Anfrage-Limit vorübergehend erreicht (HTTP 429, Rate-Limit). Bitte kurz warten und erneut versuchen — kein dauerhaft ausgeschöpftes Kontingent, kein kostenpflichtiger Fallback.';
     case 'transient':
-      return 'KI-Provider vorübergehend mit einem Serverfehler (HTTP 5xx) nicht erreichbar. ZERO hat begrenzt erneut versucht; bitte später erneut versuchen. Kein kostenpflichtiger Fallback.';
+      return 'KI-Provider vorübergehend mit einem Serverfehler (HTTP 5xx) nicht erreichbar. ZERO wiederholt diesen Provider-Aufruf nicht automatisch, weil der erste Aufruf bereits verarbeitet oder berechnet worden sein kann. Bitte später erneut versuchen. Kein kostenpflichtiger Fallback.';
     case 'auth':
       if (raw.toLowerCase().includes('zero_gemini_free_tier_only')) {
         return 'Gemini gesperrt: ZERO_GEMINI_FREE_TIER_ONLY=true muss erst bestätigt werden, nachdem die Abrechnung im Google-Cloud-Projekt deaktiviert wurde. ZERO kann den externen Abrechnungsstatus nicht selbst verifizieren.';
@@ -425,27 +425,16 @@ export function formatGermanApiError(err: unknown): string {
   }
 }
 
-export async function withTransientRetry<T>(
+/**
+ * Execute a metered provider operation exactly once. A timeout/5xx response
+ * does not prove that the provider did not process or bill the request.
+ * Callers reserve budget before entering this function; automatic retries
+ * would therefore create unreserved duplicate provider requests.
+ */
+export function withSingleProviderAttempt<T>(
   operation: () => Promise<T>,
-  // Retries are disabled by default: provider requests must each reserve budget first.
-  // Callers may opt in only when they supply per-attempt budget reservations.
-  maxRetries = 0
 ): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await operation();
-    } catch (err) {
-      if (isQuotaOrRateLimitError(err)) {
-        throw err;
-      }
-      if (!isTransientServerError(err) || attempt >= maxRetries) {
-        throw err;
-      }
-      attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, 1400 * attempt));
-    }
-  }
+  return operation();
 }
 
 export { ThinkingLevel, Type };

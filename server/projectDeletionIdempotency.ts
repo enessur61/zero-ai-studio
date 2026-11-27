@@ -10,16 +10,38 @@ function hashIdempotencyKey(value: string): string {
 
 export async function ensureProjectDeletionIdempotencySchema(): Promise<void> {
   const pool = getPostgresPool();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS zero_project_deletion_idempotency (
-      project_id TEXT NOT NULL,
-      principal_id TEXT NOT NULL,
-      idempotency_key_hash CHAR(64) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '${TOMBSTONE_TTL_HOURS} hours'),
-      PRIMARY KEY (project_id, principal_id)
-    )
-  `);
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let destroyClient = false;
+  try {
+    await client.query('BEGIN');
+    transactionOpen = true;
+    // Serialize first-use DDL across production instances.
+    await client.query('SELECT pg_advisory_xact_lock(1514480207, 74)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS zero_project_deletion_idempotency (
+        project_id TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        idempotency_key_hash CHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '${TOMBSTONE_TTL_HOURS} hours'),
+        PRIMARY KEY (project_id, principal_id)
+      )
+    `);
+    await client.query('COMMIT');
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        destroyClient = true;
+      }
+    }
+    throw error;
+  } finally {
+    client.release(destroyClient);
+  }
 }
 
 export async function recordProjectDeletionIdempotency(

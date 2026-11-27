@@ -17,17 +17,19 @@ import { parseBase64DataUrl } from './server/mediaUtils.ts';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createProjectVideoAssetStore, ProjectVideoLimitError, ProjectVideoProjectNotFoundError, ProjectVideoStreamCapacityError, isValidProjectVideoPayload } from './server/projectVideoStore.ts';
 import path from 'node:path';
-import { checkPostgresConnection, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
+import { checkPostgresConnection, ensurePostgresSchema, getPostgresPool, PersistentStateConflictError, readPersistentState } from './server/persistence.ts';
 import { createPostgresAuthStore } from './server/postgresAuthStore.ts';
 import { getZeroCostGuardStatus, isSameOriginRequest, setZeroCostGuardPaused } from './server/zeroCostGuard.ts';
-import { getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
-import { ensureZeroResourceSchema, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
+import { ensureZeroCostResourceSchema, getZeroResourceOperationStatusWithPool, ZeroResourceOperationReplayError } from './server/zeroCostResourceGuard.ts';
+import { ensureZeroResourceSchema, ensureZeroResourceSchemaWithPool, reserveZeroResource, settleZeroResourceReservation, ZeroResourceIdempotencyError, ZeroResourceLimitError } from './server/zeroResourceGuard.ts';
 import { readinessForStage, type HealthReadinessStage } from './server/healthReadiness.ts';
-import { isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
+import { createWanWorkerStatusPayload, isWanGpuAllowed } from './server/wanWorkerReadiness.ts';
 import { isPiperWorkerAllowed } from './server/piperWorkerReadiness.ts';
 import { createApiAuthMiddleware } from './server/apiAuth.ts';
 import { ensureProjectDeletionIdempotencySchema, isProjectDeletionIdempotentRetry, recordProjectDeletionIdempotency } from './server/projectDeletionIdempotency.ts';
 import { isPiperWorkerHealthPayload } from './server/piperWorkerHealth.ts';
+import { postPiperWorkerTts } from './server/piperWorkerClient.ts';
+import { createPiperTtsHandler, type PiperCachedResult } from './server/piperTtsHandler.ts';
 import { createZeroIdempotencyKey, createZeroPrincipalHash, requireZeroPrincipal, runWithZeroPrincipal } from './server/zeroPrincipalContext.ts';
 import { ZERO_ADMIN_PRINCIPAL, createProjectOwnershipMiddleware, getZeroPrincipal, resolveOwnedProject } from './server/projectIdentity.ts';
 import { buildSrtFromTimedWords } from './server/srt.ts';
@@ -39,7 +41,7 @@ import {
   ThinkingLevel,
   Type,
   ZeroQuotaExhaustedError,
-  withTransientRetry,
+  withSingleProviderAttempt,
 } from './server/geminiClient.ts';
 import { runMemoryEmbedding } from './server/memoryEmbedding.ts';
 import {
@@ -73,6 +75,7 @@ import { chooseZeroChatModel, chooseZeroMediaModel } from './server/zeroRouter.t
 import { createContinuityRouter } from './src/routes/continuity.ts';
 import { isValidWanJobId, loadWanJobList, normalizeWanJobStatus } from './server/wanJobList.ts';
 import { streamWanVideoResponse } from './server/wanVideoStream.ts';
+import { ensureWanJobReservationSchemaWithPool, linkWanJobReservationWithPool, settleWanJobReservationWithPool } from './server/wanResourceReservation.ts';
 
 import { applyManualFreeQuotaReset } from './server/manualQuotaReset.ts';
 import {
@@ -100,8 +103,35 @@ function getProjectVideoAssetStore() {
   return projectVideoAssetStore;
 }
 
+async function getProjectVideoBackupFiles(): Promise<Record<string, Buffer>> {
+  if (!process.env.DATABASE_URL) return {};
+  const assets = await getProjectVideoAssetStore().listForBackup(createZeroPrincipalHash());
+  const manifest = assets.map(({ payload, ...asset }) => {
+    if (!/^[0-9a-f-]{36}$/i.test(asset.id) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(asset.projectId) ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(asset.sceneId) ||
+        createHash('sha256').update(payload).digest('hex') !== asset.sha256) {
+      throw new Error('Ein gespeicherter Projektclip ist beschädigt oder hat ungültige Metadaten. ZIP-Export wurde abgebrochen.');
+    }
+    return {
+      ...asset,
+      path: `media/project-videos/${asset.id}.${asset.contentType === 'video/mp4' ? 'mp4' : 'webm'}`,
+    };
+  });
+  const files: Record<string, Buffer> = {
+    'data/project-video-manifest.json': Buffer.from(JSON.stringify({ version: 1, assets: manifest }, null, 2), 'utf8'),
+  };
+  for (let index = 0; index < assets.length; index += 1) {
+    const asset = assets[index];
+    files[manifest[index].path] = asset.payload;
+  }
+  return files;
+}
+
 async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () => Promise<T>): Promise<T> {
   const client = await getPostgresPool().connect();
+  let transactionOpen = true;
+  let destroyClient = false;
   try {
     await client.query('BEGIN');
     await client.query(
@@ -110,12 +140,20 @@ async function withZeroProjectLifecycleLock<T>(projectId: string, callback: () =
     );
     const result = await callback();
     await client.query('COMMIT');
+    transactionOpen = false;
     return result;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    if (transactionOpen) {
+      try {
+        await client.query('ROLLBACK');
+        transactionOpen = false;
+      } catch {
+        destroyClient = true;
+      }
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(destroyClient);
   }
 }
 
@@ -155,8 +193,11 @@ async function hasValidSession(req: express.Request): Promise<boolean> {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
   if (!token) return false;
-  const [expiresAt, nonce, signature] = token.split('.');
-  if (!expiresAt || !nonce || !signature || !/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now()) return false;
+  const tokenParts = token.split('.');
+  if (tokenParts.length !== 3) return false;
+  const [expiresAt, nonce, signature] = tokenParts;
+  if (!/^\d+$/.test(expiresAt) || Number(expiresAt) <= Date.now() ||
+      !/^[a-f0-9]{48}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(signature)) return false;
   const expected = createHmac('sha256', ZERO_SESSION_SECRET).update(expiresAt + '.' + nonce).digest('hex');
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
   return authStore().hasSession(tokenDigest(token));
@@ -318,7 +359,7 @@ app.post('/api/continuity/series/:seriesId/analyze-dramaturgy', asyncRoute(async
     await reserveZeroBudgetModelAllowed(route.modelId, 'STORY_SUPERVISOR_DRAMATURGY', db);
     try {
       const ai = getGeminiClient();
-      const response = await withTransientRetry(() => ai.models.generateContent({
+      const response = await withSingleProviderAttempt(() => ai.models.generateContent({
         model: route.modelId,
         contents: input.prompt,
         config: { systemInstruction: input.systemPrompt, responseMimeType: 'application/json', maxOutputTokens: 1800, temperature: 0.2 },
@@ -391,7 +432,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const cookieHeader = req.headers.cookie ?? '';
   const token = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(AUTH_COOKIE_NAME + '='))?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(decodeURIComponent(token)));
+  if (token && IS_PRODUCTION) await authStore().deleteSession(tokenDigest(token));
   const secure = IS_PRODUCTION ? '; Secure' : '';
   res.setHeader('Set-Cookie', AUTH_COOKIE_NAME + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure);
   res.json({ ok: true });
@@ -454,7 +495,13 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       maxVideoDurationSec: 60,
       readiness: readinessForStage(readinessStage),
     });
-  } catch {
+  } catch (error) {
+    const safeMessage = error instanceof Error
+      ? error.message
+          .replace(/postgres(?:ql)?:\/\/[^\s"'\x60]+/gi, 'postgres://[redacted]')
+          .replace(/(password\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]')
+      : 'Unknown readiness error';
+    console.error(`[ZERO HEALTH] Readiness failed at stage ${readinessStage}: ${safeMessage}`);
     return res.status(503).json({
       ok: false,
       app: 'ZERO AI STUDIO',
@@ -496,7 +543,7 @@ app.post('/api/system/gemini-connection-test', asyncRoute(async (_req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'GEMINI_CONNECTION_DIAGNOSTIC', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: 'Antworte ausschließlich mit: ZERO_CONNECTION_OK',
@@ -665,8 +712,10 @@ app.post('/api/system/restore', restoreHandlers.json);
 app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
+    const mediaFiles = await getProjectVideoBackupFiles();
     const result = await buildFullProjectZip(process.cwd(), {
       'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+      ...mediaFiles,
     });
     const verification = verifyZipBuffer(result.buffer);
     res.json({
@@ -685,8 +734,10 @@ app.get('/api/system/export-manifest', zipOperationGate.middleware, asyncRoute(a
 app.get('/api/system/export-zip', zipOperationGate.middleware, asyncRoute(async (_req, res) => {
   try {
     const db = await loadDb();
+    const mediaFiles = await getProjectVideoBackupFiles();
     const result = await buildFullProjectZip(process.cwd(), {
       'data/zero-studio-db.json': Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+      ...mediaFiles,
     });
     const verification = verifyZipBuffer(result.buffer);
     if (!verification.result.valid) {
@@ -1172,7 +1223,7 @@ Langzeitgedächtnis:\n${relevantMemories}`;
         // Run search with Gemini 2.5 Flash-Lite, whose Free tier includes grounding,
         // then pass the retrieved context to the user's selected reasoning model.
         await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'BRAIN_WEB_SEARCH', database);
-        const searchResponse = await withTransientRetry(() =>
+        const searchResponse = await withSingleProviderAttempt(() =>
           ai.models.generateContent({
             model: 'gemini-2.5-flash-lite',
             contents: `Recherchiere aktuelle Fakten und liefere eine knappe, belegorientierte Zusammenfassung zu dieser Anfrage:\n\n${fullPrompt}`,
@@ -1461,7 +1512,7 @@ app.post('/api/web/research', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-2.5-flash-lite', 'WEB_RESEARCH', db);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-2.5-flash-lite',
         contents: `Recherchiere sachlich, strukturiert und auf Deutsch zu folgender Anfrage. Nenne nur belegbare Fakten aus den Suchergebnissen:\n\n${query}`,
@@ -1575,7 +1626,7 @@ app.post('/api/image/analyze', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'IMAGE_ANALYZE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: {
@@ -1693,107 +1744,100 @@ async function readWorkerBodyLimited(response: Response, maxBytes: number): Prom
   return Buffer.concat(chunks, total);
 }
 
-app.post('/api/audio/tts/piper', asyncRoute(async (req, res) => {
-  const principal = getZeroPrincipal(res.locals);
-  if (!principal) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
-  const worker = getPiperTtsWorkerConfig();
-  if (!worker) {
-    return res.status(503).json({
-      error: 'Der Piper-Worker ist standardmäßig gesperrt. Erst nach bestätigter kostenloser Eigenhost-Bereitstellung beide ZERO_PIPER_WORKER-Freigaben setzen und ZERO_TTS_WORKER_URL sowie ZERO_TTS_WORKER_TOKEN konfigurieren. iPhone-Web-Speech bleibt lokal verfügbar.',
-      costEur: 0, paidFallback: false,
-    });
-  }
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-  const rawSpeed = Number(req.body?.speed ?? 1);
-  const speed = Number.isFinite(rawSpeed) ? Math.min(1.25, Math.max(0.75, rawSpeed)) : 1;
-  if (!text) return res.status(400).json({ error: 'Text für Piper fehlt.' });
-  if (text.length > 5000) return res.status(400).json({ error: 'Piper unterstützt maximal 5.000 Zeichen pro WAV-Datei.' });
-  const suppliedKey = req.get('Idempotency-Key')?.trim();
-  if (!suppliedKey || !/^[A-Za-z0-9._:-]{8,200}$/.test(suppliedKey)) {
-    return res.status(400).json({ error: 'Ungültiger Idempotency-Key.' });
-  }
-  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
-  try {
-    reservation = await reserveZeroResource({
-      principalId: principal.id, resourceId: 'piper-tts',
-      idempotencyKey: suppliedKey, units: text.length,
-      requestFingerprint: createHash('sha256').update(JSON.stringify({ text, speed })).digest('hex'),
-    });
-  } catch (error) {
-    const status = error instanceof ZeroResourceLimitError ? 429
-      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
-    return res.status(status).json({ error: error instanceof Error ? error.message : 'ZERO RESOURCE GUARD hat Piper gesperrt.', costEur: 0, paidFallback: false });
-  }
-  if (reservation.duplicate) {
-    return res.status(409).json({ error: 'Dieser Piper-Auftrag wurde mit diesem Idempotency-Key bereits angenommen oder abgeschlossen.', reservationId: reservation.reservationId, costEur: 0, paidFallback: false });
-  }
-
-  let controller: AbortController | null = null;
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  let completed = false;
-  let safeToRelease = true;
-  try {
-    if (!(await verifyPiperWorkerHealth(worker))) {
-      return res.status(503).json({
-        error: 'Piper-Worker-Health, Modellrevision, Lizenz oder Kostenmetadaten stimmen nicht mit dem freigegebenen kostenlosen Worker überein. Kein kostenpflichtiger Fallback.',
-        costEur: 0, paidFallback: false,
-      });
-    }
-    safeToRelease = false;
-    controller = new AbortController();
-    timeout = setTimeout(() => controller?.abort(), 150000);
-    const response = await fetch(new URL('/tts', worker.baseUrl), {
-      method: 'POST',
-      headers: { ...worker.headers, 'Content-Type': 'application/json', Accept: 'audio/wav' },
-      body: JSON.stringify({ text, speed }),
-      signal: controller?.signal, redirect: 'error',
-    });
-    if (!response.ok) {
-      // Only a definitive 4xx rejection proves the worker did not accept work.
-      // A 5xx may follow partial processing, so keep the reservation until TTL.
-      safeToRelease = response.status >= 400 && response.status < 500;
-      const payload = await response.json().catch(() => ({})) as { detail?: unknown };
-      const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
-      const message = safeToRelease
-        ? `Piper hat den Auftrag vor der Verarbeitung abgewiesen: ${detail.slice(0, 320)}`
-        : detail.slice(0, 400);
-      return res.status(response.status === 400 ? 400 : 503).json({ error: message, costEur: 0, paidFallback: false });
-    }
-    let bytes: Buffer;
-    try {
-      bytes = await readWorkerBodyLimited(response, 20 * 1024 * 1024);
-    } catch (error) {
-      if (error instanceof WorkerPayloadTooLargeError) {
-        safeToRelease = true;
-        return res.status(413).json({ error: 'Piper-WAV überschreitet das 20-MB-Limit.' });
+let piperResultSchemaReady: Promise<void> | null = null;
+async function ensurePiperResultSchema(): Promise<void> {
+  if (!piperResultSchemaReady) {
+    piperResultSchemaReady = (async () => {
+      const client = await getPostgresPool().connect();
+      let transactionOpen = true;
+      let destroyClient = false;
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(1514480207, 76)');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS zero_piper_tts_results (
+            reservation_id UUID PRIMARY KEY,
+            principal_id TEXT NOT NULL CHECK (length(btrim(principal_id)) BETWEEN 1 AND 128),
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL
+          )
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS zero_piper_tts_results_expiry_idx
+          ON zero_piper_tts_results (expires_at)
+        `);
+        await client.query('DELETE FROM zero_piper_tts_results WHERE expires_at <= NOW()');
+        await client.query('COMMIT');
+        transactionOpen = false;
+      } catch (error) {
+        if (transactionOpen) {
+          try { await client.query('ROLLBACK'); } catch { destroyClient = true; }
+        }
+        throw error;
+      } finally {
+        client.release(destroyClient);
       }
+    })().catch((error) => {
+      piperResultSchemaReady = null;
       throw error;
-    }
-    if (bytes.length < 44 || bytes.length > 20 * 1024 * 1024 ||
-        bytes.subarray(0, 4).toString('ascii') !== 'RIFF' ||
-        bytes.subarray(8, 12).toString('ascii') !== 'WAVE') {
-      safeToRelease = true;
-      return res.status(502).json({ error: 'Piper lieferte keine gültige WAV-Datei.' });
-    }
-    await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'completed' });
-    completed = true;
-    return res.json({
-      audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}`,
-      modelUsed: 'Piper ONNX · de_DE-thorsten-medium (eigener ZERO-Worker)',
-      voice: 'Thorsten · Deutsch', costEur: 0, paidFallback: false,
-      resourceReservation: reservation.reservationId,
     });
-  } catch (error) {
-    const message = error instanceof Error && error.name === 'AbortError'
-      ? 'Piper-Spracherzeugung dauerte länger als 150 Sekunden und wurde abgebrochen.'
-      : 'Der eigene Piper-Sprachworker ist nicht erreichbar. Kein kostenpflichtiger Fallback wurde gestartet.';
-    return res.status(503).json({ error: message, costEur: 0, paidFallback: false });
-  } finally {
-    if (timeout) clearTimeout(timeout);
-    if (!completed && safeToRelease) {
-      await settleZeroResourceReservation({ principalId: principal.id, reservationId: reservation.reservationId, outcome: 'released' }).catch(() => undefined);
-    }
   }
+  await piperResultSchemaReady;
+}
+
+async function getPiperCachedResult(principalId: string, reservationId: string): Promise<PiperCachedResult | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(reservationId)) return null;
+  const pool = getPostgresPool();
+  await ensurePiperResultSchema();
+  const result = await pool.query<{ payload: PiperCachedResult }>(
+    `SELECT payload FROM zero_piper_tts_results
+     WHERE reservation_id = $1 AND principal_id = $2 AND expires_at > NOW()`,
+    [reservationId, principalId],
+  );
+  return result.rows[0]?.payload ?? null;
+}
+
+async function savePiperCachedResult(principalId: string, reservationId: string, payload: PiperCachedResult): Promise<void> {
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > 28 * 1024 * 1024) {
+    throw new Error('Piper-Ergebnis überschreitet das sichere Wiederherstellungslimit.');
+  }
+  const pool = getPostgresPool();
+  await ensurePiperResultSchema();
+  const saved = await pool.query(
+    `INSERT INTO zero_piper_tts_results (reservation_id, principal_id, payload, expires_at)
+     VALUES ($1, $2, $3::jsonb, NOW() + INTERVAL '24 hours')
+     ON CONFLICT (reservation_id) DO UPDATE
+       SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at
+       WHERE zero_piper_tts_results.principal_id = EXCLUDED.principal_id
+     RETURNING reservation_id`,
+    [reservationId, principalId, serialized],
+  );
+  if (saved.rowCount !== 1) {
+    throw new Error('Piper-Ergebnis konnte nicht eindeutig dem authentifizierten Auftrag zugeordnet werden.');
+  }
+}
+
+app.post('/api/audio/tts/piper', createPiperTtsHandler({
+  getPrincipal: (response) => getZeroPrincipal(response.locals),
+  getWorker: getPiperTtsWorkerConfig,
+  reserve: (input) => reserveZeroResource({ ...input, resourceId: 'piper-tts' }),
+  getCached: getPiperCachedResult,
+  saveCached: savePiperCachedResult,
+  settle: (principalId, reservationId, outcome) =>
+    settleZeroResourceReservation({ principalId, reservationId, outcome }),
+  verifyHealth: verifyPiperWorkerHealth,
+  synthesize: ({ worker, text, speed, idempotencyKey, signal }) =>
+    postPiperWorkerTts({
+      baseUrl: worker.baseUrl.toString(),
+      headers: worker.headers,
+      text,
+      speed,
+      idempotencyKey,
+      signal,
+    }),
+  readBody: readWorkerBodyLimited,
 }));
 
 // === ZERO AUDIO STUDIO ===
@@ -1823,7 +1867,7 @@ app.post('/api/audio/tts', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(modelId, 'AUDIO_TTS', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: modelId,
         contents: [
@@ -1952,7 +1996,7 @@ app.post('/api/audio/transcribe', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed(selectedTranscriptionModel, 'AUDIO_TRANSCRIBE', database);
 
     const ai = getGeminiClient();
-    const response = await withTransientRetry(() =>
+    const response = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: selectedTranscriptionModel,
         contents: [
@@ -2153,35 +2197,30 @@ app.get('/api/video/engine/status', asyncRoute(async (_req, res) => {
       redirect: 'error',
     });
     if (!response.ok) throw new Error(`Worker HTTP ${response.status}`);
-    const payload = await response.json() as { ok?: boolean; engine?: string; model?: string; cuda_available?: boolean; tts_available?: boolean; tts_voice_downloaded?: boolean };
-    const engineMatches = !payload.engine || /wan/i.test(payload.engine) || /wan/i.test(payload.model || '');
-    const online = payload.ok === true && payload.cuda_available === true && engineMatches;
+    const payload = await response.json() as {
+      ok?: unknown; engine?: unknown; model?: unknown; cuda_available?: unknown;
+      gpu_name?: unknown; gpu_vram_total_mb?: unknown; gpu_vram_free_mb?: unknown;
+      model_cache_persistent?: unknown; persistent_storage_configured?: unknown;
+      cost_gate_open?: unknown; daily_job_limit?: unknown; daily_jobs_remaining?: unknown;
+      max_concurrent_jobs?: unknown; tts_available?: unknown; tts_voice_downloaded?: unknown;
+    };
+    const readiness = createWanWorkerStatusPayload({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: true,
+      payload,
+    });
     return res.json({
-      configured: true,
-      online,
-      gpuAvailable: payload.cuda_available === true,
+      ...readiness,
       ttsAvailable: payload.tts_available === true,
       ttsVoiceDownloaded: payload.tts_voice_downloaded === true,
-      engine: 'Wan 2.1',
-      status: online ? 'WORKER_ONLINE' : payload.cuda_available === false ? 'WORKER_GPU_UNAVAILABLE' : 'WORKER_PROTOCOL_MISMATCH',
-      message: online
-        ? 'Wan-Worker und CUDA-GPU erreichbar. Die authentifizierte Job-API für 5-Sekunden-Shots ist verbunden; finale ZERO-Exporte bleiben auf maximal 60 Sekunden begrenzt.'
-        : payload.cuda_available === false
-          ? 'Worker erreichbar, aber keine CUDA-GPU verfügbar. Wan-Inferenz ist nicht startbereit.'
-          : 'Worker erreichbar, aber die Wan-Health-Antwort entspricht nicht dem erwarteten Protokoll.',
-      maxDurationSec: 60,
-      costFallback: false,
     });
   } catch {
-    return res.json({
-      configured: true,
-      online: false,
-      engine: 'Wan 2.1',
-      status: 'WORKER_OFFLINE',
-      message: 'Wan-GPU-Worker ist derzeit nicht erreichbar. Es wird kein kostenpflichtiger Ersatzdienst verwendet.',
-      maxDurationSec: 60,
-      costFallback: false,
-    });
+    return res.json(createWanWorkerStatusPayload({
+      workerUrlConfigured: true,
+      workerTokenConfigured: true,
+      workerReachable: false,
+    }));
   } finally {
     clearTimeout(timeout);
   }
@@ -2219,8 +2258,8 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   const worker = getWanWorkerConfig();
   if (!worker) return res.status(503).json({ error: 'Wan-GPU-Worker ist nicht vollständig konfiguriert. Kein kostenpflichtiger Fallback.' });
   const rawIdempotencyKey = req.get('Idempotency-Key')?.trim() ?? '';
-  if (!rawIdempotencyKey || rawIdempotencyKey.length > 256) {
-    return res.status(400).json({ error: 'Für Wan-Aufträge ist ein stabiler Idempotency-Key erforderlich.' });
+  if (!/^[A-Za-z0-9._:-]{8,200}$/.test(rawIdempotencyKey)) {
+    return res.status(400).json({ error: 'Für Wan-Aufträge ist ein gültiger Idempotency-Key mit 8 bis 200 sicheren Zeichen erforderlich.' });
   }
   const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
   const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
@@ -2237,11 +2276,46 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'ZERO-Projekt und Szene müssen für die Wiederaufnahme gültige IDs besitzen.' });
   }
 
-  const result = await withZeroProjectLifecycleLock(projectId, async () => {
+  const principalId = getZeroPrincipal(res.locals)?.id;
+  if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+  const workerIdempotencyKey = createZeroIdempotencyKey('wan-video');
+
+  let result: { status: number; body: Record<string, unknown> };
+  try {
+    result = await withZeroProjectLifecycleLock(projectId, async () => {
   const db = await loadDb();
   const project = db.projects.find((item) => item.id === projectId);
   if (!project) return { status: 404, body: { error: 'Projekt nicht gefunden.' } };
   if (!project.scenes.some((item) => item.id === sceneId)) return { status: 404, body: { error: 'Szene nicht gefunden.' } };
+
+  let reservation: Awaited<ReturnType<typeof reserveZeroResource>>;
+  try {
+    reservation = await reserveZeroResource({
+      principalId,
+      resourceId: 'wan-video',
+      idempotencyKey: workerIdempotencyKey,
+      units: 1,
+      requestFingerprint: createHash('sha256').update(JSON.stringify({
+        prompt, aspectRatio, projectId, sceneId, seed: seed ?? null,
+      })).digest('hex'),
+    });
+  } catch (error) {
+    const status = error instanceof ZeroResourceLimitError ? 429
+      : error instanceof ZeroResourceIdempotencyError ? 409 : 503;
+    return { status, body: { error: error instanceof Error ? error.message : 'ZERO-Ressourcenreservierung fehlgeschlagen.', costFallback: false } };
+  }
+  if (reservation.duplicate && reservation.status === 'released') {
+    return { status: 409, body: { error: 'Dieser Wan-Auftrag wurde bereits freigegeben. Bitte mit neuem Idempotency-Key erneut starten.', resourceReservation: reservation.reservationId, costFallback: false } };
+  }
+  if (reservation.duplicate && reservation.status === 'completed') {
+    // The worker may have pruned its old idempotency record after completion.
+    // Never submit again once the durable ZERO reservation is terminal.
+    return { status: 409, body: {
+      error: 'Dieser Wan-Auftrag wurde bereits abgeschlossen. Für einen neuen Auftrag muss ein neuer Idempotency-Key verwendet werden.',
+      resourceReservation: reservation.reservationId,
+      costFallback: false,
+    } };
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
@@ -2252,7 +2326,7 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
         ...worker.headers,
         'Content-Type': 'application/json',
         'X-Zero-Principal-Hash': createZeroPrincipalHash(),
-        'Idempotency-Key': createZeroIdempotencyKey(),
+        'Idempotency-Key': workerIdempotencyKey,
       },
       body: JSON.stringify({
         prompt, duration_sec: 5, aspect_ratio: aspectRatio,
@@ -2266,25 +2340,56 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
       job?: Record<string, unknown>; replayed?: boolean; detail?: unknown;
     };
     if (!response.ok) {
-      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.' } };
-      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht annehmen.', workerStatus: response.status } };
+      // A definitive client rejection cannot have started inference; release it.
+      // Conflicts and 5xx responses remain reserved because worker acceptance may be uncertain.
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 409) {
+        await settleZeroResourceReservation({ principalId, reservationId: reservation.reservationId, outcome: 'released' });
+      }
+      if (response.status === 409) return { status: 409, body: { error: 'Dieser Wan-Idempotency-Key wurde bereits mit anderen Eingaben verwendet.', resourceReservation: reservation.reservationId } };
+      return { status: response.status === 429 ? 429 : 502, body: { error: 'Wan-Worker konnte den Auftrag nicht sicher annehmen.', workerStatus: response.status, resourceReservation: reservation.reservationId, retryWithSameIdempotencyKey: true } };
     }
     const job = payload.job;
     if (!job || typeof job.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(job.id) ||
         !['queued', 'running', 'cancel_requested', 'cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
-      return { status: 502, body: { error: 'Ungültige Auftragsantwort vom Wan-Worker.' } };
+      return { status: 502, body: {
+        error: 'Ungültige Auftragsantwort vom Wan-Worker.',
+        resourceReservation: reservation.reservationId,
+        retryWithSameIdempotencyKey: true,
+        costFallback: false,
+      } };
+    }
+    await linkWanJobReservationWithPool(getPostgresPool(), {
+      workerJobId: job.id,
+      reservationId: reservation.reservationId,
+      principalId,
+    });
+    if (['cancelled', 'succeeded', 'failed'].includes(String(job.status))) {
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: job.id,
+        principalId,
+        outcome: job.status === 'succeeded' ? 'completed' : 'released',
+      });
     }
     return { status: payload.replayed === true ? 200 : 202, body: {
       job: { id: job.id, status: job.status, durationSec: 5, engine: 'Wan 2.1', replayed: payload.replayed === true },
+      resourceReservation: reservation.reservationId,
       maxFinalDurationSec: 60,
       costFallback: false,
     } };
   } catch {
-    return { status: 503, body: { error: 'Wan-Worker nicht erreichbar. Es wurde kein kostenpflichtiger Ersatzdienst gestartet.' } };
+    // The worker may have accepted the request before the connection failed.
+    // Keep the reservation live and require a retry with the same idempotency key.
+    return { status: 503, body: { error: 'Wan-Worker nicht eindeutig erreichbar. Die Ressourcenreservierung bleibt zur sicheren Wiederaufnahme bestehen.', resourceReservation: reservation.reservationId, retryWithSameIdempotencyKey: true, costFallback: false } };
   } finally {
     clearTimeout(timeout);
   }
-  });
+    });
+  } catch {
+    return res.status(503).json({
+      error: 'ZERO-Datenbank oder Ressourcenreservierung ist derzeit nicht verfügbar. Der Wan-Auftrag wurde nicht als erfolgreich bestätigt.',
+      costFallback: false,
+    });
+  }
   return res.status(result.status).json(result.body);
 }));
 
@@ -2305,6 +2410,14 @@ app.get('/api/video/engine/jobs', asyncRoute(async (req, res) => {
     });
     if (loaded.kind === 'unavailable') return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
     if (loaded.kind !== 'ok') return res.status(502).json({ error: 'Gespeicherte Wan-Aufträge enthalten ungültige Daten.' });
+    const principalId = getZeroPrincipal(res.locals)?.id;
+    if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+    await Promise.all(loaded.jobs
+      .filter((job) => ['cancelled', 'succeeded', 'failed'].includes(job.status))
+      .map((job) => settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: job.id, principalId,
+        outcome: job.status === 'succeeded' ? 'completed' : 'released',
+      })));
     return res.json({ jobs: loaded.jobs, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Gespeicherte Wan-Aufträge sind derzeit nicht erreichbar.' });
@@ -2331,6 +2444,14 @@ app.post('/api/video/engine/jobs/:id/cancel', asyncRoute(async (req, res) => {
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Abbruch konnte vom Worker nicht bestätigt werden.' });
     if (payload.id !== id || !['cancelled', 'cancel_requested', 'succeeded', 'failed'].includes(String(payload.status))) {
       return res.status(502).json({ error: 'Ungültige Abbruchbestätigung vom Wan-Worker.' });
+    }
+    if (['cancelled', 'succeeded', 'failed'].includes(String(payload.status))) {
+      const principalId = getZeroPrincipal(res.locals)?.id;
+      if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: id, principalId,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
     }
     const statusCode = payload.status === 'cancel_requested' ? 202 : 200;
     return res.status(statusCode).json({
@@ -2366,6 +2487,14 @@ app.get('/api/video/engine/jobs/:id', asyncRoute(async (req, res) => {
     if (!response.ok) return res.status(response.status === 404 ? 404 : 502).json({ error: 'Wan-Jobstatus konnte nicht geladen werden.' });
     const job = normalizeWanJobStatus(payload, id);
     if (!job) return res.status(502).json({ error: 'Wan-Worker hat einen ungültigen Jobstatus zurückgegeben.' });
+    if (['cancelled', 'succeeded', 'failed'].includes(job.status)) {
+      const principalId = getZeroPrincipal(res.locals)?.id;
+      if (!principalId) return res.status(401).json({ error: 'Anmeldung erforderlich.' });
+      await settleWanJobReservationWithPool(getPostgresPool(), {
+        workerJobId: id, principalId,
+        outcome: payload.status === 'succeeded' ? 'completed' : 'released',
+      });
+    }
     return res.json({ job, costFallback: false });
   } catch {
     return res.status(503).json({ error: 'Wan-Worker derzeit nicht erreichbar.' });
@@ -2444,7 +2573,7 @@ async function generateFreeFilmDirectorText(params: {
   }
 
   await reserveZeroBudgetModelAllowed(decision.modelId, 'FILM_DIRECTOR', params.db);
-  const response = await withTransientRetry(() =>
+  const response = await withSingleProviderAttempt(() =>
     getGeminiClient().models.generateContent({
       model: decision.modelId,
       contents: [{
@@ -3074,6 +3203,14 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
   if (project.assets.length >= 200) {
     return res.status(409).json({ error: 'Dieses Projekt enthält bereits 200 Assets. Bitte zuerst ältere Assets entfernen.' });
   }
+  const sourceText = req.body?.sourceText;
+  const voiceLabel = req.body?.voiceLabel;
+  if (sourceText !== undefined && (typeof sourceText !== 'string' || sourceText.length > 5000)) {
+    return res.status(400).json({ error: 'Voiceover-Text ist ungültig oder überschreitet 5.000 Zeichen.' });
+  }
+  if (voiceLabel !== undefined && (typeof voiceLabel !== 'string' || voiceLabel.length > 100)) {
+    return res.status(400).json({ error: 'Voiceover-Stimmenbezeichnung ist ungültig.' });
+  }
 
   const asset: ProjectAsset = {
     id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3081,9 +3218,23 @@ app.post('/api/projects/:id/assets', asyncRoute(async (req, res) => {
     title: String(req.body?.title || 'Studio Asset').trim().slice(0, 120),
     url,
     modelId: String(req.body?.modelId || 'zero-studio').trim().slice(0, 100),
+    sourceText: typeof sourceText === 'string' ? sourceText : undefined,
+    voiceLabel: typeof voiceLabel === 'string' ? voiceLabel : undefined,
     durationSec: durationSec === undefined ? undefined : Math.min(60, durationSec),
     createdAt: new Date().toISOString(),
   };
+  // Bound both current assets and their embedded snapshot copies. This keeps
+  // project JSON comfortably below the ZIP single-entry ceiling in ordinary use.
+  const snapshotAssetBytes = project.snapshots.reduce((sum, snapshot) =>
+    sum + Buffer.byteLength(JSON.stringify(snapshot.state?.assets ?? []), 'utf8'), 0);
+  const currentAssetBytes = Buffer.byteLength(JSON.stringify([asset, ...project.assets]), 'utf8');
+  const MAX_PROJECT_ASSET_METADATA_BYTES = 20 * 1024 * 1024;
+  if (snapshotAssetBytes + currentAssetBytes > MAX_PROJECT_ASSET_METADATA_BYTES) {
+    return res.status(413).json({
+      error: 'Das Projekt-Assetlimit von 20 MiB (inklusive Snapshot-Kopien) wäre überschritten. Bitte ältere Medien oder Snapshots entfernen.',
+      maxBytes: MAX_PROJECT_ASSET_METADATA_BYTES,
+    });
+  }
   project.assets.unshift(asset);
   project.updatedAt = new Date().toISOString();
   await saveDb(db);
@@ -3380,7 +3531,7 @@ app.post('/api/automation/run', asyncRoute(async (req, res) => {
     await reserveZeroBudgetModelAllowed('gemini-3.8-flash', 'AUTOMATION_PLAN', db);
 
     const ai = getGeminiClient();
-    const planRes = await withTransientRetry(() =>
+    const planRes = await withSingleProviderAttempt(() =>
       ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: `Zerlege dieses Produktionsziel in 3 konkrete, ausführbare ZERO AI STUDIO Arbeitsschritte (nur 0 € Module): "${goal}".`,
@@ -3508,6 +3659,27 @@ app.use('/api', (_req, res) => {
 });
 
 async function startServer() {
+  // Production traffic is not accepted until every shared PostgreSQL schema
+  // is initialized. This prevents the first API request from racing schema DDL.
+  if (IS_PRODUCTION && !process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL fehlt; ZERO kann in Produktion nicht sicher starten.');
+  }
+  if (IS_PRODUCTION && (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32)) {
+    throw new Error('ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen vor dem Produktionsstart konfiguriert sein.');
+  }
+  if (process.env.DATABASE_URL) {
+    const database = getPostgresPool();
+    await database.query('SELECT 1');
+    await ensureZeroCostResourceSchema(database);
+    await ensurePostgresSchema();
+    await authStore().ensureSchema();
+    await ensureZeroResourceSchemaWithPool(database);
+    await ensureWanJobReservationSchemaWithPool(database);
+    await ensurePiperResultSchema();
+    await ensureProjectDeletionIdempotencySchema();
+    await database.query('SELECT 1');
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await import('vite');
     const viteServer = await vite.createServer({

@@ -3,6 +3,7 @@ export const PIPER_WORKER_HEALTH_EXPECTED = Object.freeze({
   modelId: 'de_DE-thorsten-medium',
   engineVersion: '1.8.0',
   modelRevision: 'cf910fb59f1d79ab3b625a63993a108751c6c25d',
+  voiceRevision: 'cf910fb59f1d79ab3b625a63993a108751c6c25d',
   engineLicense: 'GPL-3.0-or-later',
   voiceDatasetLicense: 'CC0',
   voiceTrainingBase: 'rdh (nl_BE, one Flemish speaker, CC0)',
@@ -19,6 +20,7 @@ export function isPiperWorkerHealthPayload(value: unknown): boolean {
     health.voice === PIPER_WORKER_HEALTH_EXPECTED.modelId &&
     health.engine_version === PIPER_WORKER_HEALTH_EXPECTED.engineVersion &&
     health.model_revision === PIPER_WORKER_HEALTH_EXPECTED.modelRevision &&
+    health.voice_revision === PIPER_WORKER_HEALTH_EXPECTED.voiceRevision &&
     health.engine_license === PIPER_WORKER_HEALTH_EXPECTED.engineLicense &&
     health.voice_dataset_license === PIPER_WORKER_HEALTH_EXPECTED.voiceDatasetLicense &&
     health.voice_training_base === PIPER_WORKER_HEALTH_EXPECTED.voiceTrainingBase &&

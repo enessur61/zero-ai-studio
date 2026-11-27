@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 
 export const POSTGRES_POOL_MAX = 5;
@@ -36,34 +37,57 @@ export function createPostgresStateStore(database: Pool) {
   async function ensureSchema(): Promise<void> {
     if (!schemaReady) {
       schemaReady = (async () => {
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_app_state (
-            id TEXT PRIMARY KEY CHECK (id = 'primary'),
-            payload JSONB NOT NULL,
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-        // Backward-compatible migration for databases created before revisions.
-        await database.query(`
-          ALTER TABLE zero_app_state
-          ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1
-        `);
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_backup_files (
-            id TEXT PRIMARY KEY,
-            filename TEXT NOT NULL,
-            content_type TEXT NOT NULL,
-            payload BYTEA NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )
-        `);
-        await database.query(`
-          CREATE TABLE IF NOT EXISTS zero_backup_auto_state (
-            id TEXT PRIMARY KEY CHECK (id = 'zip-auto'),
-            last_success_at TIMESTAMPTZ
-          )
-        `);
+        const client = await database.connect();
+        let transactionOpen = false;
+        let destroyClient = false;
+        try {
+          await client.query('BEGIN');
+          transactionOpen = true;
+          // Serialize first-use DDL across independent production instances.
+          await client.query('SELECT pg_advisory_xact_lock(1514480207, 73)');
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_app_state (
+              id TEXT PRIMARY KEY CHECK (id = 'primary'),
+              payload JSONB NOT NULL,
+              revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          // Backward-compatible migration for databases created before revisions.
+          await client.query(`
+            ALTER TABLE zero_app_state
+            ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1
+          `);
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_backup_files (
+              id TEXT PRIMARY KEY,
+              filename TEXT NOT NULL,
+              content_type TEXT NOT NULL,
+              payload BYTEA NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS zero_backup_auto_state (
+              id TEXT PRIMARY KEY CHECK (id = 'zip-auto'),
+              last_success_at TIMESTAMPTZ
+            )
+          `);
+          // Project-video schema is owned by the versioned migration chain.
+          await client.query('COMMIT');
+          transactionOpen = false;
+        } catch (error) {
+          if (transactionOpen) {
+            try {
+              await client.query('ROLLBACK');
+            } catch {
+              destroyClient = true;
+            }
+          }
+          throw error;
+        } finally {
+          client.release(destroyClient);
+        }
       })().catch((error) => {
         schemaReady = null;
         throw error;
@@ -85,7 +109,8 @@ export function createPostgresStateStore(database: Pool) {
     payload: T,
     expectedRevision: number,
     backupFile?: { id: string; filename: string; contentType: string; payload: Buffer },
-    recordAutoBackupSuccess = false
+    recordAutoBackupSuccess = false,
+    projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }
   ): Promise<number> {
     await ensureSchema();
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
@@ -146,6 +171,55 @@ export function createPostgresStateStore(database: Pool) {
           );
         }
         nextRevision = Number(updated.rows[0].revision);
+      }
+
+      // Project clips are replaced in the SAME transaction as the restored JSONB state.
+      if (projectVideoRestore) {
+        const { principalHash, assets } = projectVideoRestore;
+        if (!/^[a-f0-9]{64}$/.test(principalHash) || assets.length > 10_000) {
+          throw new Error('Ungültige Projektvideo-Wiederherstellung.');
+        }
+        const seen = new Set<string>();
+        const projectUsage = new Map<string, { count: number; bytes: number }>();
+        const seenJobs = new Set<string>();
+        let totalBytes = 0;
+        for (const asset of assets) {
+          const digest = createHash('sha256').update(asset.payload).digest('hex');
+          const validMagic = asset.contentType === 'video/mp4'
+            ? asset.payload.toString('ascii', 4, 8) === 'ftyp'
+            : asset.payload.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(asset.id) ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(asset.projectId) ||
+              !/^[A-Za-z0-9_-]{1,128}$/.test(asset.sceneId) ||
+              (asset.jobId !== null && !/^[0-9a-f-]{36}$/i.test(asset.jobId)) ||
+              !['video/mp4', 'video/webm'].includes(asset.contentType) ||
+              !Buffer.isBuffer(asset.payload) || asset.payload.length < 1024 ||
+              asset.payload.length > 100 * 1024 * 1024 || !validMagic ||
+              digest !== asset.sha256 || seen.has(asset.id) ||
+              (asset.jobId !== null && seenJobs.has(asset.jobId)) ||
+              !Number.isFinite(Date.parse(asset.createdAt))) {
+            throw new Error('Projektvideo-Backup enthält ungültige oder beschädigte Daten.');
+          }
+          seen.add(asset.id);
+          if (asset.jobId) seenJobs.add(asset.jobId);
+          totalBytes += asset.payload.length;
+          const usage = projectUsage.get(asset.projectId) ?? { count: 0, bytes: 0 };
+          usage.count += 1; usage.bytes += asset.payload.length;
+          projectUsage.set(asset.projectId, usage);
+          if (totalBytes > 128 * 1024 * 1024 || usage.count > 50 || usage.bytes > 500 * 1024 * 1024) {
+            throw new Error('Projektvideo-Backup überschreitet die Wiederherstellungsgrenzen.');
+          }
+        }
+        await client.query('DELETE FROM zero_project_video_assets WHERE principal_hash = $1', [principalHash]);
+        for (const asset of assets) {
+          await client.query(
+            `INSERT INTO zero_project_video_assets
+              (asset_id, project_id, scene_id, principal_hash, job_id, content_type, size_bytes, sha256, payload, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [asset.id, asset.projectId, asset.sceneId, principalHash, asset.jobId,
+              asset.contentType, asset.payload.length, asset.sha256, asset.payload, asset.createdAt]
+          );
+        }
       }
 
       // The archive bytes and the JSONB metadata/revision commit together.
@@ -354,17 +428,18 @@ export async function readPersistentState<T>(): Promise<VersionedPersistentState
   return getStateStore().read<T>();
 }
 
-export async function writePersistentState<T>(payload: T, expectedRevision: number): Promise<number> {
-  return getStateStore().write(payload, expectedRevision);
+export async function writePersistentState<T>(payload: T, expectedRevision: number, projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }): Promise<number> {
+  return getStateStore().write(payload, expectedRevision, undefined, false, projectVideoRestore);
 }
 
 export async function writePersistentStateWithBackupFile<T>(
   payload: T,
   expectedRevision: number,
   backupFile: { id: string; filename: string; contentType: string; payload: Buffer },
-  recordAutoBackupSuccess = false
+  recordAutoBackupSuccess = false,
+  projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> }
 ): Promise<number> {
-  return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess);
+  return getStateStore().write(payload, expectedRevision, backupFile, recordAutoBackupSuccess, projectVideoRestore);
 }
 
 

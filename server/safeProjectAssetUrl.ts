@@ -41,6 +41,8 @@ export function sanitizeProjectAssets(value: unknown): ProjectAsset[] {
       typeof candidate.title === 'string' &&
       typeof candidate.modelId === 'string' &&
       typeof candidate.createdAt === 'string' &&
+      (candidate.sourceText === undefined || (typeof candidate.sourceText === 'string' && candidate.sourceText.length <= 5000)) &&
+      (candidate.voiceLabel === undefined || (typeof candidate.voiceLabel === 'string' && candidate.voiceLabel.length <= 100)) &&
       PROJECT_ASSET_TYPES.includes(candidate.type as ProjectAsset['type']) &&
       isSafeProjectAssetUrl(candidate.url, candidate.type as ProjectAsset['type']);
   }).slice(0, 200);

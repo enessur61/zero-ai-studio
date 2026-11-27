@@ -68,7 +68,7 @@ export function evaluateWanWorkerReadiness(input: {
   const modelCachePersistent = payload.model_cache_persistent === true;
   const dailyLimitReady = dailyJobLimit !== null
     && dailyJobLimit >= 1
-    && dailyJobLimit <= 3
+    && dailyJobLimit <= 15
     && dailyJobsRemaining !== null
     && dailyJobsRemaining >= 1
     && dailyJobsRemaining <= dailyJobLimit;
@@ -140,8 +140,8 @@ export function evaluateWanWorkerReadiness(input: {
       ready: dailyLimitReady,
       detail: dailyLimitReady
         ? `${dailyJobsRemaining} von maximal ${dailyJobLimit} GPU-Aufträgen heute verfügbar.`
-        : dailyJobLimit === null || dailyJobLimit < 1 || dailyJobLimit > 3
-          ? 'Tageslimit fehlt, ist ungültig oder überschreitet drei Aufträge.'
+        : dailyJobLimit === null || dailyJobLimit < 1 || dailyJobLimit > 15
+          ? 'Tageslimit fehlt, ist ungültig oder überschreitet 15 Aufträge.'
           : 'Das Tageslimit ist ausgeschöpft oder die Restmenge fehlt.',
     },
   ];
@@ -177,5 +177,59 @@ export function evaluateWanWorkerReadiness(input: {
     dailyJobsRemaining,
     maxConcurrentJobs,
     readiness,
+  };
+}
+
+
+/** Build the exact status payload consumed by Video Studio, using every readiness gate. */
+export function createWanWorkerStatusPayload(input: {
+  workerUrlConfigured: boolean;
+  workerTokenConfigured: boolean;
+  workerReachable: boolean;
+  env?: Record<string, string | undefined>;
+  payload?: WanWorkerHealthPayload | null;
+}): {
+  configured: boolean;
+  online: boolean;
+  engine: 'Wan 2.1';
+  status: string;
+  message: string;
+  gpuAvailable: boolean;
+  gpuName: string | null;
+  gpuVramTotalMb: number | null;
+  gpuVramFreeMb: number | null;
+  modelCachePersistent: boolean;
+  persistentStorageConfigured: boolean;
+  costGateOpen: boolean;
+  dailyJobLimit: number | null;
+  dailyJobsRemaining: number | null;
+  maxConcurrentJobs: number | null;
+  readiness: WanReadinessCriterion[];
+  maxDurationSec: 60;
+  costFallback: false;
+} {
+  const readiness = evaluateWanWorkerReadiness({
+    ...input,
+    zeroCostGateOpen: isWanGpuAllowed(input.env),
+  });
+  return {
+    configured: input.workerUrlConfigured,
+    online: readiness.online,
+    engine: 'Wan 2.1',
+    status: readiness.status,
+    message: readiness.message,
+    gpuAvailable: readiness.gpuAvailable,
+    gpuName: readiness.gpuName,
+    gpuVramTotalMb: readiness.gpuVramTotalMb,
+    gpuVramFreeMb: readiness.gpuVramFreeMb,
+    modelCachePersistent: readiness.modelCachePersistent,
+    persistentStorageConfigured: readiness.persistentStorageConfigured,
+    costGateOpen: readiness.costGateOpen,
+    dailyJobLimit: readiness.dailyJobLimit,
+    dailyJobsRemaining: readiness.dailyJobsRemaining,
+    maxConcurrentJobs: readiness.maxConcurrentJobs,
+    readiness: readiness.readiness,
+    maxDurationSec: 60,
+    costFallback: false,
   };
 }

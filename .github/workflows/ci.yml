@@ -18,8 +18,9 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Playwright's pinned Chromium build supports Ubuntu 24.04, not the ubuntu-latest 26.04 image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:16.16@sha256:30551eca978d79ccf49d037bc297b5670baea61a04ceca42ff7fd3100163d3ce
@@ -41,6 +42,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
       - name: Block committed local data and credential files
         shell: bash
         run: |
@@ -68,6 +71,13 @@ jobs:
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00
         with:
           go-version: '1.24.2'
+      - name: Cache Python test dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/pip
+          key: zero-python-pip-${{ runner.os }}-${{ hashFiles('gpu-worker/test-requirements.txt', 'piper-worker/requirements.txt') }}
+          restore-keys: |
+            zero-python-pip-${{ runner.os }}-
       - name: Scan repository content and git history for leaked secrets
         run: go run github.com/zricethezav/gitleaks/v8@v8.24.2 git --redact --no-banner .
       - run: npm ci --no-audit --no-fund
@@ -91,13 +101,35 @@ jobs:
         run: python3 gpu-worker/test_job_store.py
       - name: Test authenticated Wan worker API lifecycle without GPU inference
         run: |
-          python3 -m pip install --disable-pip-version-check --no-cache-dir -r gpu-worker/test-requirements.txt
+          python3 -m pip install --disable-pip-version-check -r gpu-worker/test-requirements.txt
           python3 gpu-worker/test_worker_api.py
       - name: Install and validate the pinned Piper worker runtime
         run: |
-          python3 -m pip install --disable-pip-version-check --no-cache-dir -r piper-worker/requirements.txt
+          python3 -m pip install --disable-pip-version-check -r piper-worker/requirements.txt
           python3 -c "from piper import PiperVoice, SynthesisConfig; print('Piper runtime API import passed')"
           python3 piper-worker/test_voice_assets.py
+      - name: Verify Piper model cache and run real local CPU synthesis without AI providers
+        env:
+          PIPER_MODEL_DIR: /tmp/zero-piper-cache-tests
+        run: |
+          (cd piper-worker && python3 -m unittest -v test_model_cache test_idempotency)
+          python3 piper-worker/test_local_synthesis.py
+      - name: Prepare QEMU for offline ARM64 Piper synthesis
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+        with:
+          platforms: arm64
+      - name: Run real Piper synthesis on ARM64 with network disabled
+        env:
+          PIPER_MODEL_DIR: /tmp/zero-piper-cache-tests
+        run: |
+          docker buildx create --name zero-piper-arm64-offline --driver docker-container --use
+          docker buildx inspect --bootstrap
+          docker buildx build --platform linux/arm64 --load --cache-from type=gha,scope=zero-piper-offline-arm64 --cache-to type=gha,mode=max,scope=zero-piper-offline-arm64 --tag zero-piper-arm64:offline ./piper-worker
+          docker run --rm --platform linux/arm64 --network none \
+            --volume "$PIPER_MODEL_DIR:/var/lib/zero-piper:ro" \
+            --volume "$PWD/piper-worker/test_offline_synthesis.py:/app/test_offline_synthesis.py:ro" \
+            --env PIPER_MODEL_DIR=/var/lib/zero-piper \
+            zero-piper-arm64:offline python -m unittest -v test_offline_synthesis
       - name: Validate Piper and GPU worker Python syntax
         run: python3 -m py_compile piper-worker/app.py piper-worker/voice_assets.py gpu-worker/app.py
       - name: Run PostgreSQL revision and concurrency integration tests
@@ -113,6 +145,10 @@ jobs:
           ZERO_POSTGRES_TESTS: 'true'
         run: npx tsx tests/zeroResourceGuard.integration.test.ts
       - run: npm run build
+      - name: Install free Chromium browser for UI E2E
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts playwright@1.56.1
+          npx playwright install --with-deps chromium
       - name: Production server smoke test
         shell: bash
         run: |
@@ -132,6 +168,7 @@ jobs:
             sleep 1
           done
           test -s /tmp/zero-health.json
+          ZERO_E2E_BASE_URL=http://127.0.0.1:4179 ZERO_E2E_PASSWORD=zero-ci-password-123 node tests/browserStudio.e2e.mjs
           env "${COMMON_ENV[@]}" PORT=4180 npm start > /tmp/zero-server-b.log 2>&1 &
           SERVER_PID_B=$!
           for attempt in $(seq 1 30); do
@@ -158,12 +195,12 @@ jobs:
           const authInfo = await authStatus.json();
           if (!authInfo.required || !authInfo.configured || authInfo.authenticated) throw new Error('Production auth status is incorrect');
           const badLogin = await fetch(base + '/api/auth/login', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
+            method: 'POST', headers: { 'content-type': 'application/json', origin: base },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
-          if (badLogin.status !== 401) throw new Error('Invalid password was not rejected');
+          if (badLogin.status !== 401) throw new Error('Invalid password was not rejected: HTTP ' + badLogin.status + ' ' + await badLogin.text());
           const login = await fetch(base + '/api/auth/login', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
+            method: 'POST', headers: { 'content-type': 'application/json', origin: base },
             body: JSON.stringify({ password: 'zero-ci-password-123' })
           });
           if (!login.ok) throw new Error('Production login failed');
@@ -235,17 +272,21 @@ jobs:
           }
           console.log('Verified real HTTP cost-guard E2E: authenticated same-origin pause/resume, missing/foreign Origin rejection, unauthenticated rejection, and PostgreSQL persistence across two server instances.');
           const crossInstanceLogin = await fetch(base + '/api/auth/login', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
+            method: 'POST', headers: { 'content-type': 'application/json', origin: base },
             body: JSON.stringify({ password: 'zero-ci-password-123' })
           });
           const crossInstanceCookie = crossInstanceLogin.headers.get('set-cookie')?.split(';')[0];
-          if (!crossInstanceLogin.ok || !crossInstanceCookie) throw new Error('Second production login failed');
+          if (!crossInstanceLogin.ok || !crossInstanceCookie) {
+            throw new Error('Second production login failed: HTTP ' + crossInstanceLogin.status + ' ' + await crossInstanceLogin.text());
+          }
           const crossInstanceAccess = await fetch(baseB + '/api/projects', { headers: { cookie: crossInstanceCookie } });
           if (!crossInstanceAccess.ok) throw new Error('A session created on instance A was not accepted by instance B');
           const crossInstanceLogout = await fetch(baseB + '/api/auth/logout', {
-            method: 'POST', headers: { cookie: crossInstanceCookie }
+            method: 'POST', headers: { cookie: crossInstanceCookie, origin: baseB }
           });
-          if (!crossInstanceLogout.ok) throw new Error('Logout on instance B failed');
+          if (!crossInstanceLogout.ok) {
+            throw new Error('Logout on instance B failed: HTTP ' + crossInstanceLogout.status + ' ' + await crossInstanceLogout.text());
+          }
           const revokedOnA = await fetch(base + '/api/projects', { headers: { cookie: crossInstanceCookie } });
           if (revokedOnA.status !== 401) throw new Error('Logout on instance B did not revoke the session on instance A');
           const securityHeaders = await fetch(base + '/api/health');
@@ -263,20 +304,20 @@ jobs:
             const rateBase = attempt % 2 === 0 ? base : baseB;
             const limited = await fetch(rateBase + '/api/auth/login', {
               method: 'POST',
-              headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+              headers: { 'content-type': 'application/json', origin: rateBase, 'x-forwarded-for': '203.0.113.10' },
               body: JSON.stringify({ password: 'incorrect-ci-password' })
             });
             if (limited.status !== 401) throw new Error('Shared login rate limit triggered too early across production instances');
           }
           const blockedIp = await fetch(baseB + '/api/auth/login', {
             method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+            headers: { 'content-type': 'application/json', origin: baseB, 'x-forwarded-for': '203.0.113.10' },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
           if (blockedIp.status !== 429) throw new Error('Shared login rate limit did not block the ninth attempt on the other instance');
           const independentIp = await fetch(base + '/api/auth/login', {
             method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.11' },
+            headers: { 'content-type': 'application/json', origin: base, 'x-forwarded-for': '203.0.113.11' },
             body: JSON.stringify({ password: 'incorrect-ci-password' })
           });
           if (independentIp.status !== 401) throw new Error('Login rate limit is shared across different forwarded client IPs');
@@ -505,6 +546,112 @@ jobs:
             body: JSON.stringify({ message: 'smoke test', modelId: 'gpt-oss-20b-free' })
           });
           if (brain.status !== 503) throw new Error('Unverified GPT-OSS route did not fail closed');
+
+          // Safe HTTP end-to-end coverage for every remaining studio surface.
+          // CI has no provider credentials or GPU worker; each provider-backed
+          // route must fail closed without attempting a paid or external fallback.
+          const [audioTts, audioPiper, audioTranscription, musicComposition, filmDraft] = await Promise.all([
+            authFetch('/api/audio/tts', {
+              method: 'POST', body: JSON.stringify({ text: 'ZERO audio workflow smoke test' })
+            }),
+            authFetch('/api/audio/tts/piper', {
+              method: 'POST', headers: { 'Idempotency-Key': 'ci-piper-no-worker-smoke' },
+              body: JSON.stringify({ text: 'ZERO Piper workflow smoke test' })
+            }),
+            authFetch('/api/audio/transcribe', {
+              method: 'POST', body: JSON.stringify({ audioDataUrl: 'data:audio/wav;base64,AAAA' })
+            }),
+            authFetch('/api/music/compose', {
+              method: 'POST', body: JSON.stringify({ prompt: 'ZERO music workflow smoke test', durationSec: 10 })
+            }),
+            authFetch('/api/film/direct', {
+              method: 'POST', body: JSON.stringify({ idea: 'A safe CI-only film director smoke test', targetDurationSec: 20 })
+            })
+          ]);
+          for (const [name, response, expected] of [
+            ['Gemini TTS', audioTts, 503],
+            ['Piper TTS', audioPiper, 503],
+            ['Audio transcription', audioTranscription, 503],
+            ['Music composition', musicComposition, 503],
+            ['Film Director', filmDraft, 400]
+          ]) {
+            if (response.status !== expected) {
+              throw new Error(name + ' did not fail closed without provider credentials: HTTP ' + response.status + ' ' + await response.text());
+            }
+          }
+
+          const videoEngineStatusResponse = await authFetch('/api/video/engine/status');
+          const videoEngineStatus = await videoEngineStatusResponse.json();
+          if (!videoEngineStatusResponse.ok || videoEngineStatus.online !== false ||
+              videoEngineStatus.costFallback !== false) {
+            throw new Error('Video Studio must remain offline without an explicitly approved self-hosted GPU worker: ' + JSON.stringify(videoEngineStatus));
+          }
+          const videoJobWithoutWorker = await authFetch('/api/video/engine/jobs', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': 'ci-no-worker-smoke' },
+            body: JSON.stringify({ prompt: 'CI-only video worker gate', projectId: 'ci-project', sceneId: 'ci-scene' })
+          });
+          if (videoJobWithoutWorker.status !== 503) {
+            throw new Error('Video Studio attempted to submit a job without an approved worker: HTTP ' + videoJobWithoutWorker.status);
+          }
+
+          const memoryFixtureTitle = 'ZERO E2E memory fixture';
+          const memoryCreate = await authFetch('/api/memory', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: memoryFixtureTitle,
+              content: 'zero-e2e-memory-token durable memory create search delete',
+              type: 'knowledge',
+              tags: ['ci', 'e2e']
+            })
+          });
+          if (!memoryCreate.ok) throw new Error('Memory Studio could not persist a memory: ' + memoryCreate.status + ' ' + await memoryCreate.text());
+          const createdMemory = (await memoryCreate.json()).memory;
+          if (!createdMemory?.id || createdMemory.title !== memoryFixtureTitle) {
+            throw new Error('Memory Studio returned an invalid persisted memory record');
+          }
+          const memoryRead = await authFetch('/api/memory');
+          const memoryReadPayload = await memoryRead.json();
+          if (!memoryRead.ok || !memoryReadPayload.memories?.some((entry) => entry.id === createdMemory.id)) {
+            throw new Error('Memory Studio could not read back its persisted memory');
+          }
+          const memorySearch = await authFetch('/api/memory/search', {
+            method: 'POST', body: JSON.stringify({ query: 'zero-e2e-memory-token' })
+          });
+          const memorySearchPayload = await memorySearch.json();
+          if (!memorySearch.ok || !memorySearchPayload.results?.some((entry) => entry.memory?.id === createdMemory.id)) {
+            throw new Error('Memory Studio lexical fallback search did not find the newly saved record');
+          }
+          const memoryDelete = await authFetch('/api/memory/' + createdMemory.id, { method: 'DELETE' });
+          if (!memoryDelete.ok) throw new Error('Memory Studio could not delete its test record');
+          const memoryAfterDelete = await authFetch('/api/memory');
+          if ((await memoryAfterDelete.json()).memories?.some((entry) => entry.id === createdMemory.id)) {
+            throw new Error('Memory Studio delete did not persist');
+          }
+
+          const automationBefore = await authFetch('/api/automation');
+          const automationBeforePayload = await automationBefore.json();
+          if (!automationBefore.ok || !Array.isArray(automationBeforePayload.runs)) {
+            throw new Error('Automation Studio could not load its run history');
+          }
+          const blockedAutomation = await authFetch('/api/automation/run', {
+            method: 'POST',
+            body: JSON.stringify({ goal: 'CI-only plan must not invoke an unapproved AI provider', includeExternalPublishGate: true })
+          });
+          if (blockedAutomation.status !== 400) {
+            throw new Error('Automation Studio did not block planning without an approved free model: HTTP ' + blockedAutomation.status);
+          }
+          const automationAfter = await authFetch('/api/automation');
+          const automationAfterPayload = await automationAfter.json();
+          if (!automationAfter.ok || automationAfterPayload.runs.length !== automationBeforePayload.runs.length) {
+            throw new Error('Blocked automation planning must not persist a partial or falsely completed run');
+          }
+          const unknownAutomationConfirmation = await authFetch('/api/automation/ci-missing-run/confirm', { method: 'POST' });
+          if (unknownAutomationConfirmation.status !== 404) {
+            throw new Error('Automation confirmation accepted an unknown run');
+          }
+          console.log('Verified safe HTTP E2E for Image, Video, Film Director, Audio, Music, Projects, Model Hub, Memory and Automation; unavailable providers and GPU workers fail closed without paid fallbacks.');
+
           const jsonBackupResponse = await authFetch('/api/system/backup', {
             method: 'POST', body: JSON.stringify({ note: 'CI PostgreSQL backup integration test' })
           });
@@ -598,8 +745,13 @@ jobs:
             'p95=' + Math.round(burstP95Ms) + 'ms, max=' + Math.round(burstMaxMs) +
             'ms, wall=' + Math.round(burstDurationMs) + 'ms.');
 
-          const logout = await authFetch('/api/auth/logout', { method: 'POST' });
-          if (!logout.ok) throw new Error('Logout failed');
+          const logout = await authFetch('/api/auth/logout', {
+            method: 'POST',
+            headers: { origin: base }
+          });
+          if (!logout.ok) {
+            throw new Error('Logout failed: HTTP ' + logout.status + ' ' + await logout.text());
+          }
           const clearedCookie = logout.headers.get('set-cookie') ?? '';
           if (!clearedCookie.includes('Max-Age=0')) throw new Error('Logout did not clear the session cookie');
           const afterLogout = await fetch(base + '/api/projects', { headers: { cookie } });
@@ -630,29 +782,23 @@ jobs:
           printf 'DATABASE_URL=ci-secret-must-not-enter-image\\n' > production.env
           printf 'ZERO_TTS_WORKER_TOKEN=ci-worker-secret-must-not-enter-image\\n' > .env.workers
           printf 'SEARXNG_SECRET=ci-search-secret-must-not-enter-image\\n' > searxng/searxng.env
-          docker buildx build --platform linux/arm64 --load --tag zero-arm64:ci .
+          docker buildx build --platform linux/arm64 --load --cache-from type=gha,scope=zero-node-arm64 --cache-to type=gha,mode=max,scope=zero-node-arm64 --tag zero-arm64:ci .
           test "$(docker run --rm --platform linux/arm64 zero-arm64:ci node -p 'process.arch')" = "arm64"
-          docker run --rm --platform linux/arm64 zero-arm64:ci node -e "const fs=require('node:fs'); for (const p of ['production.env','.env.workers','searxng/searxng.env']) if(fs.existsSync('/app/'+p)) throw new Error('Secret file leaked into image: '+p); console.log('Production and worker secret files are absent from the runtime image.')"
-          docker run --detach --name zero-arm64-app --platform linux/arm64 \
-            --publish 127.0.0.1:4179:3000 \
+          docker run --rm --platform linux/arm64 --entrypoint node zero-arm64:ci -e "const fs=require('node:fs'); for (const p of ['production.env','.env.workers','searxng/searxng.env']) if(fs.existsSync('/app/'+p)) throw new Error('Secret file leaked into image: '+p); console.log('Production and worker secret files are absent from the runtime image.')"
+          if docker run --rm --platform linux/arm64 \
             --env NODE_ENV=production \
             --env ZERO_ADMIN_PASSWORD=zero-ci-password-123 \
             --env ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789 \
-            zero-arm64:ci
-          trap 'docker logs zero-arm64-app || true; docker rm --force zero-arm64-app >/dev/null 2>&1 || true' EXIT
-          for attempt in $(seq 1 45); do
-            health_status=$(docker inspect --format '{{.State.Health.Status}}' zero-arm64-app)
-            if [ "$health_status" = "healthy" ]; then break; fi
-            sleep 2
-          done
-          test "$(docker inspect --format '{{.State.Health.Status}}' zero-arm64-app)" = "healthy"
-          curl --fail --silent http://127.0.0.1:4179/api/live
-          readiness_status=$(curl --silent --output /tmp/zero-readiness.json --write-out '%{http_code}' http://127.0.0.1:4179/api/health)
-          test "$readiness_status" = "503"
-          echo "ARM64 image healthcheck and /api/live passed; readiness correctly reports missing PostgreSQL."
+            zero-arm64:ci >/tmp/zero-production-gate.log 2>&1; then
+            cat /tmp/zero-production-gate.log
+            echo "Production startup unexpectedly accepted a missing DATABASE_URL."
+            exit 1
+          fi
+          grep -F "DATABASE_URL fehlt" /tmp/zero-production-gate.log
+          echo "ARM64 runtime image correctly refuses production startup without DATABASE_URL."
       - name: Build Piper ARM64 image and verify ONNX CPU provider
         run: |
-          docker buildx build --platform linux/arm64 --load --tag zero-piper-arm64:ci ./piper-worker
+          docker buildx build --platform linux/arm64 --load --cache-from type=gha,scope=zero-piper-arm64 --cache-to type=gha,mode=max,scope=zero-piper-arm64 --tag zero-piper-arm64:ci ./piper-worker
           docker run --rm --platform linux/arm64 zero-piper-arm64:ci python -c "import platform, onnxruntime as ort; from piper import PiperVoice; assert platform.machine() in ('aarch64', 'arm64'); assert 'CPUExecutionProvider' in ort.get_available_providers(); print(platform.machine(), ort.get_available_providers())"
           PIPER_CI_TOKEN=$(openssl rand -hex 32)
           docker run --rm --platform linux/arm64 --env ZERO_TTS_WORKER_TOKEN="$PIPER_CI_TOKEN" zero-piper-arm64:ci python -c "from fastapi.testclient import TestClient; from app import app; c=TestClient(app); r=c.get('/health'); assert r.status_code == 200 and r.json()['ok'] and r.json()['auth_configured'] and 'CPUExecutionProvider' in r.json()['execution_providers']; assert c.post('/tts', json={'text':'no inference'}, headers={'Authorization':'Bearer wrong-token'}).status_code == 401; print('Piper health and auth rejection passed:', r.json())"
@@ -727,7 +873,6 @@ jobs:
           VIDEO_TOKEN=$(openssl rand -hex 32)
           cat > production.env <<EOF
           NODE_ENV=production
-          DATABASE_URL=postgresql://zero:zero-test-password@127.0.0.1:1/zero_test
           ZERO_ADMIN_PASSWORD=zero-ci-password-123
           ZERO_SESSION_SECRET=zero-ci-session-secret-012345678901234567890123456789
           ZERO_TTS_WORKER_TOKEN=$WORKER_TOKEN
@@ -741,15 +886,49 @@ jobs:
           cat > searxng/searxng.env <<EOF
           SEARXNG_SECRET=$SEARCH_SECRET
           EOF
-          docker compose --file docker-compose.workers.yml up --detach --build zero-app
+          cat > /tmp/zero-ci-db.override.yml <<'EOF'
+          services:
+            zero-app:
+              depends_on:
+                zero-db:
+                  condition: service_healthy
+              environment:
+                DATABASE_URL: postgresql://zero:zero-ci-password@zero-db:5432/zero_ci
+                ZERO_ADMIN_PASSWORD: zero-ci-password-123
+                ZERO_SESSION_SECRET: zero-ci-session-secret-012345678901234567890123456789
+            zero-db:
+              image: postgres:16.16
+              environment:
+                POSTGRES_DB: zero_ci
+                POSTGRES_USER: zero
+                POSTGRES_PASSWORD: zero-ci-password
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U zero -d zero_ci"]
+                interval: 2s
+                timeout: 2s
+                retries: 45
+              volumes:
+                - zero-ci-postgres-data:/var/lib/postgresql/data
+          volumes:
+            zero-ci-postgres-data:
+          EOF
+          compose() {
+            docker compose --file docker-compose.workers.yml --file /tmp/zero-ci-db.override.yml "$@"
+          }
           cleanup() {
-            docker compose --file docker-compose.workers.yml down --volumes --remove-orphans
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              compose logs --no-color zero-app zero-db || true
+            fi
+            compose down --volumes --remove-orphans || true
+            exit "$status"
           }
           trap cleanup EXIT
+          compose up --detach --build zero-app
           for attempt in $(seq 1 90); do
-            APP_ID=$(docker compose --file docker-compose.workers.yml ps --quiet zero-app)
-            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --quiet zero-worker)
-            SEARCH_ID=$(docker compose --file docker-compose.workers.yml ps --quiet searxng)
+            APP_ID=$(compose ps --quiet zero-app)
+            PIPER_ID=$(compose ps --quiet zero-worker)
+            SEARCH_ID=$(compose ps --quiet searxng)
             if [ -n "$APP_ID" ] && [ -n "$PIPER_ID" ] && [ -n "$SEARCH_ID" ]; then
               APP_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$APP_ID")
               PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID")
@@ -763,12 +942,12 @@ jobs:
           test "$(docker inspect --format '{{.State.Health.Status}}' "$APP_ID")" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID")" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' "$SEARCH_ID")" = healthy
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-app node --input-type=module -e "const base='http://zero-worker:8000'; const h=await fetch(base+'/health'); const p=await h.json(); if(!h.ok||!p.auth_configured||p.voice_loaded) throw new Error('Piper health or lazy-load state incorrect'); const denied=await fetch(base+'/tts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer invalid-ci-token'},body:JSON.stringify({text:'must not synthesize'})}); if(denied.status!==401) throw new Error('Piper did not reject an invalid token before inference'); console.log('Private Piper DNS, authenticated health and no-inference rejection passed.');"
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); p.write_text('survives-worker-restart')"
-          docker compose --file docker-compose.workers.yml restart zero-worker
+          compose exec --no-TTY zero-app node --input-type=module -e "const base='http://zero-worker:8000'; const h=await fetch(base+'/health'); const p=await h.json(); if(!h.ok||!p.auth_configured||p.voice_loaded) throw new Error('Piper health or lazy-load state incorrect'); const denied=await fetch(base+'/tts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer invalid-ci-token'},body:JSON.stringify({text:'must not synthesize'})}); if(denied.status!==401) throw new Error('Piper did not reject an invalid token before inference'); console.log('Private Piper DNS, authenticated health and no-inference rejection passed.');"
+          compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); p.write_text('survives-worker-restart')"
+          compose restart zero-worker
           PIPER_HEALTH=""
           for attempt in $(seq 1 45); do
-            PIPER_ID=$(docker compose --file docker-compose.workers.yml ps --all --quiet zero-worker | head -n 1)
+            PIPER_ID=$(compose ps --all --quiet zero-worker | head -n 1)
             if [ -n "$PIPER_ID" ]; then
               PIPER_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$PIPER_ID" 2>/dev/null || true)
             fi
@@ -776,12 +955,15 @@ jobs:
             sleep 2
           done
           if [ "$PIPER_HEALTH" != healthy ]; then
-            docker compose --file docker-compose.workers.yml logs --no-color zero-worker
+            compose logs --no-color zero-worker
             exit 1
           fi
-          docker compose --file docker-compose.workers.yml exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
-          LIVE_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
+          compose exec --no-TTY zero-worker python -c "from pathlib import Path; p=Path('/var/lib/zero-piper/ci-volume-persistence-probe'); assert p.read_text() == 'survives-worker-restart'; print('Piper named volume survives a worker container restart.')"
+          compose exec --no-TTY zero-app node -e "const u=new URL(process.env.DATABASE_URL); console.log('Production smoke auth configured:', (process.env.ZERO_ADMIN_PASSWORD||'').length >= 12 && (process.env.ZERO_SESSION_SECRET||'').length >= 32, 'PostgreSQL host:', u.hostname)"
+          LIVE_STATUS=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/live)
+          echo "Compose /api/live HTTP status: $LIVE_STATUS"
           test "$LIVE_STATUS" = 200
-          READY_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/api/health)
-          test "$READY_STATUS" = 503
-          echo "Compose app is live while unreachable CI-only PostgreSQL correctly keeps readiness at 503."
+          READY_STATUS=$(curl --silent --show-error --output /tmp/zero-readiness.json --write-out '%{http_code}' http://127.0.0.1:3000/api/health)
+          echo "Compose /api/health HTTP status: $READY_STATUS; body: $(cat /tmp/zero-readiness.json)"
+          test "$READY_STATUS" = 200
+          echo "Compose app and PostgreSQL are healthy; Piper remains authenticated and no inference was invoked."

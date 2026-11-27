@@ -30,11 +30,20 @@ export function requireZeroPrincipal(): string {
   return context.principal;
 }
 
-/** Hash the request-scoped idempotency key; request fingerprints are compared separately. */
-export function createZeroIdempotencyKey(): string {
+/**
+ * Derive an operation-scoped key from the authenticated request key.
+ * Supplying the same scope on a retry yields the same key; distinct operations
+ * in one request receive distinct keys. Only the digest is persisted.
+ */
+export function createZeroIdempotencyKey(operationScope?: string): string {
   const context = zeroPrincipalStorage.getStore();
   if (!context?.requestIdempotencyKey) throw new Error('ZERO Idempotency-Key context is required.');
-  return createHash('sha256').update(context.requestIdempotencyKey).digest('hex');
+  if (operationScope !== undefined && !operationScope.trim()) {
+    throw new Error('ZERO operation idempotency scope is incomplete.');
+  }
+  const hash = createHash('sha256').update(context.requestIdempotencyKey);
+  if (operationScope !== undefined) hash.update('\0').update(operationScope);
+  return hash.digest('hex');
 }
 
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { evaluateWanWorkerReadiness, isWanGpuAllowed } from '../server/wanWorkerReadiness.ts';
+import { createWanWorkerStatusPayload, evaluateWanWorkerReadiness, isWanGpuAllowed } from '../server/wanWorkerReadiness.ts';
 
 const healthy = {
   ok: true,
@@ -78,9 +78,55 @@ const exhaustedDailyLimit = evaluateWanWorkerReadiness({
 assert.equal(exhaustedDailyLimit.online, false);
 assert.equal(exhaustedDailyLimit.status, 'WORKER_DAILY_LIMIT_REACHED');
 
+const expandedDailyLimit = evaluateWanWorkerReadiness({
+  ...base,
+  payload: { ...healthy, daily_job_limit: 15, daily_jobs_remaining: 15 },
+});
+assert.equal(expandedDailyLimit.online, true);
+assert.equal(expandedDailyLimit.dailyJobLimit, 15);
+
+assert.equal(expandedDailyLimit.dailyJobsRemaining, 15);
+
+// Regression: the actual Video Studio status payload must use all readiness gates,
+// not merely a reachable HTTP endpoint and a CUDA device.
+const healthyStatus = createWanWorkerStatusPayload({
+  workerUrlConfigured: base.workerUrlConfigured,
+  workerTokenConfigured: base.workerTokenConfigured,
+  workerReachable: base.workerReachable,
+  payload: healthy,
+  env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' },
+});
+assert.equal(healthyStatus.online, true);
+const closedStatusGate = createWanWorkerStatusPayload({
+  workerUrlConfigured: base.workerUrlConfigured,
+  workerTokenConfigured: base.workerTokenConfigured,
+  workerReachable: base.workerReachable,
+  payload: healthy,
+  env: {},
+});
+assert.equal(closedStatusGate.online, false);
+assert.equal(closedStatusGate.status, 'ZERO_COST_GATE_CLOSED');
+assert.equal(healthyStatus.maxDurationSec, 60);
+assert.equal(healthyStatus.costFallback, false);
+
+for (const [name, payload, expectedStatus] of [
+  ['worker cost gate', { ...healthy, cost_gate_open: false }, 'WORKER_COST_GATE_CLOSED'],
+  ['daily quota', { ...healthy, daily_jobs_remaining: 0 }, 'WORKER_DAILY_LIMIT_REACHED'],
+  ['persistent output storage', { ...healthy, persistent_storage_configured: false }, 'WORKER_STORAGE_NOT_PERSISTENT'],
+  ['persistent model cache', { ...healthy, model_cache_persistent: false }, 'WORKER_MODEL_CACHE_NOT_PERSISTENT'],
+  ['GPU VRAM', { ...healthy, gpu_vram_total_mb: 8192 }, 'WORKER_GPU_VRAM_INSUFFICIENT'],
+]) {
+  const status = createWanWorkerStatusPayload({ ...base, payload, env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' } });
+  assert.equal(status.online, false, `Video Studio must not enable Wan when ${name} is unavailable`);
+  assert.equal(status.status, expectedStatus);
+}
+const offlineStatus = createWanWorkerStatusPayload({ ...base, workerReachable: false, env: { ZERO_WAN_GPU_ENABLED: 'true', ZERO_WAN_GPU_COSTS_CONFIRMED: 'true' } });
+assert.equal(offlineStatus.online, false);
+assert.equal(offlineStatus.status, 'WORKER_OFFLINE');
+
 const invalidDailyLimit = evaluateWanWorkerReadiness({
   ...base,
-  payload: { ...healthy, daily_job_limit: 4 },
+  payload: { ...healthy, daily_job_limit: 16 },
 });
 assert.equal(invalidDailyLimit.online, false);
 assert.equal(invalidDailyLimit.status, 'WORKER_DAILY_LIMIT_REACHED');

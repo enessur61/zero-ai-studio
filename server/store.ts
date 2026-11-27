@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { migrateLegacyStaticAssetPaths } from './staticAssetPaths.ts';
 import { ZERO_ADMIN_PRINCIPAL_ID, migrateProjectOwnership } from './projectIdentity.ts';
+import { createZeroPrincipalHash } from './zeroPrincipalContext.ts';
 import { emptyContinuityState, type ContinuityState } from '../src/types/continuity.ts';
 import { validateContinuityState } from './continuity.ts';
 import fs from 'node:fs/promises';
@@ -659,6 +660,7 @@ export interface SaveDbOptions {
   expectedRevision?: number;
   backupFile?: { id: string; filename: string; contentType: string; payload: Buffer };
   recordAutoBackupSuccess?: boolean;
+  projectVideoRestore?: { principalHash: string; assets: Array<{ id: string; projectId: string; sceneId: string; jobId: string | null; contentType: 'video/mp4' | 'video/webm'; payload: Buffer; sha256: string; createdAt: string }> };
 }
 
 export function getDbRevision(db: ZeroDatabase): number {
@@ -680,6 +682,9 @@ export function getZipBackupRevision(backup: ZipBackupVersion): number {
 }
 
 export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Promise<void> {
+  if (options.projectVideoRestore && !process.env.DATABASE_URL) {
+    throw new Error('Projektvideo-Wiederherstellung benötigt PostgreSQL; der bestehende Zustand bleibt unverändert.');
+  }
   if (process.env.DATABASE_URL) {
     // All writers share the PostgreSQL advisory transaction lock and revision check.
     const operation = persistenceSaveQueue.then(async () => {
@@ -690,9 +695,9 @@ export async function saveDb(db: ZeroDatabase, options: SaveDbOptions = {}): Pro
       try {
         const nextRevision = options.backupFile
           ? await writePersistentStateWithBackupFile(
-              db, expectedRevision, options.backupFile, options.recordAutoBackupSuccess ?? false
+              db, expectedRevision, options.backupFile, options.recordAutoBackupSuccess ?? false, options.projectVideoRestore
             )
-          : await writePersistentState(db, expectedRevision);
+          : await writePersistentState(db, expectedRevision, options.projectVideoRestore);
         dbRevisions.set(db, nextRevision);
         dbCache = db;
       } catch (error) {
@@ -998,4 +1003,5 @@ export const restoreFromVerifiedZipBackup = createVerifiedZipRestoreService({
   getZipBackupRevision,
   saveDb,
   enrichModelMetadata,
+  getRestorePrincipalHash: createZeroPrincipalHash,
 });

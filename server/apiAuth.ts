@@ -9,11 +9,38 @@ export interface ApiAuthOptions {
 }
 
 const PUBLIC_API_PATHS = new Set(['/live', '/health', '/auth/status', '/auth/login', '/auth/logout']);
+const ORIGIN_PROTECTED_PUBLIC_PATHS = new Set(['/auth/login', '/auth/logout']);
+
+function hasExactSameOrigin(request: Request): boolean {
+  const origin = request.get('origin');
+  const host = request.get('host');
+  if (!origin || !host || (request.protocol !== 'http' && request.protocol !== 'https')) return false;
+  try {
+    const parsedOrigin = new URL(origin);
+    const expectedOrigin = new URL(request.protocol + '://' + host);
+    return parsedOrigin.origin === origin &&
+      parsedOrigin.protocol === request.protocol + ':' &&
+      parsedOrigin.username === '' &&
+      parsedOrigin.password === '' &&
+      parsedOrigin.pathname === '/' &&
+      parsedOrigin.search === '' &&
+      parsedOrigin.hash === '' &&
+      parsedOrigin.origin === expectedOrigin.origin;
+  } catch {
+    return false;
+  }
+}
 
 /** Shared production API gate. Mounted at /api so req.path is API-relative. */
 export function createApiAuthMiddleware(options: ApiAuthOptions): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return (req, res, next): void => {
     if (PUBLIC_API_PATHS.has(req.path)) {
+      // Login and logout mutate authentication state. SameSite cookies are a
+      // second layer, not a substitute for validating the browser Origin.
+      if (options.isProduction && ORIGIN_PROTECTED_PUBLIC_PATHS.has(req.path) && !hasExactSameOrigin(req)) {
+        res.status(403).json({ error: 'Ungültiger oder fehlender Origin-Header.' });
+        return;
+      }
       next();
       return;
     }
@@ -36,6 +63,12 @@ export function createApiAuthMiddleware(options: ApiAuthOptions): RequestHandler
         return;
       }
       continueAuthenticated();
-    }).catch(next);
+    }).catch(() => {
+      // Authentication storage failures must fail closed with an explicit
+      // availability response, not fall through to a generic application 500.
+      if (!res.headersSent) {
+        res.status(503).json({ error: 'Authentifizierung derzeit nicht verfügbar.' });
+      }
+    });
   };
 }

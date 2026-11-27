@@ -36,10 +36,24 @@ if WAN_REQUIRE_PERSISTENT_STORAGE and not (PERSISTENT_MOUNT_CONFIGURED and MODEL
 
 WAN_GPU_ENABLED = os.environ.get("ZERO_WAN_GPU_ENABLED", "false").lower() == "true"
 WAN_GPU_COSTS_CONFIRMED = os.environ.get("ZERO_WAN_GPU_COSTS_CONFIRMED", "false").lower() == "true"
-try:
-    WAN_DAILY_JOB_LIMIT = max(0, min(int(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT", "3")), 3))
-except (TypeError, ValueError):
-    WAN_DAILY_JOB_LIMIT = 0
+# Up to five 60-second episodes can each use at most three 5-second Wan shots.
+# Keep the conservative default at three jobs; operators may raise it only
+# after verifying their own GPU capacity and non-billable hosting.
+WAN_MAX_DAILY_JOBS = 15
+WAN_MAX_PROJECT_JOBS_PER_DAY = 3
+
+
+def parse_daily_job_limit(value: str | None) -> int:
+    """Clamp the operator limit to the reviewed ceiling; invalid input disables the worker."""
+    if value is None:
+        value = "3"
+    try:
+        return max(0, min(int(value), WAN_MAX_DAILY_JOBS))
+    except (TypeError, ValueError):
+        return 0
+
+
+WAN_DAILY_JOB_LIMIT = parse_daily_job_limit(os.environ.get("ZERO_WAN_GPU_DAILY_JOB_LIMIT"))
 WAN_MAX_CONCURRENT_JOBS = 1
 
 _JOB_STORE = PersistentJobStore(OUTPUT_DIR)
@@ -62,9 +76,13 @@ class GenerateRequest(BaseModel):
     scene_id: str = Field(min_length=1, max_length=128)
 
 
+def token_is_configured() -> bool:
+    return len(APP_TOKEN) >= 32 and not APP_TOKEN.lower().startswith(("replace-", "changeme", "example"))
+
+
 def require_auth(authorization: str | None) -> None:
-    if not APP_TOKEN:
-        raise HTTPException(status_code=503, detail="Worker auth is not configured")
+    if not token_is_configured():
+        raise HTTPException(status_code=503, detail="Worker auth requires a strong, non-placeholder token of at least 32 characters")
     supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
     if not hmac.compare_digest(supplied, APP_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -238,6 +256,8 @@ def run_generation(job_id: str, prompt: str, aspect_ratio: str, seed: int | None
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    if not token_is_configured():
+        raise HTTPException(status_code=503, detail="Worker auth requires a strong, non-placeholder token of at least 32 characters")
     return {
         "ok": True,
         "engine": "Wan 2.1",
@@ -326,19 +346,16 @@ def create_job(
     idempotency_key_hash: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> JSONResponse:
     require_auth(authorization)
-    require_cost_gate()
-    try:
-        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if not torch.cuda.is_available():
-        raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
-    if not has_sufficient_gpu_memory(gpu_vram_total_mb()):
-        raise HTTPException(status_code=503, detail=f"Wan GPU requires at least {12 * 1024} MB VRAM.")
     if not principal_hash or len(principal_hash) != 64 or any(c not in "0123456789abcdef" for c in principal_hash.lower()):
         raise HTTPException(status_code=401, detail="Authenticated principal is required")
     if not idempotency_key_hash or len(idempotency_key_hash) != 64 or any(c not in "0123456789abcdef" for c in idempotency_key_hash.lower()):
         raise HTTPException(status_code=400, detail="A hashed idempotency key is required")
+    try:
+        # The durable job store is needed for replay. Model-cache persistence is
+        # required only for a new inference, not for returning an accepted job.
+        require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -356,6 +373,28 @@ def create_job(
         "request_fingerprint": fingerprint,
     }
     with _jobs_lock:
+        # A retry of an already accepted job must be replayable even when the
+        # queue is full, the cost gate was closed later, or GPU capacity changed.
+        # This path performs no new inference and is repeated atomically below
+        # by create_or_get_limited to cover concurrent first submissions.
+        existing, conflict = _JOB_STORE.get_idempotent(
+            principal_hash.lower(), idempotency_key_hash.lower(), fingerprint,
+        )
+        if existing:
+            if conflict:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
+            _jobs[str(existing["id"])] = existing
+            return JSONResponse(status_code=200, content={"job": public_job(existing), "replayed": True})
+
+        require_cost_gate()
+        try:
+            require_persistent_storage(PERSISTENT_MOUNT_CONFIGURED and MODEL_CACHE_PERSISTENT)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not torch.cuda.is_available():
+            raise HTTPException(status_code=503, detail="CUDA GPU unavailable")
+        if not has_sufficient_gpu_memory(gpu_vram_total_mb()):
+            raise HTTPException(status_code=503, detail=f"Wan GPU requires at least {12 * 1024} MB VRAM.")
         if len(_jobs) >= 50:
             for old in _JOB_STORE.prune_completed(max_jobs=50, retain_jobs=40):
                 old_id = str(old["id"])
@@ -369,6 +408,7 @@ def create_job(
             job,
             daily_limit=WAN_DAILY_JOB_LIMIT,
             max_concurrent=WAN_MAX_CONCURRENT_JOBS,
+            max_project_jobs=WAN_MAX_PROJECT_JOBS_PER_DAY,
         )
         if conflict:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for a different Wan request")
@@ -379,6 +419,8 @@ def create_job(
             raise HTTPException(status_code=429, detail="Wan GPU concurrency limit reached")
         if quota_reason == "daily_limit":
             raise HTTPException(status_code=429, detail="Wan daily job limit reached")
+        if quota_reason == "project_limit":
+            raise HTTPException(status_code=429, detail="Wan per-project daily shot limit reached")
         if quota_reason or existing is None:
             raise HTTPException(status_code=503, detail="Wan worker could not reserve the job")
         _jobs[job_id] = job

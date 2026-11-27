@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -89,11 +90,51 @@ class PersistentJobStore:
                 )
                 """
             )
-            # Additive migration: existing persisted jobs remain readable.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS zero_video_project_usage (
+                    day_utc TEXT NOT NULL,
+                    principal_hash TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    accepted_jobs INTEGER NOT NULL CHECK (accepted_jobs >= 0),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (day_utc, principal_hash, project_id)
+                )
+                """
+            )
+            # Migrate legacy job columns before querying them during the usage backfill.
             columns = {row[1] for row in connection.execute("PRAGMA table_info(zero_video_jobs)")}
             for name in ("principal_hash", "idempotency_key_hash", "request_fingerprint"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE zero_video_jobs ADD COLUMN {name} TEXT")
+            # Backfill today's already accepted jobs before enabling the per-project cap.
+            today = datetime.now(timezone.utc).date().isoformat()
+            legacy_rows = connection.execute(
+                "SELECT principal_hash, payload FROM zero_video_jobs WHERE principal_hash IS NOT NULL"
+            ).fetchall()
+            legacy_usage: dict[tuple[str, str], int] = {}
+            for principal, raw_payload in legacy_rows:
+                try:
+                    item = json.loads(raw_payload)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(item, dict) or item.get("kind") == "daily_usage":
+                    continue
+                if not isinstance(item.get("created_at"), str) or item["created_at"][:10] != today:
+                    continue
+                project = item.get("project_id")
+                if isinstance(project, str) and project:
+                    key = (str(principal), project)
+                    legacy_usage[key] = legacy_usage.get(key, 0) + 1
+            for (principal, project), accepted in legacy_usage.items():
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO zero_video_project_usage
+                        (day_utc, principal_hash, project_id, accepted_jobs)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (today, principal, project, accepted),
+                )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS zero_video_jobs_idempotency
@@ -158,16 +199,41 @@ class PersistentJobStore:
             )
             return dict(job), False, False
 
+    def get_idempotent(
+        self,
+        principal_hash: str,
+        idempotency_key_hash: str,
+        request_fingerprint: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Return an existing idempotent job before queue, cost or GPU admission checks."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload, request_fingerprint FROM zero_video_jobs
+                WHERE principal_hash = ? AND idempotency_key_hash = ?
+                """,
+                (principal_hash, idempotency_key_hash),
+            ).fetchone()
+        if not row:
+            return None, False
+        try:
+            existing = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Stored Wan idempotency record is invalid.") from exc
+        if not isinstance(existing, dict) or not existing.get("id"):
+            raise RuntimeError("Stored Wan idempotency record is invalid.")
+        return existing, str(row[1]) != request_fingerprint
+
     def create_or_get_limited(
         self,
         job: dict[str, Any],
         daily_limit: int = 3,
         max_concurrent: int = 1,
+        max_project_jobs: int = 3,
         utc_day: str | None = None,
     ) -> tuple[dict[str, Any] | None, bool, bool, str | None, int]:
-        """Atomically enforce idempotency, worker-wide daily quota and GPU concurrency."""
-        from datetime import datetime, timezone
-        if daily_limit < 1 or max_concurrent < 1:
+        """Atomically enforce idempotency, daily/project quotas and GPU concurrency."""
+        if daily_limit < 1 or max_concurrent < 1 or max_project_jobs < 1:
             raise ValueError("Job limits must be positive.")
         day = utc_day or datetime.now(timezone.utc).date().isoformat()
         if len(day) != 10:
@@ -175,6 +241,9 @@ class PersistentJobStore:
         principal_hash = str(job["principal_hash"])
         key_hash = str(job["idempotency_key_hash"])
         fingerprint = str(job["request_fingerprint"])
+        project_id = str(job.get("project_id", "")).strip()
+        if not project_id or len(project_id) > 128:
+            raise ValueError("A valid project ID is required for the per-project job limit.")
         quota_id = "zero-daily-usage:" + day
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -195,6 +264,21 @@ class PersistentJobStore:
                 except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
                     accepted = daily_limit
                 return existing, True, str(existing_row[1]) != fingerprint, None, accepted
+
+            project_row = connection.execute(
+                """
+                SELECT accepted_jobs FROM zero_video_project_usage
+                WHERE day_utc = ? AND principal_hash = ? AND project_id = ?
+                """,
+                (day, principal_hash, project_id),
+            ).fetchone()
+            try:
+                project_accepted = max(0, int(project_row[0])) if project_row else 0
+            except (TypeError, ValueError, OverflowError):
+                project_accepted = max_project_jobs
+            if project_accepted >= max_project_jobs:
+                connection.rollback()
+                return None, False, False, "project_limit", project_accepted
 
             rows = connection.execute("SELECT payload FROM zero_video_jobs").fetchall()
             active = 0
@@ -236,6 +320,17 @@ class PersistentJobStore:
                 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP
                 """,
                 (quota_id, quota_payload),
+            )
+            connection.execute(
+                """
+                INSERT INTO zero_video_project_usage
+                    (day_utc, principal_hash, project_id, accepted_jobs, updated_at)
+                VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(day_utc, principal_hash, project_id) DO UPDATE SET
+                    accepted_jobs = zero_video_project_usage.accepted_jobs + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (day, principal_hash, project_id),
             )
             connection.execute(
                 """

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, hmac, io, os, platform, threading, urllib.request, wave
+import hashlib, hmac, io, json, os, platform, re, sqlite3, threading, time, urllib.request, wave
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from piper import PiperVoice, SynthesisConfig
-from voice_assets import MODEL_SHA256, MODEL_SIZE_BYTES, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
+from voice_assets import MODEL_SHA256, MODEL_SIZE_BYTES, VOICE_CONFIG_SHA256, VOICE_ID, VOICE_REVISION, validate_model_file, validate_voice_config
 
 APP_TOKEN=os.environ.get("ZERO_TTS_WORKER_TOKEN","").strip()
 MODEL_DIR=Path(os.environ.get("PIPER_MODEL_DIR","/var/lib/zero-piper"))
@@ -19,9 +19,9 @@ URLS={
  "model":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx",
  "config":f"https://huggingface.co/rhasspy/piper-voices/resolve/{REV}/de/de_DE/thorsten/medium/{VOICE}.onnx.json",
 }
-MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"dac4f7530c978753aeb40f214245659f"}
-EXPECTED_SIZES={"model":MODEL_SIZE_BYTES,"config":6455}
-SHA256={"model":MODEL_SHA256,"config":None}
+MD5={"model":"e2fe077168bfe802e951e717dfa85873","config":"996579e89520190067e25f1699867738"}
+EXPECTED_SIZES={"model":MODEL_SIZE_BYTES,"config":5460}
+SHA256={"model":MODEL_SHA256,"config":VOICE_CONFIG_SHA256}
 NOISE_SCALE=0.5
 NOISE_W_SCALE=0.333
 MODEL=MODEL_DIR/f"{VOICE}.onnx"; CONFIG=MODEL_DIR/f"{VOICE}.onnx.json"
@@ -29,9 +29,58 @@ app=FastAPI(title="ZERO German Piper TTS",version="1.0.0")
 voice=None
 voice_lock=threading.Lock()
 synth_lock=threading.Lock()
+idempotency_lock=threading.Lock()
+IDEMPOTENCY_DB=MODEL_DIR/'piper-idempotency.sqlite3'
 ONNX_PROVIDERS=ort.get_available_providers()
 if "CPUExecutionProvider" not in ONNX_PROVIDERS:
  raise RuntimeError("Piper requires ONNX Runtime CPUExecutionProvider; CUDA is not required")
+
+def initialize_idempotency_store(db_path:Path=IDEMPOTENCY_DB):
+ os.umask(0o077)
+ with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
+  db.execute("PRAGMA journal_mode=WAL")
+  db.execute("PRAGMA synchronous=FULL")
+  db.execute("CREATE TABLE IF NOT EXISTS tts_idempotency (idempotency_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('processing','completed','unknown')), audio BLOB, created_at REAL NOT NULL, expires_at REAL NOT NULL)")
+  # A process cannot still be synthesizing after restart. Preserve the key as
+  # UNKNOWN rather than allowing a second inference for a possibly completed job.
+  db.execute("UPDATE tts_idempotency SET status='unknown', audio=NULL WHERE status='processing'")
+  db.execute("DELETE FROM tts_idempotency WHERE status='completed' AND expires_at <= ?",(time.time(),))
+  for private_path in (db_path, Path(str(db_path)+'-wal'), Path(str(db_path)+'-shm')):
+   try: os.chmod(private_path,0o600)
+   except OSError: pass
+
+def claim_tts_idempotency(key:str,fingerprint:str,db_path:Path=IDEMPOTENCY_DB)->tuple[str,bytes|None]:
+ with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
+  db.execute("PRAGMA synchronous=FULL")
+  # Serialize the read/claim pair across threads and SQLite connections.
+  db.execute("BEGIN IMMEDIATE")
+  now=time.time()
+  row=db.execute("SELECT fingerprint,status,audio,expires_at FROM tts_idempotency WHERE idempotency_key=?",(key,)).fetchone()
+  if row:
+   if row[0]!=fingerprint: return ('conflict',None)
+   if row[1]=='completed' and row[3] <= now:
+    db.execute("DELETE FROM tts_idempotency WHERE idempotency_key=? AND status='completed'",(key,))
+   else:
+    return (row[1],bytes(row[2]) if row[2] is not None else None)
+  db.execute("INSERT INTO tts_idempotency(idempotency_key,fingerprint,status,audio,created_at,expires_at) VALUES(?,?, 'processing',NULL,?,?)",(key,fingerprint,now,now+30*86400))
+  db.commit()
+  return ('new',None)
+
+def complete_tts_idempotency(key:str,audio:bytes,db_path:Path=IDEMPOTENCY_DB):
+ with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
+  db.execute("PRAGMA synchronous=FULL")
+  changed=db.execute("UPDATE tts_idempotency SET status='completed',audio=? WHERE idempotency_key=? AND status='processing'",(sqlite3.Binary(audio),key)).rowcount
+  db.commit()
+  if changed!=1: raise RuntimeError("Piper idempotency result could not be durably committed")
+
+def mark_tts_idempotency_unknown(key:str,db_path:Path=IDEMPOTENCY_DB):
+ with idempotency_lock, sqlite3.connect(db_path,timeout=10) as db:
+  db.execute("UPDATE tts_idempotency SET status='unknown',audio=NULL WHERE idempotency_key=? AND status='processing'",(key,))
+  db.commit()
+
+@app.on_event("startup")
+def startup_initialize_idempotency_store():
+ initialize_idempotency_store()
 
 class Request(BaseModel):
  text:str=Field(min_length=1,max_length=5000)
@@ -84,7 +133,10 @@ def download(key:str,dest:Path,max_bytes:int):
      raise RuntimeError("Piper voice file exceeded its pinned size limit")
     md5_digest.update(chunk); sha256_digest.update(chunk); out.write(chunk)
   if total!=expected_size:
-   raise RuntimeError("Piper voice file size does not match pinned metadata")
+   raise RuntimeError(
+    f"Piper voice file size does not match pinned metadata: received {total} bytes, "
+    f"expected {expected_size} bytes; MD5 {md5_digest.hexdigest()} (expected {MD5[key]})"
+   )
   if md5_digest.hexdigest()!=MD5[key]:
    raise RuntimeError("Piper voice failed published MD5 integrity check")
   if expected_sha256 is not None and sha256_digest.hexdigest()!=expected_sha256:
@@ -108,8 +160,10 @@ def synthesize(text:str,speed:float)->bytes:
  if len(clean)>5000: raise ValueError("Maximal 5.000 Zeichen pro WAV-Datei")
  cfg=SynthesisConfig(volume=1.0,length_scale=1.0/min(1.25,max(0.75,speed)),noise_scale=NOISE_SCALE,noise_w_scale=NOISE_W_SCALE,normalize_audio=True)
  buf=io.BytesIO()
- with synth_lock,wave.open(buf,"wb") as wav:
-  get_voice().synthesize_wav(clean,wav,syn_config=cfg)
+ with synth_lock:
+  loaded_voice=get_voice()
+  with wave.open(buf,"wb") as wav:
+   loaded_voice.synthesize_wav(clean,wav,syn_config=cfg)
  audio=buf.getvalue()
  if len(audio)<44 or audio[:4]!=b"RIFF" or audio[8:12]!=b"WAVE": raise RuntimeError("Piper returned invalid WAV")
  if len(audio)>20*1024*1024: raise RuntimeError("Piper WAV exceeded 20-MB limit")
@@ -122,11 +176,31 @@ def health():
  return {"ok":True,"auth_configured":True,"engine":"Piper ONNX CPU","model_id":VOICE,"voice":VOICE,"voice_revision":REV,"model_revision":REV,"voice_sample_rate":22050,"voice_loaded":voice is not None,"architecture":platform.machine(),"execution_providers":ONNX_PROVIDERS,"engine_version":__import__("importlib.metadata",fromlist=["version"]).version("piper-tts"),"engine_license":"GPL-3.0-or-later","voice_dataset_license":"CC0","voice_training_base":"rdh (nl_BE, one Flemish speaker, CC0)","model_sha256":MODEL_SHA256,"commercial_use_confirmed":False,"model_dir":str(MODEL_DIR),"cost_eur":0,"paid_fallback":False}
 
 @app.post("/tts")
-def tts(request:Request,authorization:str|None=Header(default=None)):
+def tts(request:Request,authorization:str|None=Header(default=None),idempotency_key:str|None=Header(default=None,alias="Idempotency-Key")):
  auth(authorization)
- try: audio=synthesize(request.text,request.speed)
- except ValueError as exc: raise HTTPException(400,str(exc)) from exc
- except Exception as exc: raise HTTPException(503,f"Piper TTS unavailable: {str(exc)[:240]}") from exc
+ if not idempotency_key or not re.fullmatch(r"[A-Za-z0-9._:-]{8,200}",idempotency_key):
+  raise HTTPException(400,"A valid Idempotency-Key header is required")
+ clean=request.text.strip()
+ if not clean: raise HTTPException(400,"Text für die Sprachausgabe fehlt")
+ fingerprint=hashlib.sha256(json.dumps({"text":clean,"speed":request.speed},sort_keys=True,separators=(",",":")).encode()).hexdigest()
+ try: state,cached=claim_tts_idempotency(idempotency_key,fingerprint)
+ except Exception as exc: raise HTTPException(503,"Piper idempotency store is unavailable; synthesis was not started") from exc
+ if state=="conflict": raise HTTPException(409,"Idempotency-Key was already used with different Piper input")
+ if state=="completed" and cached is not None:
+  return Response(content=cached,media_type="audio/wav",headers={"Content-Length":str(len(cached)),"X-Zero-TTS-Replayed":"true","X-Zero-TTS-Model":VOICE,"X-Zero-TTS-Revision":REV,"X-Zero-TTS-Cost":"0"})
+ if state=="processing":
+  return Response(content=b'{"status":"processing"}',status_code=202,media_type="application/json")
+ if state=="unknown" or state=="completed":
+  raise HTTPException(409,"Piper result is UNKNOWN after an interrupted worker; automatic re-synthesis is blocked")
+ try:
+  audio=synthesize(clean,request.speed)
+  complete_tts_idempotency(idempotency_key,audio)
+ except ValueError as exc:
+  mark_tts_idempotency_unknown(idempotency_key)
+  raise HTTPException(400,str(exc)) from exc
+ except Exception as exc:
+  mark_tts_idempotency_unknown(idempotency_key)
+  raise HTTPException(503,f"Piper TTS unavailable or result could not be durably committed: {str(exc)[:240]}") from exc
  return Response(content=audio,media_type="audio/wav",headers={"Content-Length":str(len(audio)),"Content-Disposition":'attachment; filename="zero-piper-de.wav"',"X-Zero-TTS-Model":VOICE,"X-Zero-TTS-Revision":REV,"X-Zero-TTS-Cost":"0"})
 
 

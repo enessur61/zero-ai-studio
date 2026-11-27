@@ -51,7 +51,8 @@ validateZeroResourceSchemaSnapshot(columns, constraints);
 assert.deepEqual(ZERO_RESOURCE_ADVISORY_LOCK, [1514480207, 72]);
 
 assert.equal(ZERO_RESOURCE_POLICIES['wan-video'].maxConcurrent, 1);
-assert.equal(ZERO_RESOURCE_POLICIES['wan-video'].dailyJobs, 6);
+assert.equal(ZERO_RESOURCE_POLICIES['wan-video'].dailyJobs, 15);
+assert.equal(ZERO_RESOURCE_POLICIES['wan-video'].dailyUnits, 15);
 assert.equal(ZERO_RESOURCE_POLICIES['piper-tts'].maxUnitsPerJob, 5000);
 await assert.rejects(
   () => reserveZeroResourceWithPool({} as never, {

@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { Download, FolderPlus, Loader2, RotateCcw, Search, Trash2, UserPlus } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
 import { deleteProjectSceneVideos } from '../lib/sceneVideoStore.ts';
-import type { CharacterProfile, StudioProject } from '../types/zero.ts';
+import { getProjectActionError } from '../lib/projectActionError.ts';
+import type { CharacterProfile, ProjectAsset, StudioProject } from '../types/zero.ts';
 
 interface ProjectsCharactersViewProps {
   projects: StudioProject[];
@@ -12,6 +13,7 @@ interface ProjectsCharactersViewProps {
   onProjectUpdated: (p: StudioProject) => void;
   onCharacterCreated: (c: CharacterProfile) => void;
   onOpenDirector: () => void;
+  onLoadAudioAsset: (asset: ProjectAsset) => void;
 }
 
 export function ProjectsCharactersView({
@@ -22,12 +24,14 @@ export function ProjectsCharactersView({
   onProjectUpdated,
   onCharacterCreated,
   onOpenDirector,
+  onLoadAudioAsset,
 }: ProjectsCharactersViewProps) {
   const [tab, setTab] = useState<'projects' | 'characters'>('projects');
   const [deletingProjId, setDeletingProjId] = useState<string | null>(null);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [projectDeleteNotice, setProjectDeleteNotice] = useState<string | null>(null);
+  const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [projectSearch, setProjectSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState<'Alle' | 'Aktiv' | 'Entwurf' | 'Abgeschlossen'>('Alle');
   const filteredProjects = useMemo(() => projects.filter((p) => {
@@ -56,6 +60,7 @@ export function ProjectsCharactersView({
     e.preventDefault();
     if (!projTitle.trim() || creatingProj) return;
     setCreatingProj(true);
+    setProjectActionError(null);
     try {
       const data = await apiRequest<{ project: StudioProject }>('/api/projects', {
         method: 'POST',
@@ -68,6 +73,8 @@ export function ProjectsCharactersView({
       onProjectCreated(data.project);
       setProjTitle('');
       setProjLogline('');
+    } catch (error) {
+      setProjectActionError(getProjectActionError(error, 'Projekt konnte nicht erstellt werden.'));
     } finally {
       setCreatingProj(false);
     }
@@ -77,6 +84,7 @@ export function ProjectsCharactersView({
     e.preventDefault();
     if (!charName.trim() || creatingChar) return;
     setCreatingChar(true);
+    setProjectActionError(null);
     try {
       const data = await apiRequest<{ character: CharacterProfile }>('/api/characters', {
         method: 'POST',
@@ -95,6 +103,8 @@ export function ProjectsCharactersView({
       setCharRole('');
       setCharAppearance('');
       setCharClothing('');
+    } catch (error) {
+      setProjectActionError(getProjectActionError(error, 'Charakter konnte nicht erstellt werden.'));
     } finally {
       setCreatingChar(false);
     }
@@ -141,6 +151,7 @@ export function ProjectsCharactersView({
         </div>
       </div>
 
+      {projectActionError && <div role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{projectActionError}</div>}
       {tab === 'projects' && projectDeleteNotice && (
         <p role="status" className="text-xs text-amber-300">{projectDeleteNotice}</p>
       )}
@@ -242,6 +253,7 @@ export function ProjectsCharactersView({
                         disabled={deletingProjId === p.id}
                         onClick={async () => {
                           setDeletingProjId(p.id);
+                          setProjectActionError(null);
                           try {
                             const deletion = await apiRequest<{ workerCleanup?: { pending?: number } }>(`/api/projects/${p.id}`, { method: 'DELETE' });
                             let localCleanupFailed = false;
@@ -259,6 +271,8 @@ export function ProjectsCharactersView({
                               notices.push('Lokale Clip-Kopien konnten auf diesem Gerät nicht vollständig gelöscht werden.');
                             }
                             setProjectDeleteNotice(notices.length ? notices.join(' ') : null);
+                          } catch (error) {
+                            setProjectActionError(getProjectActionError(error, 'Projekt konnte nicht gelöscht werden.'));
                           } finally {
                             setDeletingProjId(null);
                           }
@@ -325,12 +339,33 @@ export function ProjectsCharactersView({
                       {p.assets.slice(0, 4).map((a) => (
                         <div
                           key={a.id}
-                          className="p-2 rounded-lg bg-[#090B10] border border-white/[0.06] text-[11px] flex items-center justify-between gap-2"
+                          className="p-2 rounded-lg bg-[#090B10] border border-white/[0.06] text-[11px] flex flex-col items-stretch gap-2"
                         >
-                          <span className="truncate text-slate-200">
-                            [{a.type.toUpperCase()}] {a.title}
-                          </span>
-                          <span className="font-mono text-slate-500 shrink-0">{a.modelId}</span>
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <span className="truncate text-slate-200">
+                              [{a.type.toUpperCase()}] {a.title}
+                            </span>
+                            <span className="font-mono text-slate-500 shrink-0">{a.modelId}</span>
+                          </div>
+                          {(a.type === 'audio' || a.type === 'music') && (
+                            <audio
+                              controls
+                              preload="metadata"
+                              src={a.url}
+                              aria-label={`Audio abspielen: ${a.title}`}
+                              className="w-full min-w-0"
+                            />
+                          )}
+                          {a.type === 'audio' && (
+                            <button
+                              type="button"
+                              onClick={() => onLoadAudioAsset(a)}
+                              className="min-h-[36px] rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
+                              aria-label={`Audio im Audio Studio öffnen: ${a.title}`}
+                            >
+                              Im Audio Studio öffnen
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>

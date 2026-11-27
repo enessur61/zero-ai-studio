@@ -216,7 +216,7 @@ export type ZeroResourcePolicy = {
  */
 export const ZERO_RESOURCE_POLICIES: Readonly<Record<'wan-video' | 'piper-tts', ZeroResourcePolicy>> = Object.freeze({
   'wan-video': Object.freeze({
-    dailyJobs: 6, dailyUnits: 6, maxConcurrent: 1, perMinute: 2,
+    dailyJobs: 15, dailyUnits: 15, maxConcurrent: 1, perMinute: 2,
     reservationTtlSeconds: 2 * 60 * 60, maxUnitsPerJob: 1,
   }),
   'piper-tts': Object.freeze({

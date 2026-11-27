@@ -1,5 +1,5 @@
 import Foundation
-import CoreML
+@preconcurrency import CoreML
 
 public protocol LlamaTokenizer: Sendable {
     func encode(_ text: String) -> [Int32]
@@ -36,12 +36,69 @@ public struct CoreMLDeploymentStatus: Codable, Sendable {
     public let estimatedRamGB: Double
 }
 
+// CoreML model/state objects are Objective-C runtime references and do not currently
+// declare Swift Sendable conformance. The wrapper keeps them behind a narrow async API:
+// each generation owns a distinct MLState, while CoreML's MLModel supports concurrent
+// predictions when callers do not share mutable state.
+private final class CoreMLStateReference: @unchecked Sendable {
+    fileprivate let value: MLState
+    init(_ value: MLState) { self.value = value }
+}
+
+private final class CoreMLLogits: @unchecked Sendable {
+    fileprivate let value: MLMultiArray
+    init(_ value: MLMultiArray) { self.value = value }
+}
+
+private final class CoreMLModelReference: @unchecked Sendable {
+    private let model: MLModel
+    init(_ model: MLModel) { self.model = model }
+
+    func makeState() -> CoreMLStateReference {
+        CoreMLStateReference(model.makeState())
+    }
+
+    func prediction(
+        inputIds: [Int32],
+        startPosition: Int,
+        state: CoreMLStateReference
+    ) async throws -> CoreMLLogits {
+        let seqLen = inputIds.count
+        let idsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .int32)
+        for (idx, token) in inputIds.enumerated() {
+            idsArray[[0, NSNumber(value: idx)]] = NSNumber(value: token)
+        }
+
+        let maskArray = try MLMultiArray(
+            shape: [1, 1, NSNumber(value: seqLen), NSNumber(value: startPosition + seqLen)],
+            dataType: .float16
+        )
+        for row in 0..<seqLen {
+            for col in 0..<(startPosition + seqLen) {
+                let allowed = col <= (startPosition + row)
+                maskArray[[0, 0, NSNumber(value: row), NSNumber(value: col)]] =
+                    NSNumber(value: allowed ? 0.0 : -65504.0)
+            }
+        }
+
+        let provider = try MLDictionaryFeatureProvider(dictionary: [
+            "inputIds": MLFeatureValue(multiArray: idsArray),
+            "causalMask": MLFeatureValue(multiArray: maskArray)
+        ])
+        let output = try await model.prediction(from: provider, using: state.value)
+        guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
+            throw CoreMLAdapterError.missingOutputLogits
+        }
+        return CoreMLLogits(logits)
+    }
+}
+
 /// Lokaler CoreML-Adapter für Meta Llama 3.2 (1B / 3B Instruct, 4-bit quantisiert)
 /// Optimiert für Apple A18 Pro Neural Engine auf iPhone 16 Pro Max (8 GB Unified Memory).
-public final class LlamaCoreMLAdapter: @unchecked Sendable {
+public actor LlamaCoreMLAdapter {
     private let config: LlamaCoreMLConfig
     private let tokenizer: LlamaTokenizer?
-    private var model: MLModel?
+    private var model: CoreMLModelReference?
 
     public init(config: LlamaCoreMLConfig = .init(), tokenizer: LlamaTokenizer? = nil) {
         self.config = config
@@ -97,7 +154,7 @@ public final class LlamaCoreMLAdapter: @unchecked Sendable {
         }
 
         let mlConfig = config.makeMLModelConfiguration()
-        self.model = try await MLModel.load(contentsOf: modelURL, configuration: mlConfig)
+        self.model = CoreMLModelReference(try await MLModel.load(contentsOf: modelURL, configuration: mlConfig))
     }
 
     public func unloadModel() {
@@ -162,42 +219,16 @@ public final class LlamaCoreMLAdapter: @unchecked Sendable {
     }
 
     private func predictStep(
-        model: MLModel,
+        model: CoreMLModelReference,
         inputIds: [Int32],
         startPosition: Int,
-        state: MLState
-    ) async throws -> MLMultiArray {
-        let seqLen = inputIds.count
-        let idsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .int32)
-        for (idx, tok) in inputIds.enumerated() {
-            idsArray[[0, NSNumber(value: idx)]] = NSNumber(value: tok)
-        }
-
-        let maskArray = try MLMultiArray(
-            shape: [1, 1, NSNumber(value: seqLen), NSNumber(value: startPosition + seqLen)],
-            dataType: .float16
-        )
-        let totalCols = startPosition + seqLen
-        for row in 0..<seqLen {
-            for col in 0..<totalCols {
-                let allowed = col <= (startPosition + row)
-                maskArray[[0, 0, NSNumber(value: row), NSNumber(value: col)]] = NSNumber(value: allowed ? 0.0 : -65504.0)
-            }
-        }
-
-        let provider = try MLDictionaryFeatureProvider(dictionary: [
-            "inputIds": MLFeatureValue(multiArray: idsArray),
-            "causalMask": MLFeatureValue(multiArray: maskArray)
-        ])
-
-        let output = try await model.prediction(from: provider, using: state)
-        guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
-            throw CoreMLAdapterError.missingOutputLogits
-        }
-        return logits
+        state: CoreMLStateReference
+    ) async throws -> CoreMLLogits {
+        try await model.prediction(inputIds: inputIds, startPosition: startPosition, state: state)
     }
 
-    private func sampleTopP(logits: MLMultiArray, temperature: Float, topP: Float) -> Int32 {
+    private func sampleTopP(logits: CoreMLLogits, temperature: Float, topP: Float) -> Int32 {
+        let logits = logits.value
         let vocabCount = config.variant.vocabSize
         let count = min(vocabCount, logits.count)
         let offset = max(0, logits.count - vocabCount)

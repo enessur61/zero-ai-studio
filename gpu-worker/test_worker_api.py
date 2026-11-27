@@ -56,7 +56,7 @@ def _install_runtime_stubs() -> None:
 with tempfile.TemporaryDirectory(prefix="zero-wan-api-import-") as _import_root:
     os.environ["WAN_OUTPUT_DIR"] = _import_root
     os.environ["HF_HOME"] = str(Path(_import_root) / "hf-cache")
-    os.environ["ZERO_VIDEO_ENGINE_TOKEN"] = "ci-worker-token"
+    os.environ["ZERO_VIDEO_ENGINE_TOKEN"] = "ci-worker-token-0123456789abcdef"
     os.environ["ZERO_WAN_GPU_ENABLED"] = "true"
     os.environ["ZERO_WAN_GPU_COSTS_CONFIRMED"] = "true"
     os.environ["ZERO_WAN_GPU_DAILY_JOB_LIMIT"] = "3"
@@ -77,13 +77,13 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         worker._jobs = worker._JOB_STORE.load_all()
         worker.PERSISTENT_MOUNT_CONFIGURED = True
         worker.MODEL_CACHE_PERSISTENT = True
-        worker.APP_TOKEN = "ci-worker-token"
+        worker.APP_TOKEN = "ci-worker-token-0123456789abcdef"
         worker.WAN_GPU_ENABLED = True
         worker.WAN_GPU_COSTS_CONFIRMED = True
         worker.WAN_DAILY_JOB_LIMIT = 3
         worker.WAN_MAX_CONCURRENT_JOBS = 1
         worker.gpu_vram_total_mb = lambda: 16 * 1024
-        self.auth = "Bearer ci-worker-token"
+        self.auth = "Bearer ci-worker-token-0123456789abcdef"
         self.client = TestClient(worker.app)
 
     def tearDown(self) -> None:
@@ -110,6 +110,21 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
             return self.client.post("/jobs", json=self.payload(), headers=self.headers(principal, key))
 
     def test_authentication_cost_gate_gpu_gate_and_principal_are_required(self) -> None:
+        configured_token = worker.APP_TOKEN
+        try:
+            worker.APP_TOKEN = "short"
+            self.assertEqual(
+                self.client.get("/jobs", headers={"Authorization": "Bearer short"}).status_code,
+                503,
+            )
+            self.assertEqual(self.client.get("/health").status_code, 503)
+            worker.APP_TOKEN = "example-do-not-use-this-token-000000"
+            self.assertEqual(
+                self.client.get("/jobs", headers={"Authorization": "Bearer example-do-not-use-this-token-000000"}).status_code,
+                503,
+            )
+        finally:
+            worker.APP_TOKEN = configured_token
         self.assertEqual(self.client.get("/jobs").status_code, 401)
         missing_principal = self.client.get("/jobs", headers={"Authorization": self.auth})
         self.assertEqual(missing_principal.status_code, 401)
@@ -175,17 +190,47 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         worker.run_generation(job_id, "A cinematic five second test scene", "9:16", None)
         self.assertEqual(worker._jobs[job_id]["status"], "cancelled")
 
-    def test_idempotency_replays_only_same_principal_and_same_request(self) -> None:
+    def test_idempotency_replays_before_queue_cost_and_gpu_admission(self) -> None:
         first = self.create_http(principal=self.PRINCIPAL_A, key="1" * 64)
         self.assertEqual(first.status_code, 202)
         first_id = first.json()["job"]["id"]
+
+        # Fill the in-memory queue after the job was accepted. A retry must
+        # replay the original durable job rather than being rejected as new.
+        for _ in range(49):
+            fake_id = str(UUID(int=1000 + _))
+            worker._jobs[fake_id] = {
+                "id": fake_id, "status": "completed", "created_at": "2026-11-18T12:00:00Z",
+                "duration_sec": 5, "engine": "Wan 2.1", "project_id": "project_123",
+                "scene_id": "scene_456", "principal_hash": self.PRINCIPAL_A,
+                "idempotency_key_hash": str(_).zfill(64), "request_fingerprint": str(_).zfill(64),
+            }
+        self.assertEqual(len(worker._jobs), 50)
+
+        # Closing the gate or losing GPU capacity after acceptance must not
+        # prevent a read-only replay; it must never start a second inference.
+        worker.WAN_GPU_ENABLED = False
+        worker.WAN_GPU_COSTS_CONFIRMED = False
+        worker.MODEL_CACHE_PERSISTENT = False
+        worker.gpu_vram_total_mb = lambda: 0
         replay = self.create_http(principal=self.PRINCIPAL_A, key="1" * 64)
-        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json()["job"]["id"], first_id)
         self.assertTrue(replay.json()["replayed"])
 
+        # A genuinely new job must still fail closed while the model cache is
+        # not persistent, and must not consume daily quota.
+        worker.WAN_GPU_ENABLED = True
+        worker.WAN_GPU_COSTS_CONFIRMED = True
+        blocked_new = self.create_http(principal=self.PRINCIPAL_B, key="2" * 64)
+        self.assertEqual(blocked_new.status_code, 503, blocked_new.text)
+        self.assertEqual(worker._JOB_STORE.daily_usage(), 1)
+
+        worker.MODEL_CACHE_PERSISTENT = True
+        worker.gpu_vram_total_mb = lambda: 16 * 1024
+
         other_principal = self.create_http(principal=self.PRINCIPAL_B, key="1" * 64)
-        self.assertEqual(other_principal.status_code, 429)  # GPU slot remains occupied by the first queued job.
+        self.assertEqual(other_principal.status_code, 429)  # A different principal cannot replay the accepted job.
 
         changed_payload = self.payload()
         changed_payload["prompt"] = "A different cinematic five second test scene"
@@ -208,10 +253,24 @@ class WanWorkerApiSecurityTests(unittest.TestCase):
         self.assertEqual(recovered[queued["id"]]["status"], "cancelled")
         self.assertEqual(recovered[running["id"]]["status"], "cancelled")
 
+    def test_daily_job_limit_parser_clamps_to_reviewed_ceiling_and_fails_closed(self) -> None:
+        self.assertEqual(worker.WAN_MAX_DAILY_JOBS, 15)
+        self.assertEqual(worker.WAN_MAX_PROJECT_JOBS_PER_DAY, 3)
+        self.assertEqual(worker.parse_daily_job_limit(None), 3)
+        self.assertEqual(worker.parse_daily_job_limit("0"), 0)
+        self.assertEqual(worker.parse_daily_job_limit("3"), 3)
+        self.assertEqual(worker.parse_daily_job_limit("15"), 15)
+        self.assertEqual(worker.parse_daily_job_limit("16"), 15)
+        self.assertEqual(worker.parse_daily_job_limit("-1"), 0)
+        self.assertEqual(worker.parse_daily_job_limit("invalid"), 0)
+        self.assertEqual(worker.parse_daily_job_limit(""), 0)
+
     def test_worker_health_reports_free_only_gate_and_sixty_second_cap(self) -> None:
+        worker.WAN_DAILY_JOB_LIMIT = 15
         status = worker.health()
         self.assertTrue(status["cost_gate_open"])
-        self.assertEqual(status["daily_job_limit"], 3)
+        self.assertEqual(status["daily_job_limit"], 15)
+        self.assertEqual(status["daily_jobs_remaining"], 15)
         self.assertEqual(status["max_concurrent_jobs"], 1)
         self.assertEqual(status["max_shot_duration_sec"], 5)
         self.assertEqual(status["max_final_duration_sec"], 60)

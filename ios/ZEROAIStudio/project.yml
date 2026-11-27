@@ -6,13 +6,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
+    # Keep the native bundle version aligned with package.json.
+    MARKETING_VERSION: "1.1.8"
+    CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1,2"
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_CFBundleDisplayName: "ZERO AI STUDIO"
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
     INFOPLIST_KEY_UIUserInterfaceStyle: Dark
-    ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
-    INFOPLIST_KEY_ZERO_APP_URL: "$(ZERO_APP_URL)"
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "ZERO nutzt das Mikrofon für Spracherkennung und Audioaufnahmen."
     INFOPLIST_KEY_NSCameraUsageDescription: "ZERO nutzt die Kamera, wenn du Bilder oder Videos aufnehmen möchtest."
     INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "ZERO greift auf ausgewählte Medien zu, die du in deinen Projekten verwenden möchtest."
@@ -30,8 +31,23 @@ targets:
     dependencies:
       - package: ZeroCoreML
         product: ZeroCoreML
+    info:
+      path: Info.plist
+      properties:
+        ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
     settings:
       base:
         PRODUCT_NAME: "ZERO AI STUDIO"
         IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         SWIFT_STRICT_CONCURRENCY: complete
+        ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
+    postBuildScripts:
+      - name: Embed ZERO_APP_URL in the app bundle
+        script: |
+          set -eu
+          test -n "$ZERO_APP_URL"
+          if /usr/libexec/PlistBuddy -c "Print :ZERO_APP_URL" "$INFOPLIST_PATH" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :ZERO_APP_URL $ZERO_APP_URL" "$INFOPLIST_PATH"
+          else
+            /usr/libexec/PlistBuddy -c "Add :ZERO_APP_URL string $ZERO_APP_URL" "$INFOPLIST_PATH"
+          fi

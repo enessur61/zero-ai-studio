@@ -129,6 +129,306 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         ON zero_project_video_assets (principal_hash, project_id, created_at DESC);
     `,
   },
+
+  {
+    version: 4,
+    name: 'reconcile-project-video-assets-schema',
+    sql: `
+      DO $migration$
+      DECLARE
+        target_table regclass;
+        expected record;
+        actual_type text;
+        actual_not_null boolean;
+        created_at_default text;
+        invalid_count bigint;
+        asset_id_att smallint;
+        principal_hash_att smallint;
+        job_id_att smallint;
+        existing_pk record;
+        existing_unique record;
+      BEGIN
+        target_table := to_regclass(format('%I.%I', current_schema(), 'zero_project_video_assets'));
+        IF target_table IS NULL THEN
+          RAISE EXCEPTION 'Migration 4: video asset table missing in schema %', current_schema();
+        END IF;
+
+        FOR expected IN
+          SELECT * FROM (VALUES
+            ('asset_id', 'uuid', true),
+            ('project_id', 'text', true),
+            ('scene_id', 'text', true),
+            ('principal_hash', 'character(64)', true),
+            ('job_id', 'uuid', false),
+            ('content_type', 'text', true),
+            ('size_bytes', 'bigint', true),
+            ('sha256', 'character(64)', true),
+            ('payload', 'bytea', true),
+            ('created_at', 'timestamp with time zone', true)
+          ) AS e(name, type_name, not_null)
+        LOOP
+          SELECT format_type(a.atttypid, a.atttypmod), a.attnotnull
+          INTO actual_type, actual_not_null
+          FROM pg_attribute a
+          WHERE a.attrelid = target_table AND a.attname = expected.name
+            AND a.attnum > 0 AND NOT a.attisdropped;
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'Migration 4: required column % is missing', expected.name;
+          END IF;
+          IF actual_type <> expected.type_name OR actual_not_null IS DISTINCT FROM expected.not_null THEN
+            RAISE EXCEPTION 'Migration 4: incompatible type or nullability for column %', expected.name;
+          END IF;
+        END LOOP;
+
+        SELECT pg_get_expr(d.adbin, d.adrelid)
+        INTO created_at_default
+        FROM pg_attribute a
+        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = target_table AND a.attname = 'created_at';
+        IF created_at_default IS NULL THEN
+          EXECUTE format('ALTER TABLE %s ALTER COLUMN created_at SET DEFAULT NOW()', target_table);
+        ELSIF lower(created_at_default) <> 'now()' THEN
+          RAISE EXCEPTION 'Migration 4: unexpected created_at default: %', created_at_default;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM pg_attrdef d
+          JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+          WHERE d.adrelid = target_table
+            AND a.attname IN (
+              'asset_id', 'project_id', 'scene_id', 'principal_hash',
+              'job_id', 'content_type', 'size_bytes', 'sha256', 'payload'
+            )
+        ) THEN
+          RAISE EXCEPTION 'Migration 4: unexpected default on a non-created_at column';
+        END IF;
+
+        SELECT max(a.attnum) FILTER (WHERE a.attname = 'asset_id'),
+               max(a.attnum) FILTER (WHERE a.attname = 'principal_hash'),
+               max(a.attnum) FILTER (WHERE a.attname = 'job_id')
+        INTO asset_id_att, principal_hash_att, job_id_att
+        FROM pg_attribute a
+        WHERE a.attrelid = target_table AND a.attnum > 0 AND NOT a.attisdropped;
+
+        SELECT count(*) INTO invalid_count
+        FROM zero_project_video_assets
+        WHERE asset_id IS NULL
+          OR project_id IS NULL OR length(project_id) NOT BETWEEN 1 AND 128
+          OR scene_id IS NULL OR length(scene_id) NOT BETWEEN 1 AND 128
+          OR principal_hash IS NULL OR principal_hash !~ ('^[a-f0-9]{64}' || chr(36))
+          OR content_type IS NULL OR content_type NOT IN ('video/mp4', 'video/webm')
+          OR size_bytes IS NULL OR size_bytes NOT BETWEEN 1024 AND 104857600
+          OR sha256 IS NULL OR sha256 !~ ('^[a-f0-9]{64}' || chr(36))
+          OR payload IS NULL OR created_at IS NULL;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: % existing rows violate video asset invariants', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM (SELECT asset_id FROM zero_project_video_assets GROUP BY asset_id HAVING count(*) > 1) d;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: duplicate asset_id values';
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM (
+          SELECT principal_hash, job_id FROM zero_project_video_assets
+          WHERE job_id IS NOT NULL GROUP BY principal_hash, job_id HAVING count(*) > 1
+        ) d;
+        IF invalid_count > 0 THEN
+          RAISE EXCEPTION 'Migration 4: duplicate principal_hash/job_id values';
+        END IF;
+
+        SELECT c.contype, c.conname, c.conkey, c.condeferrable, c.condeferred
+        INTO existing_pk
+        FROM pg_constraint c
+        WHERE c.conrelid = target_table AND c.contype = 'p';
+        IF FOUND THEN
+          IF existing_pk.conkey <> ARRAY[asset_id_att]::smallint[]
+             OR existing_pk.condeferrable OR existing_pk.condeferred THEN
+            RAISE EXCEPTION 'Migration 4: existing primary key has an incompatible key or deferrability';
+          END IF;
+        ELSE
+          EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_asset_id_v4_pkey PRIMARY KEY (asset_id)', target_table);
+        END IF;
+
+        SELECT c.conkey, c.condeferrable, c.condeferred
+        INTO existing_unique
+        FROM pg_constraint c
+        WHERE c.conrelid = target_table AND c.contype = 'u'
+          AND c.conkey = ARRAY[principal_hash_att, job_id_att]::smallint[];
+        IF FOUND THEN
+          IF existing_unique.condeferrable OR existing_unique.condeferred THEN
+            RAISE EXCEPTION 'Migration 4: principal_hash/job_id unique constraint must be immediate';
+          END IF;
+        ELSE
+          EXECUTE format('ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_principal_job_v4_key UNIQUE (principal_hash, job_id)', target_table);
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = target_table
+            AND conname IN (
+              'zero_project_video_assets_project_id_v4_check',
+              'zero_project_video_assets_scene_id_v4_check',
+              'zero_project_video_assets_principal_hash_v4_check',
+              'zero_project_video_assets_content_type_v4_check',
+              'zero_project_video_assets_size_bytes_v4_check',
+              'zero_project_video_assets_sha256_v4_check'
+            )
+        ) THEN
+          RAISE EXCEPTION 'Migration 4: reserved v4 constraint name already exists';
+        END IF;
+      END
+      $migration$;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_project_id_v4_check
+        CHECK (length(project_id) BETWEEN 1 AND 128) NOT VALID;
+      ALTER TABLE zero_project_video_assets VALIDATE CONSTRAINT zero_project_video_assets_project_id_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_scene_id_v4_check
+        CHECK (length(scene_id) BETWEEN 1 AND 128) NOT VALID;
+      ALTER TABLE zero_project_video_assets VALIDATE CONSTRAINT zero_project_video_assets_scene_id_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_content_type_v4_check
+        CHECK (content_type IN ('video/mp4', 'video/webm')) NOT VALID;
+      ALTER TABLE zero_project_video_assets VALIDATE CONSTRAINT zero_project_video_assets_content_type_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_size_bytes_v4_check
+        CHECK (size_bytes BETWEEN 1024 AND 104857600) NOT VALID;
+      ALTER TABLE zero_project_video_assets VALIDATE CONSTRAINT zero_project_video_assets_size_bytes_v4_check;
+
+      ALTER TABLE zero_project_video_assets
+        ADD CONSTRAINT zero_project_video_assets_sha256_v4_check
+        CHECK (sha256 ~ ('^[a-f0-9]{64}' || chr(36))) NOT VALID;
+      ALTER TABLE zero_project_video_assets VALIDATE CONSTRAINT zero_project_video_assets_sha256_v4_check;
+
+      DO $migration$
+      DECLARE
+        target_table regclass;
+        principal_hash_att smallint;
+        strict_regex text;
+        strict_check record;
+        normalized_definition text;
+        strict_check_found boolean := false;
+      BEGIN
+        target_table := to_regclass(format('%I.%I', current_schema(), 'zero_project_video_assets'));
+        strict_regex := '^[a-f0-9]{64}' || chr(36);
+        SELECT a.attnum INTO principal_hash_att
+        FROM pg_attribute a
+        WHERE a.attrelid = target_table AND a.attname = 'principal_hash'
+          AND a.attnum > 0 AND NOT a.attisdropped;
+
+        FOR strict_check IN
+          SELECT c.conname, c.convalidated, c.conkey,
+                 pg_get_constraintdef(c.oid, false) AS definition
+          FROM pg_constraint c
+          WHERE c.conrelid = target_table AND c.contype = 'c'
+        LOOP
+          normalized_definition := lower(regexp_replace(strict_check.definition, '[[:space:]()]', '', 'g'));
+          normalized_definition := replace(normalized_definition, 'principal_hash::text', 'principal_hash');
+          IF strict_check.conkey = ARRAY[principal_hash_att]::smallint[]
+             AND (
+               normalized_definition = 'checkprincipal_hash~' || quote_literal(strict_regex)
+               OR normalized_definition = 'checkprincipal_hash~' || quote_literal(strict_regex) || '::text'
+             ) THEN
+            strict_check_found := true;
+            IF NOT strict_check.convalidated THEN
+              EXECUTE format('ALTER TABLE %s VALIDATE CONSTRAINT %I', target_table, strict_check.conname);
+            END IF;
+          END IF;
+        END LOOP;
+
+        IF NOT strict_check_found THEN
+          EXECUTE format(
+            'ALTER TABLE %s ADD CONSTRAINT zero_project_video_assets_principal_hash_v4_check CHECK (principal_hash ~ (''^[a-f0-9]{64}'' || chr(36))) NOT VALID',
+            target_table
+          );
+          EXECUTE format(
+            'ALTER TABLE %s VALIDATE CONSTRAINT zero_project_video_assets_principal_hash_v4_check',
+            target_table
+          );
+        END IF;
+      END
+      $migration$;
+
+      DO $migration$
+      DECLARE
+        target_table regclass;
+        index_oid oid;
+        index_valid boolean;
+        index_ready boolean;
+        index_unique boolean;
+        no_predicate boolean;
+        access_method text;
+        key_count smallint;
+        total_count smallint;
+        index_columns text[];
+        index_options smallint[];
+      BEGIN
+        target_table := to_regclass(format('%I.%I', current_schema(), 'zero_project_video_assets'));
+        SELECT i.indexrelid, i.indisvalid, i.indisready, i.indisunique,
+               i.indpred IS NULL, am.amname, i.indnkeyatts, i.indnatts
+        INTO index_oid, index_valid, index_ready, index_unique,
+             no_predicate, access_method, key_count, total_count
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        JOIN pg_am am ON am.oid = idx.relam
+        CROSS JOIN LATERAL (
+          SELECT array_agg(a.attname::text ORDER BY k.ordinality) AS columns,
+                 array_agg(o.option_value ORDER BY o.ordinality) AS options
+          FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          JOIN LATERAL unnest(i.indoption) WITH ORDINALITY AS o(option_value, ordinality)
+            ON o.ordinality = k.ordinality
+          WHERE k.ordinality <= i.indnkeyatts
+        ) shape
+        WHERE i.indrelid = target_table
+          AND (
+            idx.relname = 'zero_project_video_assets_project_idx'
+            OR (
+              i.indisvalid AND i.indisready AND NOT i.indisunique
+              AND i.indpred IS NULL AND am.amname = 'btree'
+              AND i.indnkeyatts = 3 AND i.indnatts = 3
+              AND shape.columns = ARRAY['principal_hash', 'project_id', 'created_at']::text[]
+              AND shape.options = ARRAY[0, 0, 3]::smallint[]
+            )
+          )
+        ORDER BY (idx.relname = 'zero_project_video_assets_project_idx') DESC
+        LIMIT 1;
+
+        IF FOUND THEN
+          SELECT array_agg(a.attname::text ORDER BY k.ordinality),
+                 array_agg(o.option_value ORDER BY o.ordinality)
+          INTO index_columns, index_options
+          FROM pg_index i
+          CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          JOIN LATERAL unnest(i.indoption) WITH ORDINALITY AS o(option_value, ordinality)
+            ON o.ordinality = k.ordinality
+          WHERE i.indexrelid = index_oid AND k.ordinality <= i.indnkeyatts;
+
+          IF NOT index_valid OR NOT index_ready OR index_unique OR NOT no_predicate
+             OR access_method <> 'btree' OR key_count <> 3 OR total_count <> 3
+             OR index_columns <> ARRAY['principal_hash', 'project_id', 'created_at']::text[]
+             OR index_options <> ARRAY[0, 0, 3]::smallint[] THEN
+            RAISE EXCEPTION 'Migration 4: existing project video index has incompatible definition';
+          END IF;
+        ELSE
+          EXECUTE format(
+            'CREATE INDEX zero_project_video_assets_project_idx ON %s (principal_hash, project_id, created_at DESC)',
+            target_table
+          );
+        END IF;
+      END
+      $migration$;
+    `,
+  },
 ];
 export function getZeroSchemaMigrationChecksum(migration: ZeroSchemaMigration): string {
   return createHash('sha256').update(migration.sql).digest('hex');

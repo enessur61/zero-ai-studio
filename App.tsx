@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from 'react';
 import {
   Brain,
   Clapperboard,
@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiRequest } from './lib/api.ts';
+import { ObjectUrlLease } from './lib/objectUrlLease.ts';
 import { readProjectVideoPlaybackSnapshot, shouldOpenVideoStudioForPlaybackSnapshot } from './lib/projectVideoPlayback.ts';
 import type {
   AutomationRun,
@@ -29,6 +30,7 @@ import type {
   MemoryEntry,
   ModelDefinition,
   NavigationTab,
+  ProjectAsset,
   StudioProject,
   SystemBackupMeta,
 } from './types/zero.ts';
@@ -133,9 +135,21 @@ export default function App() {
   const [istZustand, setIstZustand] = useState<IstZustandItem[]>([]);
   const [roadmap, setRoadmap] = useState<DevelopmentPhase[]>([]);
   const [videoProjectId, setVideoProjectId] = useState<string | undefined>(undefined);
+  const [audioAssetToLoad, setAudioAssetToLoad] = useState<ProjectAsset | null>(null);
   const [videoSoundtrack, setVideoSoundtrack] = useState<{ url: string; title: string } | null>(
     null
   );
+  const videoSoundtrackLeaseRef = useRef(new ObjectUrlLease());
+
+  useEffect(() => {
+    const url = videoSoundtrack?.url;
+    if (!url) return;
+    videoSoundtrackLeaseRef.current.adopt(url);
+    return () => {
+      videoSoundtrackLeaseRef.current.release(url);
+    };
+  }, [videoSoundtrack?.url]);
+
 
   useEffect(() => {
     const onSessionExpired = () => {
@@ -283,6 +297,8 @@ export default function App() {
     setMobileSheetOpen(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+
+  const handleAudioAssetLoaded = useCallback(() => setAudioAssetToLoad(null), []);
 
   const handleProjectUpdated = useCallback((updated: StudioProject) => {
     setProjects((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
@@ -537,7 +553,7 @@ export default function App() {
           )}
 
           {activeTab === 'audio' && (
-            <AudioStudioView projects={projects} onProjectUpdated={handleProjectUpdated} />
+            <AudioStudioView projects={projects} onProjectUpdated={handleProjectUpdated} assetToLoad={audioAssetToLoad} onAudioAssetLoaded={handleAudioAssetLoaded} />
           )}
 
           {activeTab === 'music' && (
@@ -575,6 +591,10 @@ export default function App() {
               onProjectUpdated={handleProjectUpdated}
               onCharacterCreated={(c) => setCharacters((prev) => [c, ...prev])}
               onOpenDirector={() => navigateTo('director')}
+              onLoadAudioAsset={(asset) => {
+                setAudioAssetToLoad(asset);
+                navigateTo('audio');
+              }}
             />
           )}
 
