@@ -1224,7 +1224,7 @@ try {
     await projectVideoStoreB.get(archivedVideo.id, 'project-video-integration', videoPrincipal),
     'invalid media digest must preserve the existing clip',
   );
-  await storeA.write(
+  const emptyManifestRevision = await storeA.write(
     { value: 'restore-empty-manifest' }, restoredRevision, undefined, false,
     { principalHash: videoPrincipal, assets: [] },
   );
@@ -1241,8 +1241,9 @@ try {
   const [snapshotA, snapshotB] = await Promise.all([storeA.read(), storeB.read()]);
   assert.ok(snapshotA);
   assert.ok(snapshotB);
-  assert.equal(snapshotA.revision, 1);
-  assert.equal(snapshotB.revision, 1);
+  assert.equal(snapshotA.revision, emptyManifestRevision);
+  assert.equal(snapshotB.revision, emptyManifestRevision,
+    'both independent pools must observe the latest restore revision before racing');
 
   // Two independent pools deliberately race with the same expected revision.
   const concurrent = await Promise.allSettled([
@@ -1260,7 +1261,8 @@ try {
 
   const afterRace = await storeA.read();
   assert.ok(afterRace);
-  assert.equal(afterRace.revision, 2, 'one successful race must advance revision exactly once');
+  assert.equal(afterRace.revision, emptyManifestRevision + 1,
+    'one successful race must advance the current restore revision exactly once');
   assert.ok(
     ['connection-A', 'connection-B'].includes((afterRace.payload as { writer: string }).writer),
     'the committed payload must belong to the winning writer'
@@ -1273,9 +1275,10 @@ try {
   );
 
   const nextRevision = await storeB.write({ value: 'after-conflict' }, afterRace.revision);
-  assert.equal(nextRevision, 3, 'a caller using the latest revision may write successfully');
+  assert.equal(nextRevision, emptyManifestRevision + 2,
+    'a caller using the latest revision may write successfully');
   const finalState = await storeA.read();
-  assert.deepEqual(finalState, { payload: { value: 'after-conflict' }, revision: 3 });
+  assert.deepEqual(finalState, { payload: { value: 'after-conflict' }, revision: emptyManifestRevision + 2 });
 
   // State metadata and the backup bytes must commit in the same PostgreSQL transaction.
   const backupBytes = Buffer.from('ZERO-BACKUP-CONSISTENCY-TEST');
@@ -1293,7 +1296,7 @@ try {
       payload: backupBytes,
     }
   );
-  assert.equal(backupRevision, 4);
+  assert.equal(backupRevision, emptyManifestRevision + 3);
   const published = await storeA.read();
   assert.deepEqual(published, {
     payload: {
@@ -1301,7 +1304,7 @@ try {
       backups: [{ id: 'backup-atomic-success' }],
       backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }] },
     },
-    revision: 4,
+    revision: emptyManifestRevision + 3,
   });
   assert.deepEqual(await storeA.inspectBackupConsistency(), {
     orphanedBlobIds: [],
@@ -1348,7 +1351,7 @@ try {
     backups: [{ id: 'backup-atomic-success' }, { id: 'missing-backup' }],
     backupConfig: { zipBackups: [{ id: 'backup-atomic-success' }] },
   }, backupRevision);
-  assert.equal(reconciliationRevision, 5);
+  assert.equal(reconciliationRevision, emptyManifestRevision + 4);
   assert.deepEqual(await storeA.inspectBackupConsistency(), {
     orphanedBlobIds: ['orphaned-blob'],
     missingBlobIds: ['missing-backup'],
