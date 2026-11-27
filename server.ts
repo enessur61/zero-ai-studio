@@ -3531,6 +3531,9 @@ async function startServer() {
   if (IS_PRODUCTION && !process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL fehlt; ZERO kann in Produktion nicht sicher starten.');
   }
+  if (IS_PRODUCTION && (ZERO_ADMIN_PASSWORD.length < 12 || ZERO_SESSION_SECRET.length < 32)) {
+    throw new Error('ZERO_ADMIN_PASSWORD (mind. 12 Zeichen) und ZERO_SESSION_SECRET (mind. 32 Zeichen) müssen vor dem Produktionsstart konfiguriert sein.');
+  }
   if (process.env.DATABASE_URL) {
     const database = getPostgresPool();
     await database.query('SELECT 1');
