@@ -96,6 +96,9 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
             return;
           }
           if (recovered.status === 409) {
+            // UNKNOWN is terminal for automatic recovery: consume the request quota
+            // and release the active slot, but never start a second synthesis.
+            await deps.settle(principal.id, reservation.reservationId, 'completed');
             res.status(409).json({ status: 'unknown', reservationId: reservation.reservationId, error: 'Der Piper-Worker hat für diesen Schlüssel einen unklaren Abschluss dauerhaft markiert. Eine erneute Synthese wird blockiert; das Ergebnis muss manuell abgeglichen werden.', costEur: 0, paidFallback: false });
             return;
           }
@@ -162,6 +165,19 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
       const controller = new AbortController();
       timeout = setTimeout(() => controller.abort(), 150000);
       const response = await deps.synthesize({ worker, text, speed, idempotencyKey: workerIdempotencyKey, signal: controller.signal });
+      if (response.status === 202) {
+        // The worker has already claimed this key. Keep the reservation open and
+        // let the client poll/retry with the same key; JSON is not a completed WAV.
+        res.status(202).json({ status: 'processing', reservationId: reservation.reservationId, retryAfterSeconds: 2, costEur: 0, paidFallback: false });
+        return;
+      }
+      if (response.status === 409) {
+        // The worker has durably marked this key UNKNOWN. Do not retry inference.
+        await deps.settle(principal.id, reservation.reservationId, 'completed');
+        completed = true;
+        res.status(409).json({ status: 'unknown', reservationId: reservation.reservationId, error: 'Der Piper-Worker hat für diesen Schlüssel einen unklaren Abschluss dauerhaft markiert. Eine erneute Synthese wird blockiert; das Ergebnis muss manuell abgeglichen werden.', costEur: 0, paidFallback: false });
+        return;
+      }
       if (!response.ok) {
         safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 409;
         const payload = await response.json().catch(() => ({})) as { detail?: unknown };
