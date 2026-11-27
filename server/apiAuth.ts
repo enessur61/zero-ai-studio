@@ -36,6 +36,12 @@ export function createApiAuthMiddleware(options: ApiAuthOptions): RequestHandler
         return;
       }
       continueAuthenticated();
-    }).catch(next);
+    }).catch(() => {
+      // Authentication storage failures must fail closed with an explicit
+      // availability response, not fall through to a generic application 500.
+      if (!res.headersSent) {
+        res.status(503).json({ error: 'Authentifizierung derzeit nicht verfügbar.' });
+      }
+    });
   };
 }
