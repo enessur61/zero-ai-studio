@@ -2301,6 +2301,15 @@ app.post('/api/video/engine/jobs', asyncRoute(async (req, res) => {
   if (reservation.duplicate && reservation.status === 'released') {
     return { status: 409, body: { error: 'Dieser Wan-Auftrag wurde bereits freigegeben. Bitte mit neuem Idempotency-Key erneut starten.', resourceReservation: reservation.reservationId, costFallback: false } };
   }
+  if (reservation.duplicate && reservation.status === 'completed') {
+    // The worker may have pruned its old idempotency record after completion.
+    // Never submit again once the durable ZERO reservation is terminal.
+    return { status: 409, body: {
+      error: 'Dieser Wan-Auftrag wurde bereits abgeschlossen. Für einen neuen Auftrag muss ein neuer Idempotency-Key verwendet werden.',
+      resourceReservation: reservation.reservationId,
+      costFallback: false,
+    } };
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
