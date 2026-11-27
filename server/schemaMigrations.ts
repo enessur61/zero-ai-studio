@@ -311,8 +311,14 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
           WHERE c.conrelid = target_table AND c.contype = 'c'
         LOOP
           normalized_definition := lower(regexp_replace(strict_check.definition, '[[:space:]()]', '', 'g'));
-          IF position('^[a-f0-9]{64}' || chr(36) IN normalized_definition) > 0
-             AND position('principal_hash' IN normalized_definition) > 0 THEN
+          IF position('principal_hash' IN normalized_definition) > 0
+             AND (
+               position('^[a-f0-9]{64}$' IN normalized_definition) > 0
+               OR (
+                 position('^[a-f0-9]{64}' IN normalized_definition) > 0
+                 AND position('chr(36)' IN normalized_definition) > 0
+               )
+             ) THEN
             strict_check_found := true;
             IF NOT strict_check.convalidated THEN
               EXECUTE format('ALTER TABLE %s VALIDATE CONSTRAINT %I', target_table, strict_check.conname);
