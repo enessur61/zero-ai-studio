@@ -149,6 +149,30 @@ try {
   assert.deepEqual(videoIndex.rows[0].options, [0, 0, 3], 'index sort bits encode ASC, ASC, DESC NULLS FIRST');
   assert.match(videoIndex.rows[0].definition, /principal_hash, project_id, created_at DESC/);
 
+  // A separate empty schema exercises the fresh-install path where migration 3
+  // creates the strict check and migration 4 must recognize it via the catalog.
+  const freshSchema = `zero_revision_fresh_${randomUUID().replaceAll('-', '')}`;
+  await adminPool.query(`CREATE SCHEMA "${freshSchema}"`);
+  const freshPool = new Pool({ connectionString, options: `-c search_path=${freshSchema}`, max: 1 });
+  try {
+    await ensureZeroCostResourceSchema(freshPool);
+    const freshVersions = await freshPool.query('SELECT version FROM zero_schema_migrations ORDER BY version');
+    assert.deepEqual(freshVersions.rows.map((row) => Number(row.version)), [1, 2, 3, 4]);
+    const freshPrincipalChecks = await freshPool.query<{ conname: string; convalidated: boolean; definition: string }>(
+      `SELECT conname, convalidated, pg_get_constraintdef(oid, false) AS definition
+       FROM pg_constraint
+       WHERE conrelid = 'zero_project_video_assets'::regclass AND contype = 'c'`
+    );
+    const freshStrictCheck = freshPrincipalChecks.rows.find((row) => row.conname === 'zero_project_video_assets_principal_hash_check');
+    assert.ok(freshStrictCheck?.convalidated, 'fresh schema keeps the already strict migration 3 principal check');
+    assert.ok(freshStrictCheck.definition.includes('{64}$'), 'fresh strict check remains end anchored');
+    assert.equal(freshPrincipalChecks.rows.some((row) => row.conname === 'zero_project_video_assets_principal_hash_v4_check'), false,
+      'migration 4 does not duplicate an already validated strict principal check');
+  } finally {
+    await freshPool.end();
+    await adminPool.query(`DROP SCHEMA IF EXISTS "${freshSchema}" CASCADE`);
+  }
+
   const projectVideoStore = createProjectVideoAssetStore(poolA);
   const projectVideoStoreB = createProjectVideoAssetStore(poolB);
   const videoPrincipal = 'd'.repeat(64);
