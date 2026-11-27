@@ -162,7 +162,7 @@ export function createPiperTtsHandler(deps: PiperTtsHandlerDependencies): Reques
         safeToRelease = response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 409;
         const payload = await response.json().catch(() => ({})) as { detail?: unknown };
         const detail = typeof payload.detail === 'string' ? payload.detail : 'Der Piper-Worker konnte keine Sprache erzeugen.';
-        res.status(response.status === 400 ? 400 : 503).json({
+        res.status(safeToRelease ? response.status : 503).json({
           error: safeToRelease ? `Piper hat den Auftrag vor der Verarbeitung abgewiesen: ${detail.slice(0, 320)}` : detail.slice(0, 400),
           costEur: 0, paidFallback: false,
         });
