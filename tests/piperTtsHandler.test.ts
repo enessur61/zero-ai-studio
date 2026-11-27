@@ -88,9 +88,9 @@ const key = { 'idempotency-key': 'piper-handler-test-001' };
     synthesize: async () => new Response(JSON.stringify({ detail: 'worker rejected before processing' }), { status: 429 }),
   });
   const result = await invoke(deps, key);
-  assert.equal(result.status, 503);
+  assert.equal(result.status, 429);
   assert.deepEqual(calls.settled, ['released'],
-    'a definite worker rate-limit rejection must release the active reservation');
+    'a definite worker rate-limit rejection must return 429 and release the active reservation');
 }
 
 {
