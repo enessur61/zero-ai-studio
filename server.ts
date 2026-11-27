@@ -496,12 +496,12 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
       readiness: readinessForStage(readinessStage),
     });
   } catch (error) {
-    // Keep diagnostic detail in server logs only; never expose database errors
-    // or connection metadata in the public readiness response.
-    console.error(
-      `[ZERO HEALTH] Readiness failed at ${readinessStage}:`,
-      error instanceof Error ? error.message : String(error),
-    );
+    const safeMessage = error instanceof Error
+      ? error.message
+          .replace(/postgres(?:ql)?:\/\/[^\s"'\x60]+/gi, 'postgres://[redacted]')
+          .replace(/(password\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted]')
+      : 'Unknown readiness error';
+    console.error(`[ZERO HEALTH] Readiness failed at stage ${readinessStage}: ${safeMessage}`);
     return res.status(503).json({
       ok: false,
       app: 'ZERO AI STUDIO',
