@@ -63,7 +63,7 @@ async function verifyPassword(password: string, salt: Buffer, expectedHash: Buff
   if (!Buffer.isBuffer(salt) || salt.length !== PASSWORD_SALT_BYTES ||
       !Buffer.isBuffer(expectedHash) || expectedHash.length !== PASSWORD_BYTES ||
       typeof password !== 'string' || password.length > 1024) return false;
-  const actual = Buffer.from(await scrypt(password, salt, PASSWORD_BYTES));
+  const actual = await derivePasswordHash(password, salt);
   return timingSafeEqual(actual, expectedHash);
 }
 
