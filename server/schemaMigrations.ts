@@ -363,7 +363,28 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         FROM pg_index i
         JOIN pg_class idx ON idx.oid = i.indexrelid
         JOIN pg_am am ON am.oid = idx.relam
-        WHERE i.indrelid = target_table AND idx.relname = 'zero_project_video_assets_project_idx';
+        CROSS JOIN LATERAL (
+          SELECT array_agg(a.attname ORDER BY k.ordinality) AS columns,
+                 array_agg(o.option_value ORDER BY o.ordinality) AS options
+          FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          JOIN LATERAL unnest(i.indoption) WITH ORDINALITY AS o(option_value, ordinality)
+            ON o.ordinality = k.ordinality
+          WHERE k.ordinality <= i.indnkeyatts
+        ) shape
+        WHERE i.indrelid = target_table
+          AND (
+            idx.relname = 'zero_project_video_assets_project_idx'
+            OR (
+              i.indisvalid AND i.indisready AND NOT i.indisunique
+              AND i.indpred IS NULL AND am.amname = 'btree'
+              AND i.indnkeyatts = 3 AND i.indnatts = 3
+              AND shape.columns = ARRAY['principal_hash', 'project_id', 'created_at']::text[]
+              AND shape.options = ARRAY[0, 0, 3]::smallint[]
+            )
+          )
+        ORDER BY (idx.relname = 'zero_project_video_assets_project_idx') DESC
+        LIMIT 1;
 
         IF FOUND THEN
           SELECT array_agg(a.attname ORDER BY k.ordinality),
