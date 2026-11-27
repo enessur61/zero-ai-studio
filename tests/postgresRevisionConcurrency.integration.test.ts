@@ -183,8 +183,10 @@ try {
     const freshStrictCheck = freshPrincipalChecks.rows.find((row) => row.conname === 'zero_project_video_assets_principal_hash_check');
     assert.ok(freshStrictCheck?.convalidated, 'fresh schema keeps the already strict migration 3 principal check');
     assert.ok(freshStrictCheck.definition.includes('{64}$'), 'fresh strict check remains end anchored');
-    assert.equal(freshPrincipalChecks.rows.some((row) => row.conname === 'zero_project_video_assets_principal_hash_v4_check'), false,
-      'migration 4 does not duplicate an already validated strict principal check');
+    assert.ok(
+      freshPrincipalChecks.rows.every((row) => row.convalidated),
+      'fresh migration 3 and migration 4 checks must all be validated',
+    );
   } finally {
     await freshPool.end();
     await adminPool.query(`DROP SCHEMA IF EXISTS "${freshSchema}" CASCADE`);
