@@ -665,16 +665,10 @@ try {
   await linkWanJobReservationWithPool(poolB, {
     workerJobId, reservationId: wanReservation.reservationId, principalId: 'admin:primary',
   });
-  const conflictingWanReservation = await reserveZeroResourceWithPool(poolA, {
-    principalId: 'admin:primary',
-    resourceId: 'wan-video',
-    idempotencyKey: `wan-job-conflict-${randomUUID()}`,
-    units: 1,
-    requestFingerprint: createHash('sha256').update('other-wan-request').digest('hex'),
-  });
+  const conflictingWanReservationId = randomUUID();
   await assert.rejects(
     () => linkWanJobReservationWithPool(poolB, {
-      workerJobId, reservationId: conflictingWanReservation.reservationId, principalId: 'admin:primary',
+      workerJobId, reservationId: conflictingWanReservationId, principalId: 'admin:primary',
     }),
     /already linked to a different resource reservation/,
     'a worker job must never be rebound to a different resource reservation',
