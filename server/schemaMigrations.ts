@@ -302,24 +302,30 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
       DO $migration$
       DECLARE
         target_table regclass;
+        principal_hash_att smallint;
+        strict_regex text;
         strict_check record;
         normalized_definition text;
         strict_check_found boolean := false;
       BEGIN
         target_table := to_regclass(format('%I.%I', current_schema(), 'zero_project_video_assets'));
+        strict_regex := '^[a-f0-9]{64}' || chr(36);
+        SELECT a.attnum INTO principal_hash_att
+        FROM pg_attribute a
+        WHERE a.attrelid = target_table AND a.attname = 'principal_hash'
+          AND a.attnum > 0 AND NOT a.attisdropped;
+
         FOR strict_check IN
-          SELECT c.conname, c.convalidated, pg_get_constraintdef(c.oid, false) AS definition
+          SELECT c.conname, c.convalidated, c.conkey,
+                 pg_get_constraintdef(c.oid, false) AS definition
           FROM pg_constraint c
           WHERE c.conrelid = target_table AND c.contype = 'c'
         LOOP
           normalized_definition := lower(regexp_replace(strict_check.definition, '[[:space:]()]', '', 'g'));
-          IF position('principal_hash' IN normalized_definition) > 0
+          IF strict_check.conkey = ARRAY[principal_hash_att]::smallint[]
              AND (
-               position('^[a-f0-9]{64}$' IN normalized_definition) > 0
-               OR (
-                 position('^[a-f0-9]{64}' IN normalized_definition) > 0
-                 AND position('chr(36)' IN normalized_definition) > 0
-               )
+               normalized_definition = 'checkprincipal_hash~' || quote_literal(strict_regex)
+               OR normalized_definition = 'checkprincipal_hash~' || quote_literal(strict_regex) || '::text'
              ) THEN
             strict_check_found := true;
             IF NOT strict_check.convalidated THEN
