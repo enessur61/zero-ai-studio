@@ -1287,8 +1287,11 @@ try {
   assert.ok(reconciliationSql.includes('COMMIT'));
   assert.equal(reconciliationClientReleased, true, 'reconciliation must always release its checked-out client');
 
-  const initialRevision = await storeA.write({ value: 0 }, 0);
-  assert.equal(initialRevision, 1, 'initial insert must create revision 1');
+  const beforeRestoreSnapshot = await storeA.read();
+  assert.ok(beforeRestoreSnapshot, 'the PostgreSQL state fixture must be readable before video restore');
+  const initialRevision = await storeA.write({ value: 0 }, beforeRestoreSnapshot.revision);
+  assert.equal(initialRevision, beforeRestoreSnapshot.revision + 1,
+    'the video restore fixture must advance the existing state revision without assuming an empty store');
 
   const restoreAssets = backupVideoAssets.map((asset) => ({
     id: asset.id, projectId: asset.projectId, sceneId: asset.sceneId, jobId: asset.jobId,
