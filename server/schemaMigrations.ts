@@ -370,7 +370,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         JOIN pg_class idx ON idx.oid = i.indexrelid
         JOIN pg_am am ON am.oid = idx.relam
         CROSS JOIN LATERAL (
-          SELECT array_agg(a.attname ORDER BY k.ordinality) AS columns,
+          SELECT array_agg(a.attname::text ORDER BY k.ordinality) AS columns,
                  array_agg(o.option_value ORDER BY o.ordinality) AS options
           FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
@@ -393,7 +393,7 @@ export const ZERO_SCHEMA_MIGRATIONS: readonly ZeroSchemaMigration[] = [
         LIMIT 1;
 
         IF FOUND THEN
-          SELECT array_agg(a.attname ORDER BY k.ordinality),
+          SELECT array_agg(a.attname::text ORDER BY k.ordinality),
                  array_agg(o.option_value ORDER BY o.ordinality)
           INTO index_columns, index_options
           FROM pg_index i
