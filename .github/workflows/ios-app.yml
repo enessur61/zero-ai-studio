@@ -79,10 +79,15 @@ jobs:
           printf '%s\\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
       - name: Install pinned Core ML fixture generator
-        run: python3 -m pip install --disable-pip-version-check coremltools==8.3.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/coremltools-venv"
+          "$RUNNER_TEMP/coremltools-venv/bin/python" -m pip install --disable-pip-version-check coremltools==8.3.0
       - name: Generate deterministic stateful Core ML test model
         run: >-
-          python3 ios/ZeroCoreML/Tests/Fixtures/generate_stateful_fixture.py
+          "$RUNNER_TEMP/coremltools-venv/bin/python"
+          ios/ZeroCoreML/Tests/Fixtures/generate_stateful_fixture.py
           --output "$RUNNER_TEMP/ZeroStatefulAccumulator.mlpackage"
       - name: Run ZeroCoreML Swift 6 XCTest suite
         env:

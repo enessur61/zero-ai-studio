@@ -26,10 +26,7 @@ def build_model():
         previous = mb.read_state(input=accumulator)
         token_values = mb.cast(x=input_ids, dtype=types.fp32)
         token_sum = mb.reduce_sum(x=token_values, axes=[0, 1])
-        mask_sum = mb.cast(
-            x=mb.reduce_sum(x=causal_mask, axes=[0, 1, 2, 3]),
-            dtype=types.fp32,
-        )
+        mask_sum = mb.reduce_sum(x=causal_mask, axes=[0, 1, 2, 3])
         increment = mb.add(x=token_sum, y=mask_sum)
         updated = mb.add(x=previous, y=mb.reshape(x=increment, shape=[1]))
         mb.coreml_update_state(state=accumulator, value=updated)
