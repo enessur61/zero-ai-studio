@@ -60,6 +60,9 @@ actor CoreMLInferenceSession {
                 "Produktive Modelle dürfen ausschließlich aus dem festgelegten, signaturgeprüften Installations-Trust-Root geladen werden."
             )
         }
+        if !permitsSyntheticFixture {
+            try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
+        }
         var modelURLToLoad = resolvedURL
         if isInstalledArtifact && !permitsSyntheticFixture {
             do {
@@ -73,10 +76,6 @@ actor CoreMLInferenceSession {
                 )
             }
         }
-        if !permitsSyntheticFixture {
-            try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
-        }
-
         let configuration = MLModelConfiguration()
         configuration.computeUnits = computeUnits
         configuration.allowLowPrecisionAccumulationOnGPU = true
