@@ -29,27 +29,48 @@ actor CoreMLInferenceSession {
         // The tiny accumulator fixture is deliberately opt-in and test-only.
         // Real Llama packages remain blocked until their own artifact-bound
         // tensor contract has been extracted and reviewed.
-        if !permitsSyntheticFixture {
-            try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
-        }
-
         let resolvedURL: URL?
+        var isInstalledArtifact = false
         if let modelURL {
             resolvedURL = modelURL
+            isInstalledArtifact = modelURL.lastPathComponent == "model.mlmodelc"
         } else {
             let baseName = variant.bundleModelFilename.replacingOccurrences(of: ".mlmodelc", with: "")
             if let bundled = Bundle.main.url(forResource: baseName, withExtension: "mlmodelc") {
                 resolvedURL = bundled
             } else {
-                // Documents/ZeroModels is intentionally not a runtime fallback yet.
-                // It becomes eligible only after the trusted-key verifier is wired
-                // into runtime loading and the artifact-bound model contract is complete.
-                resolvedURL = nil
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                    ?? FileManager.default.temporaryDirectory
+                let envelope = documents.appendingPathComponent("ZeroModels", isDirectory: true)
+                    .appendingPathComponent(CoreMLArtifactImportStore.installationDirectoryName(for: variant), isDirectory: true)
+                let installed = envelope.appendingPathComponent("model.mlmodelc", isDirectory: true)
+                isInstalledArtifact = FileManager.default.fileExists(atPath: installed.path)
+                resolvedURL = isInstalledArtifact ? installed : nil
             }
         }
         guard let resolvedURL,
               FileManager.default.fileExists(atPath: resolvedURL.path) else {
             throw CoreMLAdapterError.modelBundleMissing(variant.bundleModelFilename)
+        }
+
+        if isInstalledArtifact && !permitsSyntheticFixture {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            let verifier = CoreMLArtifactImportStore(
+                trustedPublicKey: CoreMLArtifactTrust.pinnedPublicKey(),
+                installRoot: documents.appendingPathComponent("ZeroModels", isDirectory: true)
+            )
+            do {
+                try verifier.verifyInstalledPackage(at: resolvedURL, for: variant)
+            } catch {
+                throw CoreMLAdapterError.modelContractUnverified(
+                    variant.rawValue,
+                    "Installiertes Artefakt konnte vor dem Laden nicht kryptografisch verifiziert werden: \(error.localizedDescription)"
+                )
+            }
+        }
+        if !permitsSyntheticFixture {
+            try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
         }
 
         let configuration = MLModelConfiguration()

@@ -49,8 +49,34 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let (payload, signature) = try signedPayload(manifest, key: key)
         let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: root.appendingPathComponent("ZeroModels"))
         let installed = try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: installed.appendingPathComponent("model.bin").path))
-        XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent("model.bin")), Data("model-fixture".utf8))
+        let installedFile = installed.appendingPathComponent("model.bin")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: installedFile.path))
+        XCTAssertEqual(try Data(contentsOf: installedFile), Data("model-fixture".utf8))
+        let verifier = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: root.appendingPathComponent("ZeroModels"))
+        XCTAssertNoThrow(try verifier.verifyInstalledPackage(at: installed, for: .instruct1B))
+        try Data("tampered".utf8).write(to: installedFile)
+        XCTAssertThrowsError(try verifier.verifyInstalledPackage(at: installed, for: .instruct1B))
+    }
+
+    func testRuntimeVerificationRejectsTamperedSignature() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let installRoot = root.appendingPathComponent("ZeroModels")
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: installRoot)
+        let installed = try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B)
+        try Data("bad-signature".utf8).write(to: installed.deletingLastPathComponent().appendingPathComponent("manifest.sig"))
+        XCTAssertThrowsError(try store.verifyInstalledPackage(at: installed, for: .instruct1B))
+    }
+
+    func testPinnedPublicKeyConfigurationIsStrictAndFailClosed() {
+        XCTAssertNil(CoreMLArtifactTrust.decodePinnedPublicKey(""))
+        XCTAssertNil(CoreMLArtifactTrust.decodePinnedPublicKey("not-base64"))
+        XCTAssertNil(CoreMLArtifactTrust.decodePinnedPublicKey(Data(repeating: 7, count: 31).base64EncodedString()))
+        XCTAssertNil(CoreMLArtifactTrust.decodePinnedPublicKey(" " + Data(repeating: 7, count: 32).base64EncodedString()))
+        XCTAssertEqual(CoreMLArtifactTrust.decodePinnedPublicKey(Data(repeating: 7, count: 32).base64EncodedString())?.count, 32)
     }
 
     func testMissingTrustedKeyFailsClosed() throws {
@@ -115,7 +141,7 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let key = Curve25519.Signing.PrivateKey()
         let (payload, signature) = try signedPayload(manifest, key: key)
         let installRoot = root.appendingPathComponent("ZeroModels")
-        let destination = installRoot.appendingPathComponent(Llama32Variant.instruct1B.bundleModelFilename)
+        let destination = installRoot.appendingPathComponent(CoreMLArtifactImportStore.installationDirectoryName(for: .instruct1B))
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("keep".utf8).write(to: destination.appendingPathComponent("keep.txt"))
         let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: installRoot)

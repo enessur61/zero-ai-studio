@@ -118,30 +118,67 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
                 throw ImportError.filesystem("Installationsverzeichnis ist kein sicherer Ordner.")
             }
 
-            let destination = installRoot.appendingPathComponent(variant.bundleModelFilename, isDirectory: true)
+            let destination = installRoot.appendingPathComponent(Self.installationDirectoryName(for: variant), isDirectory: true)
             guard !fileManager.fileExists(atPath: destination.path) else {
                 throw ImportError.destinationAlreadyExists
             }
-
-            // Staging is on the same volume as the final destination. The copied
-            // tree is re-verified before the final directory rename.
+            // Package and signed metadata share one same-volume staging envelope.
+            // A single directory rename publishes all three atomically.
             let staging = installRoot.appendingPathComponent(".zero-staging-\(UUID().uuidString)", isDirectory: true)
             defer { try? fileManager.removeItem(at: staging) }
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: false)
-            let stagedPackage = staging.appendingPathComponent("package", isDirectory: true)
+            let stagedPackage = staging.appendingPathComponent("model.mlmodelc", isDirectory: true)
             try fileManager.copyItem(at: source, to: stagedPackage)
             try verifyPackage(at: stagedPackage, manifest: manifest)
-
+            try manifestPayload.write(to: staging.appendingPathComponent("manifest.json"), options: .atomic)
+            try signature.write(to: staging.appendingPathComponent("manifest.sig"), options: .atomic)
             guard !fileManager.fileExists(atPath: destination.path) else {
                 throw ImportError.destinationAlreadyExists
             }
-            try fileManager.moveItem(at: stagedPackage, to: destination)
-            return destination
+            try fileManager.moveItem(at: staging, to: destination)
+            return destination.appendingPathComponent("model.mlmodelc", isDirectory: true)
         } catch let error as ImportError {
             throw error
         } catch {
             throw ImportError.filesystem(error.localizedDescription)
         }
+    }
+
+    public static func installationDirectoryName(for variant: Llama32Variant) -> String {
+        "\(variant.bundleModelFilename).verified-install"
+    }
+
+    /// Re-verifies the detached signature and every package file at the point of use.
+    public func verifyInstalledPackage(at packageURL: URL, for variant: Llama32Variant) throws {
+        guard let trustedPublicKey else { throw ImportError.trustedKeyMissing }
+        let envelope = packageURL.deletingLastPathComponent()
+        let manifestURL = envelope.appendingPathComponent("manifest.json")
+        let signatureURL = envelope.appendingPathComponent("manifest.sig")
+        let manifestAttributes = try fileManager.attributesOfItem(atPath: manifestURL.path)
+        let signatureAttributes = try fileManager.attributesOfItem(atPath: signatureURL.path)
+        guard let manifestSize = (manifestAttributes[.size] as? NSNumber)?.uint64Value,
+              manifestSize > 0, manifestSize <= UInt64(Self.maximumManifestBytes),
+              let signatureSize = (signatureAttributes[.size] as? NSNumber)?.uint64Value,
+              signatureSize == 64 else {
+            throw ImportError.invalidManifest("Manifest- oder Signaturgröße ist ungültig.")
+        }
+        let manifestPayload = try Data(contentsOf: manifestURL, options: [.mappedIfSafe])
+        let signature = try Data(contentsOf: signatureURL, options: [.mappedIfSafe])
+        let publicKey: Curve25519.Signing.PublicKey
+        do { publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: trustedPublicKey) }
+        catch { throw ImportError.invalidPublicKey }
+        guard publicKey.isValidSignature(signature, for: manifestPayload) else {
+            throw ImportError.invalidSignature
+        }
+        let manifest: CoreMLArtifactManifest
+        do { manifest = try JSONDecoder().decode(CoreMLArtifactManifest.self, from: manifestPayload) }
+        catch { throw ImportError.invalidManifest("JSON kann nicht gelesen werden.") }
+        try validateManifest(manifest, for: variant)
+        guard packageURL.lastPathComponent == "model.mlmodelc",
+              envelope.lastPathComponent == Self.installationDirectoryName(for: variant) else {
+            throw ImportError.invalidPackage("Installationspfad passt nicht zur Modellvariante.")
+        }
+        try verifyPackage(at: packageURL, manifest: manifest)
     }
 
     public static func packageDigest(for records: [CoreMLArtifactManifest.FileRecord]) -> String {

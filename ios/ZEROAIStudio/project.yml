@@ -34,7 +34,8 @@ targets:
     info:
       path: Info.plist
       properties:
-        ZERO_APP_URL: "https://zero-ai-studio.onrender.com"
+        ZERO_APP_URL: "https://zero-ai-studio.onrender.com",
+        ZERO_COREML_ED25519_PUBLIC_KEY_BASE64: ""
     settings:
       base:
         PRODUCT_NAME: "ZERO AI STUDIO"
