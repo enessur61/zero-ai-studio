@@ -375,16 +375,16 @@ The Batch 46 review identified structural gaps in the signed Swift import valida
 
 The importer now rejects those gaps before installation and repeats the same validation at runtime:
 
-- **Model identity:** `model_id` must exactly match the official Meta repository identifier for the selected 1B or 3B variant. The source revision remains a 40-character hexadecimal identifier only; this does not authenticate Meta as publisher.
+- **Model identity:** `model_id` must exactly match the official Meta repository identifier for the selected 1B or 3B variant. The source revision and converter revision must be lowercase 40-character hexadecimal identifiers; this does not authenticate Meta as publisher.
 - **License declaration:** `accepted` must be explicitly true and `acceptance_record` must be a non-empty reference. These are signed manifest declarations only. The importer does not inspect an authoritative consent receipt and never reports legal consent as verified.
 - **Toolchain:** requires Python, PyTorch, CoreMLTools, Xcode build, SDK, Swift, OS build, architecture, runner image, lock SHA-256 and converter source revision. Values are recorded as supplied evidence; non-empty fields and a lock digest do not prove that the environment was immutable or independently reproduced.
 - **Conversion:** requires command, profile, graph-capture method, deployment target, precision profile, pass-pipeline description and an options object. The schema does not prescribe or invent conversion values.
-- **Core ML evidence:** requires extraction-tool version plus non-empty input, output and state metadata. Each state record must include a name, data type and shape field. The validator checks structural presence, not the truth of claimed metadata; real values must be extracted from the actual artifact.
+- **Core ML evidence:** requires extraction-tool version plus non-empty input, output and state metadata. Every input/output/state metadata record must include a name, data type and shape field. The validator checks structural presence, not the truth of claimed metadata; real values must be extracted from the actual artifact.
 - **Inventory binding:** license and tokenizer records must match their path/size/hash records in the provenance input inventory. Provenance outputs must match the signed import manifest's package file inventory exactly.
 - **Validation:** each declared CPU-only test must have a name, pass result and SHA-256 report reference.
 - **Reproducibility:** requires distinct primary/comparison build identifiers, two package SHA-256 values, a canonical inventory SHA-256, a comparison-report SHA-256 and an explicit `identical` or `different` result. The result must agree with the two package hashes. A non-identical rebuild is recorded as different, not silently normalized into a reproducibility claim. Missing independent-build evidence blocks import.
 
-The added Swift synthetic regression cases cover wrong model ID, missing license-acceptance reference, absent Core ML states, incomplete conversion evidence, absent independent rebuild evidence and output-inventory mismatch. The existing fixtures remain explicitly synthetic and do not constitute model, license, toolchain, conversion or reproducibility evidence.
+The added Swift synthetic regression cases cover wrong model ID, missing license-acceptance reference, absent and malformed Core ML state metadata, incomplete conversion evidence, absent independent rebuild evidence and output-inventory mismatch. The existing fixtures remain explicitly synthetic and do not constitute model, license, toolchain, conversion or reproducibility evidence.
 
 ### Toolchain gate disposition after Batch 47
 
