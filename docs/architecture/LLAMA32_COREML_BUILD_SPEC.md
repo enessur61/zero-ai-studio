@@ -310,7 +310,7 @@ The CLI requires three already-local inputs:
 - `--manifest`: existing local UTF-8 JSON provenance manifest;
 - `--git-repo`: existing local Git clone with the source commit and tree objects already present.
 
-The validator performs no network access and does not fetch, download, install, copy, convert, sign, delete, or modify source files. It invokes only local Git object/config inspection commands with network prompts disabled and replacement objects disabled. It hashes files by streaming and prints JSON to stdout. Exit code 0 means the local checks passed; exit code 2 means validation failed.
+The validator performs no network access and does not fetch, download, install, copy, convert, sign, delete, or modify source files. Its Git subprocess explicitly disables lazy fetch, denies all Git protocols, disables prompts, and disables replacement objects; it invokes only local Git object/config inspection commands against already-present objects. It hashes files by streaming and prints JSON to stdout. Exit code 0 means the local checks passed; exit code 2 means validation failed.
 
 ### Revision-to-bytes binding
 
