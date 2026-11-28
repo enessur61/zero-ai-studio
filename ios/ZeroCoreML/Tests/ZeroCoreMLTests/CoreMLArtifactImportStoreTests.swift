@@ -9,6 +9,31 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         return url
     }
 
+    private func syntheticProvenance(_ variant: Llama32Variant = .instruct1B, revision: String = String(repeating: "a", count: 40)) throws -> Data {
+        let hash = String(repeating: "b", count: 64)
+        let file = [["path": "fixture.bin", "size": 1, "sha256": hash] as [String: Any]]
+        let object: [String: Any] = [
+            "schema_version": 1,
+            "model": ["publisher": "Meta", "model_id": variant == .instruct1B ? "meta-llama/Llama-3.2-1B-Instruct" : "meta-llama/Llama-3.2-3B-Instruct", "variant": variant.rawValue, "source_revision": revision],
+            "license": ["license_id": "SYNTHETIC-TEST-ONLY", "files": file],
+            "tokenizer": ["source_revision": revision, "files": file],
+            "toolchain": ["runner_image": "SYNTHETIC-TEST-ONLY", "xcode_build": "SYNTHETIC-TEST-ONLY", "python": "3.12.test", "pytorch": "SYNTHETIC-TEST-ONLY", "coremltools": "8.3.0.test", "lock_sha256": hash, "converter_revision": revision],
+            "conversion": ["profile": "SYNTHETIC-TEST-ONLY"],
+            "inputs": file, "outputs": file,
+            "coreml_evidence": ["extracted_from_artifact": true, "inputs": file, "outputs": file, "states": file],
+            "validation": ["cpu_only": true, "tests": [["name": "synthetic", "passed": true]]],
+            "reproducibility": ["build_id": "SYNTHETIC-TEST-ONLY"],
+            "signing": ["algorithm": "Ed25519", "key_id": "SYNTHETIC-TEST-ONLY"]
+        ]
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private func makeManifest(_ records: [CoreMLArtifactManifest.FileRecord], variant: Llama32Variant = .instruct1B, provenance: Data? = nil, revision: String? = nil) throws -> CoreMLArtifactManifest {
+        let data = try provenance ?? syntheticProvenance(variant, revision: revision ?? String(repeating: "a", count: 40))
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return CoreMLArtifactManifest(modelVariant: variant.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: records), files: records, provenanceJSON: data, provenanceSHA256: digest)
+    }
+
     private func makePackage(at root: URL, content: Data = Data("model-fixture".utf8)) throws -> (URL, CoreMLArtifactManifest) {
         let package = root.appendingPathComponent("source.mlmodelc", isDirectory: true)
         try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
@@ -16,11 +41,7 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         try content.write(to: file)
         let hash = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         let record = CoreMLArtifactManifest.FileRecord(path: "model.bin", size: UInt64(content.count), sha256: hash)
-        let manifest = CoreMLArtifactManifest(
-            modelVariant: Llama32Variant.instruct1B.rawValue,
-            packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [record]),
-            files: [record]
-        )
+        let manifest = try makeManifest([record])
         return (package, manifest)
     }
 
@@ -151,10 +172,10 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let (package, validManifest) = try makePackage(at: root)
         let key = Curve25519.Signing.PrivateKey()
         let unsafe = CoreMLArtifactManifest.FileRecord(path: "../escape", size: 1, sha256: String(repeating: "a", count: 64))
-        let traversal = CoreMLArtifactManifest(modelVariant: Llama32Variant.instruct1B.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [unsafe]), files: [unsafe])
+        let traversal = try makeManifest([unsafe])
         try assertImportRejected(package: package, manifest: traversal, key: key, root: root.appendingPathComponent("Traversal"))
         let duplicate = validManifest.files[0]
-        let duplicateManifest = CoreMLArtifactManifest(modelVariant: Llama32Variant.instruct1B.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [duplicate, duplicate]), files: [duplicate, duplicate])
+        let duplicateManifest = try makeManifest([duplicate, duplicate])
         try assertImportRejected(package: package, manifest: duplicateManifest, key: key, root: root.appendingPathComponent("Duplicate"))
         try assertImportRejected(package: package, manifest: validManifest, key: key, root: root.appendingPathComponent("WrongVariant"), variant: .instruct3B)
     }
@@ -181,12 +202,56 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let hash = SHA256.hash(data: Data("model-fixture".utf8)).map { String(format: "%02x", $0) }.joined()
         let upper = CoreMLArtifactManifest.FileRecord(path: "Model.bin", size: 13, sha256: hash)
         let lower = CoreMLArtifactManifest.FileRecord(path: "model.bin", size: 13, sha256: hash)
-        let manifest = CoreMLArtifactManifest(
-            modelVariant: Llama32Variant.instruct1B.rawValue,
-            packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [upper, lower]),
-            files: [upper, lower]
-        )
+        let manifest = try makeManifest([upper, lower])
         try assertImportRejected(package: package, manifest: manifest, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("ZeroModels"))
+    }
+
+    func testMissingProvenanceIsRejected() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        let missing = CoreMLArtifactManifest(modelVariant: valid.modelVariant, packageSHA256: valid.packageSHA256, files: valid.files)
+        try assertImportRejected(package: package, manifest: missing, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("Missing"))
+    }
+
+    func testIncorrectProvenanceDigestIsRejected() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        let bad = CoreMLArtifactManifest(modelVariant: valid.modelVariant, packageSHA256: valid.packageSHA256, files: valid.files, provenanceJSON: valid.provenanceJSON, provenanceSHA256: String(repeating: "f", count: 64))
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("BadDigest"))
+    }
+
+    func testWrongModelRevisionInProvenanceIsRejected() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        let wrong = try syntheticProvenance(.instruct1B, revision: String(repeating: "c", count: 40))
+        let bad = try makeManifest(valid.files, provenance: wrong)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("WrongRevision"))
+    }
+
+    func testIncompleteToolchainEvidenceIsRejected() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var toolchain = try XCTUnwrap(object["toolchain"] as? [String: Any]); toolchain.removeValue(forKey: "lock_sha256"); object["toolchain"] = toolchain
+        let badData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: badData)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("IncompleteToolchain"))
+    }
+
+    func testInstalledProvenanceTamperingIsRejectedAtRuntime() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let installRoot = root.appendingPathComponent("ZeroModels")
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: installRoot)
+        let installed = try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B)
+        let envelope = installed.deletingLastPathComponent()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(manifest.provenanceJSON)) as? [String: Any])
+        object["tampered"] = true
+        let changed = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try changed.write(to: envelope.appendingPathComponent("provenance.json"))
+        XCTAssertThrowsError(try store.verifyInstalledPackage(at: installed, for: .instruct1B))
     }
 
     func testSymlinkInsidePackageIsRejected() throws {
