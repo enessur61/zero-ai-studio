@@ -123,17 +123,23 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
     roles = {entry["role"] for entry in declared.values()}
     _require(REQUIRED_ROLES.issubset(roles),
              "Inventory must include weights, model config, tokenizer, license and AUP roles.")
-    declared_tokenizer = set(tokenizer_paths)
-    actual_tokenizer = {p for p, entry in declared.items() if entry["role"] == "tokenizer"}
     _require(all(isinstance(p, str) for p in tokenizer_paths),
              "Tokenizer file paths must be strings.")
-    _require(declared_tokenizer == actual_tokenizer,
-             "tokenizer.files must exactly match files with role=tokenizer.")
-    declared_license = set(license_paths)
-    actual_license = {p for p, entry in declared.items()
-                      if entry["role"] in {"license", "aup"}}
     _require(all(isinstance(p, str) for p in license_paths),
              "License file paths must be strings.")
+    normalized_tokenizer = [_safe_relative_path(p) for p in tokenizer_paths]
+    normalized_license = [_safe_relative_path(p) for p in license_paths]
+    _require(len(normalized_tokenizer) == len(set(normalized_tokenizer)),
+             "Duplicate tokenizer file path.")
+    _require(len(normalized_license) == len(set(normalized_license)),
+             "Duplicate license file path.")
+    declared_tokenizer = set(normalized_tokenizer)
+    actual_tokenizer = {p for p, entry in declared.items() if entry["role"] == "tokenizer"}
+    _require(declared_tokenizer == actual_tokenizer,
+             "tokenizer.files must exactly match files with role=tokenizer.")
+    declared_license = set(normalized_license)
+    actual_license = {p for p, entry in declared.items()
+                      if entry["role"] in {"license", "aup"}}
     _require(declared_license == actual_license,
              "license.files must exactly match license and AUP inventory entries.")
 
