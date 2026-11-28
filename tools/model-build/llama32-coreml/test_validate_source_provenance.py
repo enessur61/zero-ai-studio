@@ -119,6 +119,32 @@ class ProvenanceValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "official Meta"):
             validate(self.root, self.manifest_path)
 
+    def test_case_colliding_paths_fail(self):
+        self.manifest["files"].append({
+            "path": "WEIGHTS/model.safetensors",
+            "size_bytes": 1,
+            "sha256": "0" * 64,
+            "role": "model_weights",
+        })
+        self.write_manifest()
+        with self.assertRaisesRegex(ValidationError, "collision"):
+            validate(self.root, self.manifest_path)
+
+    def test_non_string_tokenizer_path_fails_cleanly(self):
+        self.manifest["tokenizer"]["files"] = [{"unexpected": "object"}]
+        self.write_manifest()
+        with self.assertRaisesRegex(ValidationError, "must be strings"):
+            validate(self.root, self.manifest_path)
+
+    def test_3b_model_identity_is_checked(self):
+        self.manifest["model"]["variant"] = "3B"
+        self.manifest["model"]["model_id"] = "meta-llama/Llama-3.2-3B-Instruct"
+        self.manifest["source"]["repository"] = "meta-llama/Llama-3.2-3B-Instruct"
+        self.manifest["tokenizer"]["repository"] = "meta-llama/Llama-3.2-3B-Instruct"
+        self.write_manifest()
+        with self.assertRaisesRegex(ValidationError, "official Meta repository"):
+            validate(self.root, self.manifest_path)
+
 
 if __name__ == "__main__":
     unittest.main()
