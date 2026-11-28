@@ -368,3 +368,36 @@ The importer now requires provenance evidence inside the exact Ed25519-signed im
 The Swift regression suite adds cases for missing provenance, an incorrect provenance digest, model/tokenizer revision disagreement, incomplete toolchain evidence, and post-install provenance-file tampering. The source-revision format check only validates a 40-character hexadecimal revision; publisher authenticity remains a separate evidence gate and is not established by synthetic tests.
 
 Important boundary: The present schema validator checks the required provenance sections and core consistency fields. It is not a full RFC 8785/JCS implementation and does not claim legal sufficiency, upstream publisher authentication, real model metadata, or reproducible conversion. Those gates remain closed until genuine evidence is supplied and independently reviewed.
+
+## 18. Batch 47 provenance-schema completeness audit
+
+The Batch 46 review identified structural gaps in the signed Swift import validator. The validator previously required the top-level `conversion` and `reproducibility` objects but did not inspect their evidence fields; it accepted any non-empty `model_id`; it did not require a separate license-acceptance reference; it did not require Core ML state metadata; and it did not bind the provenance output inventory to the signed package file inventory.
+
+The importer now rejects those gaps before installation and repeats the same validation at runtime:
+
+- **Model identity:** `model_id` must exactly match the official Meta repository identifier for the selected 1B or 3B variant. The source revision remains a 40-character hexadecimal identifier only; this does not authenticate Meta as publisher.
+- **License declaration:** `accepted` must be explicitly true and `acceptance_record` must be a non-empty reference. These are signed manifest declarations only. The importer does not inspect an authoritative consent receipt and never reports legal consent as verified.
+- **Toolchain:** requires Python, PyTorch, CoreMLTools, Xcode build, SDK, Swift, OS build, architecture, runner image, lock SHA-256 and converter source revision. Values are recorded as supplied evidence; non-empty fields and a lock digest do not prove that the environment was immutable or independently reproduced.
+- **Conversion:** requires command, profile, graph-capture method, deployment target, precision profile, pass-pipeline description and an options object. The schema does not prescribe or invent conversion values.
+- **Core ML evidence:** requires extraction-tool version plus non-empty input, output and state metadata. Each state record must include a name, data type and shape field. The validator checks structural presence, not the truth of claimed metadata; real values must be extracted from the actual artifact.
+- **Inventory binding:** license and tokenizer records must match their path/size/hash records in the provenance input inventory. Provenance outputs must match the signed import manifest's package file inventory exactly.
+- **Validation:** each declared CPU-only test must have a name, pass result and SHA-256 report reference.
+- **Reproducibility:** requires distinct primary/comparison build identifiers, two package SHA-256 values, a canonical inventory SHA-256, a comparison-report SHA-256 and an explicit `identical` or `different` result. The result must agree with the two package hashes. A non-identical rebuild is recorded as different, not silently normalized into a reproducibility claim. Missing independent-build evidence blocks import.
+
+The added Swift synthetic regression cases cover wrong model ID, missing license-acceptance reference, absent Core ML states, incomplete conversion evidence, absent independent rebuild evidence and output-inventory mismatch. The existing fixtures remain explicitly synthetic and do not constitute model, license, toolchain, conversion or reproducibility evidence.
+
+### Toolchain gate disposition after Batch 47
+
+No toolchain pin was changed because no verified immutable replacement evidence was available. The following gates remain open:
+
+1. Python is selected by the `3.12` minor line, not an immutable patch build.
+2. CoreMLTools is installed as `8.3.0` without a complete transitive dependency lock and wheel hashes.
+3. PyTorch, torchvision, Transformers, safetensors and tokenizer dependencies do not yet have a validated exact version/hash lock.
+4. The `macos-15` runner label is mutable; recording the observed runner image is useful evidence but does not pin the future runner image.
+5. The exact Xcode/SDK build is observed in CI, not selected from an immutable toolchain image.
+6. XcodeGen source revision is pinned, but the produced binary is not yet independently attested by a committed, verified binary digest.
+7. No independent clean 1B/3B conversion builds exist, and no genuine Core ML artifact metadata is available.
+
+The native iOS workflow's CoreMLTools installation and synthetic stateful fixture generation are test infrastructure, not a Llama conversion pipeline. Do not resolve these gates by guessing package versions, hashes, Xcode builds or tensor specifications. A future toolchain-lock batch must obtain exact package artifacts and hashes from authoritative package metadata, verify them, and test the complete locked environment before committing pins.
+
+The signed import schema is stricter after this batch, but it remains an evidence-shape and consistency gate. It does not create missing upstream signatures, legal consent receipts, model files, actual tensor metadata, immutable build infrastructure or independent conversion results.
