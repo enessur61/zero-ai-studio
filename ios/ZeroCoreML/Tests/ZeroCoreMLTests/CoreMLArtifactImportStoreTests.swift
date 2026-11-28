@@ -13,6 +13,7 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let hash = String(repeating: "b", count: 64)
         let file = [["path": "fixture.bin", "size": 1, "sha256": hash] as [String: Any]]
         let packageOutputs = outputs ?? file
+        let syntheticIOMetadata: [[String: Any]] = [["name": "synthetic_tensor", "data_type": "SYNTHETIC-TEST-ONLY", "shape": [1]]]
         let object: [String: Any] = [
             "schema_version": 1,
             "model": ["publisher": "Meta", "model_id": variant == .instruct1B ? "meta-llama/Llama-3.2-1B-Instruct" : "meta-llama/Llama-3.2-3B-Instruct", "variant": variant.rawValue, "source_revision": revision],
@@ -21,7 +22,7 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
             "toolchain": ["runner_image": "SYNTHETIC-TEST-ONLY", "os_build": "SYNTHETIC-TEST-ONLY", "architecture": "SYNTHETIC-TEST-ONLY", "xcode_build": "SYNTHETIC-TEST-ONLY", "sdk": "SYNTHETIC-TEST-ONLY", "swift": "SYNTHETIC-TEST-ONLY", "python": "3.12.test", "pytorch": "SYNTHETIC-TEST-ONLY", "coremltools": "8.3.0.test", "lock_sha256": hash, "converter_revision": revision],
             "conversion": ["command": "SYNTHETIC-TEST-ONLY", "profile": "SYNTHETIC-TEST-ONLY", "graph_capture_method": "SYNTHETIC-TEST-ONLY", "deployment_target": "SYNTHETIC-TEST-ONLY", "precision_profile": "SYNTHETIC-TEST-ONLY", "pass_pipeline": "SYNTHETIC-TEST-ONLY", "options": [:]],
             "inputs": file, "outputs": packageOutputs,
-            "coreml_evidence": ["extracted_from_artifact": true, "extraction_tool_version": "SYNTHETIC-TEST-ONLY", "inputs": file, "outputs": file, "states": [["name": "state", "data_type": "SYNTHETIC-TEST-ONLY", "shape": [1]]]],
+            "coreml_evidence": ["extracted_from_artifact": true, "extraction_tool_version": "SYNTHETIC-TEST-ONLY", "inputs": syntheticIOMetadata, "outputs": syntheticIOMetadata, "states": syntheticIOMetadata],
             "validation": ["cpu_only": true, "tests": [["name": "synthetic", "passed": true, "report_sha256": hash]]],
             "reproducibility": ["build_id": "SYNTHETIC-BUILD-A", "independent_rebuild": ["status": "identical", "build_id": "SYNTHETIC-BUILD-B", "primary_package_sha256": hash, "comparison_package_sha256": hash, "canonical_inventory_sha256": hash, "report_sha256": hash]],
             "signing": ["algorithm": "Ed25519", "key_id": "SYNTHETIC-TEST-ONLY", "signature_file": "SYNTHETIC-TEST-ONLY.sig", "signer_provenance": "SYNTHETIC-TEST-ONLY"]
@@ -274,6 +275,18 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         let bad = try makeManifest(valid.files, provenance: data)
         try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MissingStateEvidence"))
+    }
+
+    func testCoreMLStateMetadataMustIncludeActualFields() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var evidence = try XCTUnwrap(object["coreml_evidence"] as? [String: Any])
+        evidence["states"] = [["name": "synthetic_state"]]
+        object["coreml_evidence"] = evidence
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MalformedStateEvidence"))
     }
 
     func testConversionEvidenceRequiresDeclaredMethodAndOptions() throws {
