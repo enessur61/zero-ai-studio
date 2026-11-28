@@ -297,3 +297,47 @@ Pull-request CI must never have access to signing secrets. Workflow permissions 
 - Apple Core ML Tools 8.3 API – [Unified conversion API](https://apple.github.io/coremltools/docs/source/coremltools.converters.convert.html)
 - Apple Core ML Tools – [Installing Core ML Tools](https://apple.github.io/coremltools/docs-guides/source/installing-coremltools.html)
 - Meta – official Llama 3.2 license and model source documentation must be retained from the exact authorized upstream revision used by a future build.
+
+
+## 16. Implemented offline source-provenance validator (non-production)
+
+An isolated standard-library-only validator now exists at `tools/model-build/llama32-coreml/validate_source_provenance.py`. It is deliberately separate from the synthetic Core ML fixture generator and from the iOS app/runtime.
+
+### Local input contract
+
+The CLI requires:
+- `--root`: an already existing local directory containing only the declared source files;
+- `--manifest`: an already existing local UTF-8 JSON file outside or alongside that source directory.
+
+The validator performs no network access and does not download, install, copy, convert, sign, delete, or modify any source file. It computes SHA-256 by streaming existing files and prints a JSON report to stdout. Exit code 0 means the declared local provenance checks passed; exit code 2 means validation failed.
+
+Manifest schema version 1:
+- `model.publisher` must be `Meta`;
+- `model.variant` must be `1B` or `3B`;
+- `model.model_id` and `source.repository` must exactly match the official repository identifier for that variant;
+- `source.revision` must be a lowercase 40-character immutable Git SHA;
+- `tokenizer.repository` and `tokenizer.revision` must exactly match the model source; `tokenizer.files` must exactly list all inventory entries with role `tokenizer`;
+- `license.accepted` must explicitly be boolean true and `license.acceptance_record` must be a non-empty reference; `license.files` must exactly list all `license` and `aup` inventory entries;
+- `files` must contain exact relative path, `size_bytes`, lowercase SHA-256 and one role: `model_weights`, `model_config`, `tokenizer`, `license`, or `aup`;
+- all five roles are required; all declared files must exist, match size and SHA-256, and the directory inventory must contain no undeclared files;
+- absolute paths, traversal, non-canonical paths, symlinks, duplicate paths, case/Unicode-normalization collisions and paths escaping the root are rejected.
+
+The official repository identifiers enforced by the current validator are `meta-llama/Llama-3.2-1B-Instruct` and `meta-llama/Llama-3.2-3B-Instruct`. This is a source-identity allowlist, not cryptographic proof that a local directory was downloaded from Meta. The 40-character revision is syntactically checked; the validator cannot authenticate a Git commit without a separately acquired and verified upstream Git object/signature. Similarly, `license.acceptance_record` is a recorded reference, not a legal determination or verification of the account holder's acceptance.
+
+### Explicit limitations
+
+A passing report is limited to local metadata, exact inventory, tokenizer revision equality, and byte integrity. It does **not** establish:
+- upstream publisher authenticity or a Meta signature;
+- correctness or legal sufficiency of license acceptance;
+- correctness of tokenizer semantics or chat template;
+- Core ML package validity, model tensor/state metadata, or runtime compatibility;
+- any Ed25519 signature or ZERO trust-anchor verification;
+- production readiness.
+
+The report therefore always sets `production_approval=false`, `signature_verified=false`, and `coreml_artifact_verified=false`. A successful local validation must never populate `LlamaCoreMLModelContract` or enable a model.
+
+### Synthetic test policy
+
+`test_validate_source_provenance.py` uses temporary files containing explicitly synthetic byte strings (including a marker stating that the weight fixture is not model weights). These are not Meta files, not model weights, not actual license texts, and not provenance evidence. Tests cover a valid synthetic inventory, tokenizer revision mismatch, byte tampering, undeclared files, path traversal, license rejection, symlinks, wrong repository, case collisions, malformed tokenizer paths, and model-variant mismatch.
+
+Run from the validator directory with `python3 -m unittest -v`. The test suite uses only Python's standard library. The separate iOS workflow does not automatically test this Python tool; a dedicated, unprivileged Python test workflow is required for continuous validation.
