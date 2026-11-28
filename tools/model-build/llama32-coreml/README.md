@@ -1,6 +1,6 @@
 # Offline Llama 3.2 source provenance validator
 
-This directory contains a standard-library-only, read-only validator for locally supplied provenance metadata and files. It does not access the network, fetch Git objects, download, install, copy, convert, sign, or modify model assets. Git inspection is restricted to an already-existing local clone and its existing object database. The tool emits a JSON report to stdout only.
+This directory contains a standard-library-only, read-only validator for locally supplied provenance metadata and files. It does not access the network: Git lazy-fetch is disabled and all Git protocols are denied in its subprocess environment. It does not fetch Git objects, download, install, copy, convert, sign, or modify model assets. Git inspection is restricted to an already-existing local clone and its already-present object database. The tool emits a JSON report to stdout only.
 
 ## Run
 
