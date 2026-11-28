@@ -21,6 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+EXPECTED_BASE_RUNTIME_TREE_SHA256 = "12804118f39a03ccb6056d15d10c28c4a88e2ec15a634c16dba4e2d1191bbd8b"
+
 
 def run(args: list[str], *, env: dict[str, str] | None = None) -> str:
     completed = subprocess.run(
@@ -141,6 +143,9 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
+    committed_lock = ROOT / "requirements-macos-arm64-py312.lock"
+    if not committed_lock.is_file() or committed_lock.read_bytes() != lock_path.read_bytes():
+        raise RuntimeError("Resolved wheel graph differs from the committed hash lock")
 
     run([
         sys.executable, "-m", "pip", "install",
@@ -165,6 +170,7 @@ import transformers
 import safetensors
 import tokenizers
 from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.llama.tokenization_llama import LlamaTokenizer
 
 assert coremltools.__version__ == "9.0", coremltools.__version__
 assert torch.__version__.split("+")[0] == "2.7.0", torch.__version__
@@ -172,6 +178,7 @@ assert transformers.__version__ == "5.24.1", transformers.__version__
 assert safetensors.__version__ == "0.8.0", safetensors.__version__
 assert tokenizers.__version__ == "0.23.3", tokenizers.__version__
 assert LlamaConfig.__name__ == "LlamaConfig"
+assert LlamaTokenizer.__name__ == "LlamaTokenizer"
 cpu_result = torch.tensor([1, 2, 3], device="cpu").sum().item()
 assert cpu_result == 6, cpu_result
 assert callable(coremltools.convert)
@@ -182,6 +189,7 @@ print({
     "safetensors": safetensors.__version__,
     "tokenizers": tokenizers.__version__,
     "llama_config_import": "passed",
+    "llama_tokenizer_import": "passed",
     "cpu_tensor_smoke": cpu_result,
     "coreml_convert_api_imported_not_invoked": True,
     "model_assets_downloaded": False,
@@ -191,6 +199,11 @@ print({
 '''
     import_output = run([sys.executable, "-c", import_test], env=offline_env)
 
+    runtime_sha256 = runtime_tree_sha256(Path(sys.base_prefix))
+    if runtime_sha256 != EXPECTED_BASE_RUNTIME_TREE_SHA256:
+        raise RuntimeError(
+            f"CPython base runtime tree hash mismatch: {runtime_sha256}"
+        )
     report = {
         "schema_version": 1,
         "purpose": "candidate toolchain resolver and import compatibility audit only",
@@ -199,7 +212,7 @@ print({
             "implementation": platform.python_implementation(),
             "machine": platform.machine(),
             "base_prefix": sys.base_prefix,
-            "base_runtime_tree_sha256": runtime_tree_sha256(Path(sys.base_prefix)),
+            "base_runtime_tree_sha256": runtime_sha256,
             "pip": pip_version,
         },
         "platform": platform.platform(),

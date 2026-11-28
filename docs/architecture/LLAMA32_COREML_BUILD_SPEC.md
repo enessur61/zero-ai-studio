@@ -503,7 +503,7 @@ This is a candidate matrix for an isolated dependency-resolution and compatibili
 
 | Package | Candidate version | Exact compatible wheel | PyPI SHA-256 | Release provenance | Status |
 |---|---:|---|---|---|---|
-| CoreMLTools | 9.0 | `coremltools-9.0-cp312-none-macosx_11_0_arm64.whl` | `7079e8b6ff5a63f0e2c08eeeb8673e4eab8ca231d4b2eae4f7fb005e0d08a8cd` | PyPI page reports no Trusted Publishing provenance | Candidate |
+| Bootstrap pip | 25.0.1 | `pip-25.0.1-py3-none-any.whl` | `c46efd13b6aa8279f33f2864459c8ce587ea6a1a59ee20de055868d8f7688f7f` | PyPI page reports no Trusted Publishing provenance | Locked resolver |\n| CoreMLTools | 9.0 | `coremltools-9.0-cp312-none-macosx_11_0_arm64.whl` | `7079e8b6ff5a63f0e2c08eeeb8673e4eab8ca231d4b2eae4f7fb005e0d08a8cd` | PyPI page reports no Trusted Publishing provenance | Candidate |
 | PyTorch | 2.7.0 | `torch-2.7.0-cp312-none-macosx_11_0_arm64.whl` | `30b7688a87239a7de83f269333651d8e582afffce6f591fff08c046f7787296e` | PyPI page reports no Trusted Publishing provenance | Candidate; runtime-tested version for CoreMLTools 9.0 |
 | Transformers | 5.24.1 | `transformers-5.24.1-py3-none-any.whl` | `505b39d3e45a3715f3acb81b858eb245ce1a462373b7f99e26f0dcd41ed4cd0f` | PyPI Trusted Publishing attestation present | Candidate |
 | safetensors | 0.8.0 | `safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl` | `c80201d22cbf405b80647a60ada77bba06c8fba2da2743ba1e89cdcc39a81f25` | PyPI page reports no Trusted Publishing provenance | Candidate |
@@ -534,19 +534,17 @@ These facts support trying the candidate combination in an isolated resolver/imp
 
 ### 20.4 Python runtime artifact gap
 
-The dedicated audit now enforces CPython `3.12.10` ARM64 and records a SHA-256 fingerprint of the installed base-runtime tree (`12804118f39a03ccb6056d15d10c28c4a88e2ec15a634c16dba4e2d1191bbd8b` in the first audit run). It also pins bootstrap pip `25.0.1`. This is a fingerprint of the exact runtime tree on that runner, not an independently published Python.org installer checksum or upstream signature; origin attestation for the interpreter distribution remains an open gate.
+The dedicated audit enforces CPython `3.12.10` ARM64, bootstrap pip `25.0.1`, and the installed base-runtime tree SHA-256 `12804118f39a03ccb6056d15d10c28c4a88e2ec15a634c16dba4e2d1191bbd8b`. Two independent CI runs produced the same tree fingerprint. The workflow now fails closed if it changes. This is a fingerprint of the exact installed runtime tree, not an independently published Python.org installer checksum or upstream signature; publisher-origin attestation for the interpreter distribution remains a separate supply-chain gap.
 
 ### 20.5 Remaining Batch 49 work before a lock can be approved
 
-1. Rerun the resolver/import audit with PyTorch 2.7.0 and pinned bootstrap pip 25.0.1; do not retain the 2.7.1 combination because CoreMLTools 9.0 explicitly warned that it had not been tested.
-2. Review and commit the complete transitive lock only after that rerun passes; the first generated 43-wheel lock is retained as a CI artifact but is not approved.
-3. Repeat the clean XcodeGen build independently and compare its binary SHA-256 before claiming reproducible binary output.
-4. Retain the Python base-runtime tree fingerprint as run-specific evidence; obtain an upstream-verifiable Python distribution attestation/checksum before calling the interpreter supply chain fully authenticated.
-5. Keep the runner image, Xcode/SDK build and exact versions enforced; the hosted runner label itself remains mutable.
-6. Check the installed Transformers Llama configuration and tokenizer APIs without fetching weights or tokenizer assets; do not infer tensor I/O contracts from config classes.
-7. No actual Llama conversion, model artifact creation, signing, or physical-device inference is part of this toolchain audit.
+1. Keep the committed 44-wheel lock in sync with the pinned top-level inputs; the resolver job now fails closed if PyPI resolves a different dependency graph.
+2. Retain the CPython base-runtime tree hash and XcodeGen binary SHA-256 as enforced fingerprints; obtain upstream publisher attestation for the Python distribution if a signed-origin chain is required.
+3. Preserve the runner image, Xcode build and SDK build assertions; the hosted runner label itself remains mutable but image drift fails closed.
+4. Verify the Transformers Llama configuration and tokenizer APIs without fetching weights or tokenizer assets; the next run adds an explicit `LlamaTokenizer` import check.
+5. Actual Llama graph conversion, attention/cache operator support, dynamic-shape behavior, real artifact metadata, signed provenance, and physical-device inference remain unverified and separately gated.
 
-No Python package was downloaded or installed, no model weights or tokenizer assets were fetched, and no conversion or GPU/provider operation was run while preparing this candidate matrix.
+The candidate matrix itself was metadata-only. Subsequent Batch 49 CI fetched and installed Python package wheels only; no model weights or tokenizer assets were fetched, and no Llama conversion or GPU/provider operation was run.
 
 
 ## 21. Batch 49 first resolver and XcodeGen provenance run
@@ -568,7 +566,7 @@ Import checks passed for CoreMLTools 9.0, PyTorch 2.7.1, Transformers 5.24.1, sa
 
 **Compatibility qualification:** CoreMLTools 9.0 emitted the explicit runtime warning: `Torch version 2.7.1 has not been tested with coremltools ... Torch 2.7.0 is the most recent version that has been tested.` Consequently PyTorch 2.7.1 is not an accepted candidate despite the successful imports. The next candidate is PyTorch 2.7.0, whose exact CPython 3.12 ARM64 wheel SHA-256 is recorded in section 20.1. Bootstrap pip 25.0.1 is also being added to the direct lock inputs.
 
-The first generated 43-wheel lock SHA-256 was `d0c2a1e6820e1aff0318311c325d9e17f7fb4ef06517187589a0cdda84435d27`. It is not approved because of the PyTorch warning and is not committed as the final lock.
+The first generated 43-wheel lock SHA-256 was `d0c2a1e6820e1aff0318311c325d9e17f7fb4ef06517187589a0cdda84435d27`. It is not approved because of the PyTorch warning and is not committed.
 
 ### 21.3 Clean XcodeGen source build
 
@@ -576,8 +574,54 @@ The audit built XcodeGen from pinned source commit `8445e778451c7e44237b90281bde
 
 `4b1f269d7acb37dde467682b92c397d7065ccb6e7091b92154800bd28bb1e2ef`
 
-This binds the recorded executable fingerprint to a clean build of the pinned source revision for this run. A second independent build and hash comparison are still required before claiming bit-for-bit reproducible XcodeGen output.
+This binds the executable fingerprint to a clean build of the pinned source revision. Section 22 records a second independent clean build with the same hash.
 
 Audit artifact: ID `15272807954`; ZIP SHA-256 `cb6170ae23a3c916570a5e5a14f51d38b342df62670a8d4699de4464bf739abd`. It contains the candidate requirements lock, JSON toolchain report and XcodeGen binary checksum.
 
 No model weights or tokenizer assets were downloaded, no model conversion was invoked, and no provider, GPU, signing key or tensor specification was used.
+
+
+## 22. Batch 49 – Locked candidate and independent rebuild confirmation
+
+Run `46170554525`, Native iOS workflow, toolchain audit job `141057773238`, PR head `b7baeafd63bc02614d10a6f2ceada88606e25d75`, completed successfully on 2026-11-28.
+
+### 22.1 Final candidate Python wheel lock
+
+The second resolver run used CPython `3.12.10`, bootstrap pip `25.0.1`, CoreMLTools `9.0`, PyTorch `2.7.0`, Transformers `5.24.1`, safetensors `0.8.0` and tokenizers `0.23.3`.
+
+- 44 compatible wheels resolved; no source distributions or platform-mismatched wheels.
+- Every wheel SHA-256 matched the exact PyPI file metadata.
+- Offline installation with `--no-index --require-hashes` passed.
+- `pip check`: `No broken requirements found.`
+- Imports for CoreMLTools, PyTorch, Transformers, safetensors, tokenizers and `LlamaConfig` passed.
+- CPU tensor smoke test returned 6.
+- No CoreMLTools warning about an untested PyTorch release was emitted for PyTorch 2.7.0.
+- The lock SHA-256 is `65c739dadb4463d7d0c358c5e630b7c7f7161b2a174c5203860a0742a5db5acd`.
+
+The exact 44-wheel lock is committed at `tools/model-build/llama32-coreml/requirements-macos-arm64-py312.lock`. The audit script now regenerates the dependency graph, verifies all PyPI wheel hashes, compares the result byte-for-byte with this committed lock, and fails closed on drift.
+
+### 22.2 Python runtime fingerprint
+
+The second independent run produced the same CPython base-runtime tree SHA-256:
+
+`12804118f39a03ccb6056d15d10c28c4a88e2ec15a634c16dba4e2d1191bbd8b`
+
+The audit script now enforces this exact value. It is an installed-runtime fingerprint, not a publisher-signed Python installer checksum.
+
+### 22.3 XcodeGen reproducibility
+
+A second independent clean build from XcodeGen source commit `8445e778451c7e44237b90281bde622d764b0084` again reported version `2.46.0` and produced the exact same executable SHA-256:
+
+`4b1f269d7acb37dde467682b92c397d7065ccb6e7091b92154800bd28bb1e2ef`
+
+The pinned source commit includes `Package.resolved` with ten exact Swift package revisions (AEXML, ArtifactBundleGen, JSONUtilities, PathKit, Rainbow, Spectre, SwiftCLI, Version, XcodeProj and Yams). The workflow now verifies the executable hash and fails closed on mismatch. Two independent clean builds have therefore reproduced the same XcodeGen binary bytes for this runner/Xcode image.
+
+### 22.4 Artifact and remaining boundary
+
+- Audit artifact ID: `15273309528`
+- Artifact ZIP SHA-256: `6302facebf8b67f4df8cb348b8c24248842f8bfa46dc2b3840bc4f2f5d16f4aa`
+- Candidate lock file SHA-256: `65c739dadb4463d7d0c358c5e630b7c7f7161b2a174c5203860a0742a5db5acd`
+
+The next audit adds an import-only check for the Transformers `LlamaTokenizer` class. No tokenizer files are loaded. The current successful checks prove the package resolver, wheel integrity, offline install, package imports, CPU tensor execution and XcodeGen build identity only. They do not prove actual Llama 3.2 conversion or runtime inference.
+
+No Llama model weights or tokenizer assets were downloaded, no model conversion was invoked, and no provider, GPU, signing key or tensor specification was used.

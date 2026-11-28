@@ -215,7 +215,9 @@ jobs:
           test "$ACTUAL_SOURCE" = "8445e778451c7e44237b90281bde622d764b0084"
           PWD="$XCODEGEN_DIR" make -C "$XCODEGEN_DIR" install PREFIX="$PREFIX"
           "$PREFIX/bin/xcodegen" --version
-          shasum -a 256 "$PREFIX/bin/xcodegen" | tee "$RUNNER_TEMP/zero-coreml-toolchain-audit/xcodegen-binary.sha256"
+          XCODEGEN_SHA256="$(shasum -a 256 "$PREFIX/bin/xcodegen" | awk '{print $1}')"
+          echo "$XCODEGEN_SHA256  $PREFIX/bin/xcodegen" | tee "$RUNNER_TEMP/zero-coreml-toolchain-audit/xcodegen-binary.sha256"
+          test "$XCODEGEN_SHA256" = "4b1f269d7acb37dde467682b92c397d7065ccb6e7091b92154800bd28bb1e2ef"
           echo "XcodeGen source=$ACTUAL_SOURCE"
 
       - name: Upload candidate lock and toolchain provenance report
