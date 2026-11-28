@@ -113,7 +113,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         } catch {
             throw ImportError.invalidManifest("JSON kann nicht gelesen werden.")
         }
-        try validateManifest(manifest, for: variant)
+        try validateManifest(manifest, for: variant, trustedPublicKey: trustedPublicKey)
         let source = sourcePackageURL.standardizedFileURL
         try verifyPackage(at: source, manifest: manifest)
 
@@ -218,7 +218,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         return hex(SHA256.hash(data: Data(canonical.utf8)))
     }
 
-    private func validateManifest(_ manifest: CoreMLArtifactManifest, for variant: Llama32Variant) throws {
+    private func validateManifest(_ manifest: CoreMLArtifactManifest, for variant: Llama32Variant, trustedPublicKey: Data) throws {
         guard manifest.schemaVersion == 1 else {
             throw ImportError.invalidManifest("Nicht unterstützte Schema-Version.")
         }
@@ -260,7 +260,8 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               Self.hex(SHA256.hash(data: provenance)) == provenanceDigest.lowercased() else {
             throw ImportError.invalidManifest("Provenienz fehlt oder ihr SHA-256 stimmt nicht.")
         }
-        try Self.validateProvenance(provenance, expectedVariant: variant, packageFiles: manifest.files)
+        let trustedKeyID = "sha256:" + Self.hex(SHA256.hash(data: trustedPublicKey))
+        try Self.validateProvenance(provenance, expectedVariant: variant, expectedKeyID: trustedKeyID, packageFiles: manifest.files)
     }
 
     /// Validates required evidence sections without assigning any real model values.
@@ -269,6 +270,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
     private static func validateProvenance(
         _ data: Data,
         expectedVariant: Llama32Variant,
+        expectedKeyID: String,
         packageFiles: [CoreMLArtifactManifest.FileRecord]
     ) throws {
         guard data.count > 0, data.count <= maximumManifestBytes,
@@ -342,7 +344,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               let comparisonReport = comparison["report_sha256"] as? String, isSHA256(comparisonReport),
               let signing = root["signing"] as? [String: Any],
               (signing["algorithm"] as? String) == "Ed25519",
-              let keyID = signing["key_id"] as? String, !keyID.isEmpty,
+              let keyID = signing["key_id"] as? String, keyID == expectedKeyID,
               let signatureFile = signing["signature_file"] as? String, !signatureFile.isEmpty,
               let signerProvenance = signing["signer_provenance"] as? String, !signerProvenance.isEmpty else {
             throw ImportError.invalidManifest("Provenienz ist unvollständig, widersprüchlich oder enthält keine vollständige Toolchain-/Artefakt-/Reproduzierbarkeitsevidenz.")
