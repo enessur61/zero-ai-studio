@@ -382,9 +382,10 @@ The importer now rejects those gaps before installation and repeats the same val
 - **Core ML evidence:** requires extraction-tool version plus non-empty input, output and state metadata. Every input/output/state metadata record must include a name, data type and shape field. The validator checks structural presence, not the truth of claimed metadata; real values must be extracted from the actual artifact.
 - **Inventory binding:** license and tokenizer records must match their path/size/hash records in the provenance input inventory. Provenance outputs must match the signed import manifest's package file inventory exactly.
 - **Validation:** each declared CPU-only test must have a name, pass result and SHA-256 report reference.
+- **Signer identity:** `signing.key_id` must equal `sha256:<lowercase SHA-256 of the exact 32-byte Ed25519 public key pinned in the signed app bundle>`. The importer checks this binding both before installation and during runtime revalidation; a free-form or substituted key identifier is rejected.
 - **Reproducibility:** requires distinct primary/comparison build identifiers, two package SHA-256 values, a canonical inventory SHA-256, a comparison-report SHA-256 and an explicit `identical` or `different` result. The result must agree with the two package hashes. A non-identical rebuild is recorded as different, not silently normalized into a reproducibility claim. Missing independent-build evidence blocks import.
 
-The added Swift synthetic regression cases cover wrong model ID, missing license-acceptance reference, absent and malformed Core ML state metadata, incomplete conversion evidence, absent independent rebuild evidence and output-inventory mismatch. The existing fixtures remain explicitly synthetic and do not constitute model, license, toolchain, conversion or reproducibility evidence.
+The added Swift synthetic regression cases cover wrong model ID, missing license-acceptance reference, absent and malformed Core ML state metadata, incomplete conversion evidence, absent independent rebuild evidence, output-inventory mismatch and a signer key identifier that does not match the pinned Ed25519 key. The existing fixtures remain explicitly synthetic and do not constitute model, license, toolchain, conversion or reproducibility evidence.
 
 ### Toolchain gate disposition after Batch 47
 
