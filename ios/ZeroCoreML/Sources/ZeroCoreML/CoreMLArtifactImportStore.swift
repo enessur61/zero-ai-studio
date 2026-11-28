@@ -87,7 +87,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
     @discardableResult
     public func install(packageAt sourcePackageURL: URL, manifestPayload: Data, signature: Data, for variant: Llama32Variant) throws -> URL {
         guard let trustedPublicKey else { throw ImportError.trustedKeyMissing }
-        guard !manifestPayload.isEmpty, manifestPayload.count <= Self.maximumManifestBytes else {
+        guard !manifestPayload.isEmpty, manifestPayload.count <= Self.maximumManifestBytes, signature.count == 64 else {
             throw ImportError.invalidManifest("Manifestgröße ist ungültig.")
         }
 
@@ -154,6 +154,14 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         let envelope = packageURL.deletingLastPathComponent()
         let manifestURL = envelope.appendingPathComponent("manifest.json")
         let signatureURL = envelope.appendingPathComponent("manifest.sig")
+        let envelopeValues = try envelope.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let manifestValues = try manifestURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        let signatureValues = try signatureURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard envelopeValues.isDirectory == true, envelopeValues.isSymbolicLink != true,
+              manifestValues.isRegularFile == true, manifestValues.isSymbolicLink != true,
+              signatureValues.isRegularFile == true, signatureValues.isSymbolicLink != true else {
+            throw ImportError.invalidPackage("Installationsmetadaten oder Verzeichnis sind keine regulären sicheren Dateien.")
+        }
         let manifestAttributes = try fileManager.attributesOfItem(atPath: manifestURL.path)
         let signatureAttributes = try fileManager.attributesOfItem(atPath: signatureURL.path)
         guard let manifestSize = (manifestAttributes[.size] as? NSNumber)?.uint64Value,
