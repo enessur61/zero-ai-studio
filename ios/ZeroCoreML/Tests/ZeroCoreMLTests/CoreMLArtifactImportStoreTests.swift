@@ -30,7 +30,8 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
     }
 
     private func makeManifest(_ records: [CoreMLArtifactManifest.FileRecord], variant: Llama32Variant = .instruct1B, provenance: Data? = nil, revision: String? = nil) throws -> CoreMLArtifactManifest {
-        let outputRecords = records.map { ["path": $0.path, "size": $0.size, "sha256": $0.sha256] as [String: Any] }\n        let data = try provenance ?? syntheticProvenance(variant, revision: revision ?? String(repeating: "a", count: 40), outputs: outputRecords)
+        let outputRecords = records.map { ["path": $0.path, "size": $0.size, "sha256": $0.sha256] as [String: Any] }
+        let data = try provenance ?? syntheticProvenance(variant, revision: revision ?? String(repeating: "a", count: 40), outputs: outputRecords)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return CoreMLArtifactManifest(modelVariant: variant.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: records), files: records, provenanceJSON: data, provenanceSHA256: digest)
     }
