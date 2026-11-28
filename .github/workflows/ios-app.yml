@@ -198,7 +198,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/model-build/llama32-coreml/audit_toolchain.py
+          python -m venv "$RUNNER_TEMP/toolchain-audit-venv"
+          "$RUNNER_TEMP/toolchain-audit-venv/bin/python" tools/model-build/llama32-coreml/audit_toolchain.py
 
       - name: Build XcodeGen from the pinned source revision without cache
         shell: bash
