@@ -391,7 +391,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
                 guard let name = record["name"] as? String, !name.isEmpty,
                       let dataType = record["data_type"] as? String, !dataType.isEmpty,
                       let shape = record["shape"] as? [Any], !shape.isEmpty else {
-                    throw ImportError.invalidManifest("Core-ML-\\(label)-Metadaten sind unvollständig.")
+                    throw ImportError.invalidManifest("Core-ML-\(label)-Metadaten sind unvollständig.")
                 }
             }
         }
