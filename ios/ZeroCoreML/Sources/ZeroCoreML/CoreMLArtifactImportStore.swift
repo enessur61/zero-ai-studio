@@ -58,6 +58,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
 
     public static let maximumManifestBytes = 2 * 1024 * 1024
     public static let maximumFileCount = 100_000
+    public static let maximumPackageEntries = 200_000
     public static let maximumFileBytes: UInt64 = 4 * 1024 * 1024 * 1024
     public static let maximumPackageBytes: UInt64 = 8 * 1024 * 1024 * 1024
     public static let maximumRelativePathBytes = 1_024
@@ -163,6 +164,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         }
 
         var seen = Set<String>()
+        var normalizedPaths = Set<String>()
         var total: UInt64 = 0
         for record in manifest.files {
             guard Self.isSafeRelativePath(record.path), record.path.utf8.count <= Self.maximumRelativePathBytes else {
@@ -170,6 +172,10 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
             }
             guard seen.insert(record.path).inserted else {
                 throw ImportError.invalidManifest("Doppelter Dateipfad.")
+            }
+            let normalizedPath = record.path.precomposedStringWithCanonicalMapping.lowercased()
+            guard normalizedPaths.insert(normalizedPath).inserted else {
+                throw ImportError.invalidManifest("Dateipfade kollidieren auf case-insensitiven oder Unicode-normalisierenden Dateisystemen.")
             }
             guard record.size > 0, record.size <= Self.maximumFileBytes, Self.isSHA256(record.sha256) else {
                 throw ImportError.invalidManifest("Dateigröße oder SHA-256 ist ungültig.")
@@ -195,6 +201,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         }
 
         var actualFiles = Set<String>()
+        var entryCount = 0
         guard let enumerator = fileManager.enumerator(
             at: packageURL,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
@@ -204,6 +211,10 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         }
 
         for case let url as URL in enumerator {
+            entryCount += 1
+            guard entryCount <= Self.maximumPackageEntries else {
+                throw ImportError.sizeLimitExceeded
+            }
             let values: URLResourceValues
             do {
                 values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
@@ -219,7 +230,9 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
             }
 
             let relative = String(url.standardizedFileURL.path.dropFirst(packageURL.path.count + 1))
-            guard Self.isSafeRelativePath(relative), actualFiles.insert(relative).inserted else {
+            guard Self.isSafeRelativePath(relative),
+                  relative.utf8.count <= Self.maximumRelativePathBytes,
+                  actualFiles.insert(relative).inserted else {
                 throw ImportError.invalidPackage("Unsicherer oder doppelter Dateipfad.")
             }
         }

@@ -123,6 +123,21 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("keep.txt")), Data("keep".utf8))
     }
 
+    func testCaseAndUnicodeNormalizedPathCollisionsAreRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, _) = try makePackage(at: root)
+        let hash = SHA256.hash(data: Data("model-fixture".utf8)).map { String(format: "%02x", $0) }.joined()
+        let upper = CoreMLArtifactManifest.FileRecord(path: "Model.bin", size: 13, sha256: hash)
+        let lower = CoreMLArtifactManifest.FileRecord(path: "model.bin", size: 13, sha256: hash)
+        let manifest = CoreMLArtifactManifest(
+            modelVariant: Llama32Variant.instruct1B.rawValue,
+            packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [upper, lower]),
+            files: [upper, lower]
+        )
+        try assertImportRejected(package: package, manifest: manifest, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("ZeroModels"))
+    }
+
     func testSymlinkInsidePackageIsRejected() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
