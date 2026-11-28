@@ -50,6 +50,11 @@ actor CoreMLInferenceSession {
         }
         guard let resolvedURL,
               FileManager.default.fileExists(atPath: resolvedURL.path) else {
+            // Preserve the more fundamental production gate when no artifact is
+            // present; absence of weights must never look like a model-ready state.
+            if !permitsSyntheticFixture {
+                try LlamaCoreMLModelContract.requireProductionEvidence(for: variant)
+            }
             throw CoreMLAdapterError.modelBundleMissing(variant.bundleModelFilename)
         }
 
