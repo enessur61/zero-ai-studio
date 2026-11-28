@@ -11,19 +11,18 @@ from coremltools.converters.mil.mil import types
 
 
 def build_model():
+    # Core ML does not permit mixing enumerated and range-flexible inputs in
+    # one model. Keep both public inputs range-flexible, even though XCTest
+    # exercises one token at a time.
+    token_width = ct.RangeDim(lower_bound=1, upper_bound=4096, default=1)
     mask_width = ct.RangeDim(lower_bound=1, upper_bound=4096, default=1)
 
     @mb.program(
         opset_version=ct.target.iOS18,
         input_specs=[
-            mb.TensorSpec(shape=(1, 1), dtype=types.int32),
+            mb.TensorSpec(shape=(1, token_width.symbol), dtype=types.int32),
             mb.TensorSpec(
-                shape=(
-                    1,
-                    1,
-                    1,
-                    mask_width.symbol,
-                ),
+                shape=(1, 1, 1, mask_width.symbol),
                 dtype=types.fp16,
             ),
             mb.StateTensorSpec(shape=(1,), dtype=types.fp16),
@@ -48,14 +47,16 @@ def build_model():
         mb.coreml_update_state(state=v_cache, value=updated_v)
         return mb.reshape(x=updated_k, shape=[1, 1], name="logits")
 
-    # The final causal-mask dimension is flexible (1...4096) so XCTest can
-    # pass the growing attention window from successive decode positions.
-    # Core ML Tools 8.3.0's default canonicalize_inplace_pattern pass crashes
-    # when canonicalizing the two independent state updates in this model.
+    # Both inputs use RangeDim: Core ML rejects a mixture of enumerated
+    # inputIds and range-flexible causalMask shapes.
     model = ct.convert(
         stateful_kv_cache,
         inputs=[
-            ct.TensorType(name="inputIds", shape=(1, 1), dtype=types.int32),
+            ct.TensorType(
+                name="inputIds",
+                shape=(1, token_width),
+                dtype=types.int32,
+            ),
             ct.TensorType(
                 name="causalMask",
                 shape=(1, 1, 1, mask_width),
@@ -66,23 +67,27 @@ def build_model():
         pass_pipeline=ct.PassPipeline.EMPTY,
     )
 
-    # MIL symbolic dimensions alone are not sufficient: assert that the exported
-    # Core ML feature contract retained the requested runtime range.
-    mask_feature = next(
-        (feature for feature in model.get_spec().description.input if feature.name == "causalMask"),
-        None,
-    )
-    if mask_feature is None:
-        raise RuntimeError("Core ML model is missing its causalMask input.")
-    mask_ranges = mask_feature.type.multiArrayType.shapeRange.sizeRanges
-    if len(mask_ranges) != 4:
-        raise RuntimeError(f"Unexpected causalMask rank/range metadata: {len(mask_ranges)}")
-    final_range = mask_ranges[3]
-    if final_range.lowerBound != 1 or final_range.upperBound != 4096:
-        raise RuntimeError(
-            "Core ML causalMask width range was not preserved: "
-            f"{final_range.lowerBound}...{final_range.upperBound}"
-        )
+    # Assert that the exported Core ML feature contract retained both ranges.
+    input_features = {
+        feature.name: feature
+        for feature in model.get_spec().description.input
+        if feature.type.HasField("multiArrayType")
+    }
+    for name, rank in (("inputIds", 2), ("causalMask", 4)):
+        feature = input_features.get(name)
+        if feature is None:
+            raise RuntimeError(f"Core ML model is missing its {name} input.")
+        ranges = feature.type.multiArrayType.shapeRange.sizeRanges
+        if len(ranges) != rank:
+            raise RuntimeError(
+                f"Unexpected {name} rank/range metadata: {len(ranges)}"
+            )
+        final_range = ranges[-1]
+        if final_range.lowerBound != 1 or final_range.upperBound != 4096:
+            raise RuntimeError(
+                f"Core ML {name} width range was not preserved: "
+                f"{final_range.lowerBound}...{final_range.upperBound}"
+            )
     return model
 
 
