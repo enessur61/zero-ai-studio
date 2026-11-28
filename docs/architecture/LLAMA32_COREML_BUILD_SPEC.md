@@ -419,7 +419,8 @@ Source: Native iOS workflow run `46166896060`, job `141046320077`, PR head `45a8
 | OS | Runner image release reports macOS `15.8.2 (24H232)` | Snapshot only |
 | Architecture | Native `arm64` | Observed |
 | Python | CPython `3.12.10`, arm64 | Exact resolved version in this run; workflow still asks for `3.12`, so next run can resolve differently |
-| Xcode | CI paths identify `/Applications/Xcode_16.4.app`; version family `16.4` | Exact Xcode build identifier and SDK build were not emitted by this job; not a complete pin |
+| Xcode | `16.4 (16F6)`; `XCODE_PRODUCT_BUILD_VERSION=16F6` and `--xcode-version 16F6` appear in build logs | Exact observed build; workflow does not enforce it as a pin |
+| iOS SDK | iOS `18.5 (22F76)` for simulator and device builds | Exact observed SDK build; workflow does not enforce it as a pin |
 | Swift | `swift-driver 1.120.5` | Driver version observed; full `swift --version` output/build identity not emitted |
 | XcodeGen | `2.46.0`; source commit `8445e778451c7e44237b90281bde622d764b0084` | Source revision and reported version pinned; executable SHA-256 not emitted |
 | XcodeGen cache | This run restored a cache hit for the source-commit/toolchain-derived cache key | Cache hit does not independently prove cached binary bytes were built from the stated source revision |
@@ -427,7 +428,7 @@ Source: Native iOS workflow run `46166896060`, job `141046320077`, PR head `45a8
 
 The runner image release record is published at https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20261123.0558. It identifies image version `20261123.0558.1` and macOS `15.8.2 (24H232)`. The workflow still uses the mutable `macos-15` label.
 
-The Xcode 16.4 identification comes from the actual Xcode application path in the build log, not from an explicit `xcodebuild -version` record. The exact Xcode build number, iOS SDK build number and SDK package digest therefore remain unverified. The workflow currently computes a short cache-key prefix from `xcodebuild -version` and `swift --version`, but does not print or retain those full outputs as build provenance.
+The Xcode 16.4 build identifier `16F6` is present in the generated build command arguments and `XCODE_PRODUCT_BUILD_VERSION`; the SDK version/build `iOS 18.5 (22F76)` is present in the SDK path and SDK stat-cache name. These are exact observed values for this run, but the workflow does not enforce them as fixed requirements, and no SDK/Xcode package digest is retained. The workflow currently computes a short cache-key prefix from `xcodebuild -version` and `swift --version`, but does not print or retain those full outputs as build provenance.
 
 ### 19.2 CoreMLTools wheel evidence
 
@@ -486,7 +487,7 @@ No package versions or hashes were added to the production conversion lock becau
 2. Select and test exact Transformers, safetensors and tokenizer dependencies against that PyTorch/CoreMLTools combination.
 3. Resolve every transitive package and record hashes for every accepted wheel/sdist; enforce `pip --require-hashes`.
 4. Pin CPython 3.12.10 (or a separately validated exact patch) and attest the interpreter distribution/build; the current workflow still requests only `3.12`.
-5. Record and enforce the exact Xcode build and iOS SDK build, not only the `Xcode_16.4.app` path.
+5. Enforce the observed Xcode build `16F6` and iOS SDK build `18.5 (22F76)` as explicit workflow requirements, and retain full toolchain output/digests; current workflow merely runs with whatever the mutable image supplies.
 6. Make runner image selection immutable or document and approve the exact image version for each release build.
 7. Emit and verify XcodeGen executable SHA-256 and close the cache-origin ambiguity.
 8. Build and compare real Llama 1B and 3B conversion outputs in two independent clean builds before claiming artifact reproducibility.
