@@ -260,28 +260,39 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               Self.hex(SHA256.hash(data: provenance)) == provenanceDigest.lowercased() else {
             throw ImportError.invalidManifest("Provenienz fehlt oder ihr SHA-256 stimmt nicht.")
         }
-        try Self.validateProvenance(provenance, expectedVariant: variant)
+        try Self.validateProvenance(provenance, expectedVariant: variant, packageFiles: manifest.files)
     }
 
     /// Validates required evidence sections without assigning any real model values.
     /// Synthetic test records are accepted only as structural fixtures; this method
     /// does not grant production approval or populate LlamaCoreMLModelContract.
-    private static func validateProvenance(_ data: Data, expectedVariant: Llama32Variant) throws {
+    private static func validateProvenance(
+        _ data: Data,
+        expectedVariant: Llama32Variant,
+        packageFiles: [CoreMLArtifactManifest.FileRecord]
+    ) throws {
         guard data.count > 0, data.count <= maximumManifestBytes,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ImportError.invalidManifest("Provenienz-JSON ist ungültig.")
         }
+
         let required = ["schema_version", "model", "license", "tokenizer", "toolchain", "conversion", "inputs", "outputs", "coreml_evidence", "validation", "reproducibility", "signing"]
+        let expectedModelID = expectedVariant == .instruct1B
+            ? "meta-llama/Llama-3.2-1B-Instruct"
+            : "meta-llama/Llama-3.2-3B-Instruct"
+
         guard required.allSatisfy({ root[$0] != nil }),
               (root["schema_version"] as? Int) == 1,
               let model = root["model"] as? [String: Any],
               (model["publisher"] as? String) == "Meta",
               (model["variant"] as? String) == expectedVariant.rawValue,
+              (model["model_id"] as? String) == expectedModelID,
               let revision = model["source_revision"] as? String,
               revision.count == 40, revision.allSatisfy({ $0.isHexDigit }),
-              let modelID = model["model_id"] as? String, !modelID.isEmpty,
               let license = root["license"] as? [String: Any],
               let licenseID = license["license_id"] as? String, !licenseID.isEmpty,
+              (license["accepted"] as? Bool) == true,
+              let acceptanceRecord = license["acceptance_record"] as? String, !acceptanceRecord.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let licenseFiles = license["files"] as? [[String: Any]], !licenseFiles.isEmpty,
               let tokenizer = root["tokenizer"] as? [String: Any],
               (tokenizer["source_revision"] as? String) == revision,
@@ -291,31 +302,102 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               let pytorch = toolchain["pytorch"] as? String, !pytorch.isEmpty,
               let coremltools = toolchain["coremltools"] as? String, !coremltools.isEmpty,
               let xcode = toolchain["xcode_build"] as? String, !xcode.isEmpty,
+              let sdk = toolchain["sdk"] as? String, !sdk.isEmpty,
+              let swift = toolchain["swift"] as? String, !swift.isEmpty,
+              let osBuild = toolchain["os_build"] as? String, !osBuild.isEmpty,
+              let architecture = toolchain["architecture"] as? String, !architecture.isEmpty,
               let runner = toolchain["runner_image"] as? String, !runner.isEmpty,
               let lockHash = toolchain["lock_sha256"] as? String, isSHA256(lockHash),
               let converterRevision = toolchain["converter_revision"] as? String,
               converterRevision.count == 40, converterRevision.allSatisfy({ $0.isHexDigit }),
+              let conversion = root["conversion"] as? [String: Any],
+              let command = conversion["command"] as? String, !command.isEmpty,
+              let profile = conversion["profile"] as? String, !profile.isEmpty,
+              let graphCapture = conversion["graph_capture_method"] as? String, !graphCapture.isEmpty,
+              let deploymentTarget = conversion["deployment_target"] as? String, !deploymentTarget.isEmpty,
+              let precisionProfile = conversion["precision_profile"] as? String, !precisionProfile.isEmpty,
+              let passPipeline = conversion["pass_pipeline"] as? String, !passPipeline.isEmpty,
+              conversion["options"] as? [String: Any] != nil,
               let inputs = root["inputs"] as? [[String: Any]], !inputs.isEmpty,
               let outputs = root["outputs"] as? [[String: Any]], !outputs.isEmpty,
               let evidence = root["coreml_evidence"] as? [String: Any],
               (evidence["extracted_from_artifact"] as? Bool) == true,
+              let extractionTool = evidence["extraction_tool_version"] as? String, !extractionTool.isEmpty,
               let coremlInputs = evidence["inputs"] as? [[String: Any]], !coremlInputs.isEmpty,
               let coremlOutputs = evidence["outputs"] as? [[String: Any]], !coremlOutputs.isEmpty,
+              let coremlStates = evidence["states"] as? [[String: Any]], !coremlStates.isEmpty,
               let validation = root["validation"] as? [String: Any],
               (validation["cpu_only"] as? Bool) == true,
               let validationTests = validation["tests"] as? [[String: Any]], !validationTests.isEmpty,
+              let reproducibility = root["reproducibility"] as? [String: Any],
+              let primaryBuildID = reproducibility["build_id"] as? String, !primaryBuildID.isEmpty,
+              let comparison = reproducibility["independent_rebuild"] as? [String: Any],
+              let comparisonStatus = comparison["status"] as? String,
+              comparisonStatus == "identical" || comparisonStatus == "different",
+              let comparisonBuildID = comparison["build_id"] as? String,
+              !comparisonBuildID.isEmpty, comparisonBuildID != primaryBuildID,
+              let primaryDigest = comparison["primary_package_sha256"] as? String, isSHA256(primaryDigest),
+              let comparisonDigest = comparison["comparison_package_sha256"] as? String, isSHA256(comparisonDigest),
+              let inventoryDigest = comparison["canonical_inventory_sha256"] as? String, isSHA256(inventoryDigest),
+              let comparisonReport = comparison["report_sha256"] as? String, isSHA256(comparisonReport),
               let signing = root["signing"] as? [String: Any],
               (signing["algorithm"] as? String) == "Ed25519",
-              let keyID = signing["key_id"] as? String, !keyID.isEmpty else {
-            throw ImportError.invalidManifest("Provenienz ist unvollständig, widersprüchlich oder enthält keine vollständige Toolchain-/Artefaktevidenz.")
+              let keyID = signing["key_id"] as? String, !keyID.isEmpty,
+              let signatureFile = signing["signature_file"] as? String, !signatureFile.isEmpty,
+              let signerProvenance = signing["signer_provenance"] as? String, !signerProvenance.isEmpty else {
+            throw ImportError.invalidManifest("Provenienz ist unvollständig, widersprüchlich oder enthält keine vollständige Toolchain-/Artefakt-/Reproduzierbarkeitsevidenz.")
         }
-        for collection in [licenseFiles, tokenizerFiles, inputs, outputs] {
-            for item in collection {
-                guard let path = item["path"] as? String, !path.isEmpty,
-                      let size = item["size"] as? NSNumber, size.uint64Value > 0,
-                      let hash = item["sha256"] as? String, isSHA256(hash) else {
-                    throw ImportError.invalidManifest("Provenienz-Dateiinventar ist unvollständig.")
+
+        guard (comparisonStatus == "identical" && primaryDigest == comparisonDigest)
+                || (comparisonStatus == "different" && primaryDigest != comparisonDigest) else {
+            throw ImportError.invalidManifest("Reproduzierbarkeitsstatus widerspricht den unabhängigen Paket-Hashes.")
+        }
+
+        func validatedInventory(_ records: [[String: Any]], label: String) throws -> [String: (UInt64, String)] {
+            var result: [String: (UInt64, String)] = [:]
+            for item in records {
+                guard let path = item["path"] as? String,
+                      isSafeRelativePath(path), path.utf8.count <= maximumRelativePathBytes,
+                      let sizeNumber = item["size"] as? NSNumber, sizeNumber.uint64Value > 0,
+                      let hash = item["sha256"] as? String, isSHA256(hash),
+                      result[path] == nil else {
+                    throw ImportError.invalidManifest("\(label)-Dateiinventar ist unvollständig, unsicher oder enthält Duplikate.")
                 }
+                result[path] = (sizeNumber.uint64Value, hash.lowercased())
+            }
+            return result
+        }
+
+        let licenseInventory = try validatedInventory(licenseFiles, label: "Lizenz")
+        let tokenizerInventory = try validatedInventory(tokenizerFiles, label: "Tokenizer")
+        let inputInventory = try validatedInventory(inputs, label: "Input")
+        let outputInventory = try validatedInventory(outputs, label: "Output")
+        guard licenseInventory.allSatisfy({ inputInventory[$0.key]?.0 == $0.value.0 && inputInventory[$0.key]?.1 == $0.value.1 }),
+              tokenizerInventory.allSatisfy({ inputInventory[$0.key]?.0 == $0.value.0 && inputInventory[$0.key]?.1 == $0.value.1 }) else {
+            throw ImportError.invalidManifest("Lizenz-/Tokenizer-Inventar ist nicht konsistent an die Input-Hashes gebunden.")
+        }
+
+        var packageInventory: [String: (UInt64, String)] = [:]
+        for record in packageFiles {
+            packageInventory[record.path] = (record.size, record.sha256.lowercased())
+        }
+        guard outputInventory.count == packageInventory.count,
+              outputInventory.allSatisfy({ packageInventory[$0.key]?.0 == $0.value.0 && packageInventory[$0.key]?.1 == $0.value.1 }) else {
+            throw ImportError.invalidManifest("Provenienz-Output-Inventar stimmt nicht exakt mit dem signierten Paketmanifest überein.")
+        }
+
+        for state in coremlStates {
+            guard let name = state["name"] as? String, !name.isEmpty,
+                  let dataType = state["data_type"] as? String, !dataType.isEmpty,
+                  let shape = state["shape"] as? [Any], !shape.isEmpty else {
+                throw ImportError.invalidManifest("Core-ML-State-Metadaten sind unvollständig.")
+            }
+        }
+        for test in validationTests {
+            guard let name = test["name"] as? String, !name.isEmpty,
+                  (test["passed"] as? Bool) == true,
+                  let reportHash = test["report_sha256"] as? String, isSHA256(reportHash) else {
+                throw ImportError.invalidManifest("CPU-Validierungsnachweis ist unvollständig oder fehlgeschlagen.")
             }
         }
     }
