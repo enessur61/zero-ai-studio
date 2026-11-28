@@ -48,8 +48,27 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         return (package, manifest)
     }
 
-    private func signedPayload(_ manifest: CoreMLArtifactManifest, key: Curve25519.Signing.PrivateKey) throws -> (Data, Data) {
-        let payload = try JSONEncoder().encode(manifest)
+    private func signedPayload(_ manifest: CoreMLArtifactManifest, key: Curve25519.Signing.PrivateKey, bindKeyID: Bool = true) throws -> (Data, Data) {
+        var signedManifest = manifest
+        if bindKeyID, let provenance = manifest.provenanceJSON {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: provenance) as? [String: Any])
+            var signing = try XCTUnwrap(object["signing"] as? [String: Any])
+            let fingerprint = SHA256.hash(data: key.publicKey.rawRepresentation).map { String(format: "%02x", $0) }.joined()
+            signing["key_id"] = "sha256:" + fingerprint
+            object["signing"] = signing
+            let updatedProvenance = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let previousDigest = SHA256.hash(data: provenance).map { String(format: "%02x", $0) }.joined()
+            let declaredDigestWasValid = manifest.provenanceSHA256?.lowercased() == previousDigest
+            let updatedDigest = SHA256.hash(data: updatedProvenance).map { String(format: "%02x", $0) }.joined()
+            signedManifest = CoreMLArtifactManifest(
+                modelVariant: manifest.modelVariant,
+                packageSHA256: manifest.packageSHA256,
+                files: manifest.files,
+                provenanceJSON: updatedProvenance,
+                provenanceSHA256: declaredDigestWasValid ? updatedDigest : manifest.provenanceSHA256
+            )
+        }
+        let payload = try JSONEncoder().encode(signedManifest)
         return (payload, try key.signature(for: payload))
     }
 
@@ -251,6 +270,15 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         let bad = try makeManifest(valid.files, provenance: data)
         try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("WrongModelID"))
+    }
+
+    func testProvenanceKeyIDMustMatchPinnedTrustKey() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key, bindKeyID: false)
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: root.appendingPathComponent("WrongSignerKeyID"))
+        XCTAssertThrowsError(try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B))
     }
 
     func testLicenseAcceptanceRequiresSeparateReference() throws {
