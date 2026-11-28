@@ -78,6 +78,8 @@ def _git(repo: Path, *args: str) -> bytes:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_ALLOW_PROTOCOL": "",
     })
     command = ["git", "--no-replace-objects", "-C", str(repo), *args]
     try:
