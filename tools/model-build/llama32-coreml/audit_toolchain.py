@@ -46,14 +46,23 @@ def runtime_tree_sha256(root: Path) -> str:
 
 
 def wheel_metadata(path: Path) -> tuple[str, str]:
+    # PEP 427 wheel filenames begin with normalized distribution and version.
+    # Select that wheel's own .dist-info record rather than assuming an archive
+    # can contain only one METADATA file (vendored packages may add others).
+    parts = path.name[:-4].split("-")
+    if len(parts) < 5 or not path.name.endswith(".whl"):
+        raise RuntimeError(f"Invalid wheel filename: {path.name}")
+    canonical_metadata = f"{parts[0]}-{parts[1]}.dist-info/METADATA"
     with zipfile.ZipFile(path) as archive:
-        metadata_names = [
-            name for name in archive.namelist()
-            if name.endswith(".dist-info/METADATA")
-        ]
-        if len(metadata_names) != 1:
-            raise RuntimeError(f"Expected one wheel METADATA in {path.name}")
-        message = email.message_from_bytes(archive.read(metadata_names[0]))
+        names = archive.namelist()
+        matches = [name for name in names if name == canonical_metadata]
+        if len(matches) != 1:
+            candidates = [name for name in names if name.endswith(".dist-info/METADATA")]
+            raise RuntimeError(
+                f"Expected canonical wheel METADATA {canonical_metadata} in "
+                f"{path.name}; found {candidates}"
+            )
+        message = email.message_from_bytes(archive.read(matches[0]))
     name, version = message.get("Name"), message.get("Version")
     if not name or not version:
         raise RuntimeError(f"Missing Name/Version metadata in {path.name}")
