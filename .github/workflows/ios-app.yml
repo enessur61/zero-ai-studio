@@ -25,11 +25,17 @@ jobs:
   # Validate native iOS changes on PRs and allow explicit manual runs.
   build-ios-app:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event_name == 'push'
-    # Intel avoids the documented macOS ARM64 capacity bottleneck. Xcode can
-    # still cross-compile the unsigned iPhone device target for arm64.
-    runs-on: macos-15-intel
+    # Core ML MLState fixture must execute on native Apple Silicon.
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
+      - name: Verify native Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          printf 'Native runner architecture: %s\\n' "$ARCH"
+          [[ "$ARCH" == "arm64" ]]
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Determine Apple toolchain cache key
         id: apple-toolchain
@@ -42,7 +48,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ runner.temp }}/xcodegen
-          key: zero-xcodegen-macos-15-intel-${{ steps.apple-toolchain.outputs.key }}-8445e778451c7e44237b90281bde622d764b0084
+          key: zero-xcodegen-macos-15-arm64-${{ steps.apple-toolchain.outputs.key }}-8445e778451c7e44237b90281bde622d764b0084
       - name: Restore Swift package build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
