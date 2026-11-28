@@ -493,3 +493,59 @@ No package versions or hashes were added to the production conversion lock becau
 8. Build and compare real Llama 1B and 3B conversion outputs in two independent clean builds before claiming artifact reproducibility.
 
 No model weights were downloaded, no Llama conversion was run, no model artifacts or tensor contracts were created, and no signing key was introduced in Batch 48. The existing fail-closed production posture remains mandatory.
+
+
+## 20. Batch 49 – Candidate Python conversion stack (metadata audit only)
+
+This is a candidate matrix for a later isolated dependency-resolution and compatibility job. It is **not** an approved lock, and no package was downloaded or installed as part of this audit. SHA-256 values below are the official PyPI release-file checksums for the exact macOS ARM64 / CPython 3.12-compatible wheel where one exists. A checksum authenticates bytes against PyPI metadata; it does not by itself prove the publisher or validate the converter combination.
+
+### 20.1 Candidate direct wheels
+
+| Package | Candidate version | Exact compatible wheel | PyPI SHA-256 | Release provenance | Status |
+|---|---:|---|---|---|---|
+| CoreMLTools | 9.0 | `coremltools-9.0-cp312-none-macosx_11_0_arm64.whl` | `7079e8b6ff5a63f0e2c08eeeb8673e4eab8ca231d4b2eae4f7fb005e0d08a8cd` | PyPI page reports no Trusted Publishing provenance | Candidate |
+| PyTorch | 2.7.1 | `torch-2.7.1-cp312-none-macosx_11_0_arm64.whl` | `787687087412c4bd68d315e39bc1223f08aae1d16a9e9771d95eabbb04ae98fb` | PyPI page reports no Trusted Publishing provenance | Candidate |
+| Transformers | 5.24.1 | `transformers-5.24.1-py3-none-any.whl` | `505b39d3e45a3715f3acb81b858eb245ce1a462373b7f99e26f0dcd41ed4cd0f` | PyPI Trusted Publishing attestation present | Candidate |
+| safetensors | 0.8.0 | `safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl` | `c80201d22cbf405b80647a60ada77bba06c8fba2da2743ba1e89cdcc39a81f25` | PyPI page reports no Trusted Publishing provenance | Candidate |
+| tokenizers | 0.23.3 | `tokenizers-0.23.3-cp310-abi3-macosx_11_0_arm64.whl` | `68649e97d5b43c44c031d8d848874a6eecae8f8fe40ea989aa777a5a83aca716` | PyPI Trusted Publishing attestation present | Candidate |
+
+The `cp310-abi3` safetensors and tokenizers wheels declare the stable CPython limited ABI and are tagged for macOS 11+ ARM64; they are compatible at wheel-tag level with CPython 3.12. This is a packaging compatibility statement, not an end-to-end import or conversion test.
+
+### 20.2 Why this is a coherent candidate, not yet a proven toolchain
+
+- CoreMLTools 9.0 release notes explicitly add PyTorch 2.7 support. The exact 9.0 CPython 3.12 ARM64 wheel exists on PyPI.
+- PyTorch 2.7.1 publishes an exact CPython 3.12 macOS ARM64 wheel.
+- Transformers 5.24.1 declares Python 3.11+ and PyTorch 2.6+ in its installation requirements; PyTorch 2.7.1 satisfies that declared minimum.
+- safetensors 0.8.0 and tokenizers 0.23.3 declare Python >=3.10 and publish macOS ARM64 `abi3` wheels.
+- Apple documents PyTorch graph capture via `torch.jit.trace` or `torch.export`, followed by the CoreMLTools Unified Conversion API. This establishes the supported integration path, not successful conversion of Llama 3.2.
+
+These facts support trying the candidate combination in an isolated resolver/import test. They do **not** establish that the real Llama 3.2 graph, its attention/cache operators, dynamic shapes, or state representation convert successfully. No model-specific compatibility claim is made.
+
+### 20.3 Exact artifacts and source records
+
+- CoreMLTools 9.0 PyPI release: https://pypi.org/project/coremltools/9.0/
+- CoreMLTools 9.0 signed GitHub release notes and PyTorch 2.7 support statement: https://github.com/apple/coremltools/releases/tag/9.0
+- PyTorch 2.7.1 PyPI release: https://pypi.org/project/torch/2.7.1/
+- Transformers 5.24.1 PyPI release and Trusted Publishing provenance: https://pypi.org/project/transformers/5.24.1/
+- safetensors 0.8.0 PyPI release: https://pypi.org/project/safetensors/0.8.0/
+- tokenizers 0.23.3 PyPI release and provenance: https://pypi.org/project/tokenizers/0.23.3/
+- Apple PyTorch conversion workflow: https://apple.github.io/coremltools/docs-guides/source/convert-pytorch-workflow.html
+- Python 3.12.10 release: https://www.python.org/downloads/release/python-31210/
+
+### 20.4 Python runtime artifact gap
+
+The native CI observed CPython 3.12.10 ARM64, but workflow configuration still requests only `3.12`. Python.org's 3.12.10 release page exposes the macOS universal2 installer and signature material, but the inspected release page does not expose a SHA-256 checksum for that installer (it lists MD5). Therefore the CPython runtime is not yet a hash-pinned artifact. Batch 49 must select a verifiable interpreter distribution with a SHA-256/Sigstore verification path, or explicitly retain this as an open gate; do not treat the CI version string as binary provenance.
+
+### 20.5 Remaining Batch 49 work before a lock can be approved
+
+1. Run a no-model-download resolver audit for the five candidate packages on CPython 3.12 / macOS ARM64; capture the full dependency graph and all selected wheel filenames.
+2. Reject any sdist or platform-mismatched wheel unless a separately reviewed, reproducible source-build process is provided.
+3. Record PyPI SHA-256 for every transitive wheel and enforce `pip --require-hashes`; keep provenance-attestation status distinct from checksum status.
+4. Verify import/runtime compatibility of `torch`, `coremltools`, `transformers`, `safetensors` and `tokenizers` in the same clean environment. Do not fetch a model or invoke a converter in this stage.
+5. Check the installed Transformers Llama 3.2 configuration/model classes and tokenizer APIs without downloading model weights; do not infer actual tensor I/O contracts from config classes.
+6. Reconcile CoreMLTools 9.0's PyTorch 2.7 support with the exact selected torch wheel and all transitive NumPy/protobuf constraints.
+7. Pin and attest CPython 3.12.10, Xcode 16.4 build `16F6`, iOS SDK `18.5 (22F76)`, and runner image `20261123.0558.1`; these are currently observed but not all enforced.
+8. Build XcodeGen from its pinned source revision on a clean cache miss and emit/verify the actual executable SHA-256; a cache hit is not binary provenance.
+9. Only after these non-model checks pass, freeze a candidate lock. Actual Llama conversion, model artifact creation and independent reproducibility builds remain separately gated and are prohibited in this batch.
+
+No Python package was downloaded or installed, no model weights or tokenizer assets were fetched, and no conversion or GPU/provider operation was run while preparing this candidate matrix.
