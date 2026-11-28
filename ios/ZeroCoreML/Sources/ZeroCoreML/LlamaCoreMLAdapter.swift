@@ -57,22 +57,11 @@ public actor LlamaCoreMLAdapter {
 
     public static func locateCompiledModelURL(
         for variant: Llama32Variant,
-        bundle: Bundle = .main,
-        documentsDirectory: URL? = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        bundle: Bundle = .main
     ) -> URL? {
+        // Unverified Documents/ZeroModels packages are never exposed as available.
         let baseName = variant.bundleModelFilename.replacingOccurrences(of: ".mlmodelc", with: "")
-        if let bundled = bundle.url(forResource: baseName, withExtension: "mlmodelc") {
-            return bundled
-        }
-        if let docs = documentsDirectory {
-            let candidate = docs
-                .appendingPathComponent("ZeroModels", isDirectory: true)
-                .appendingPathComponent(variant.bundleModelFilename, isDirectory: true)
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return nil
+        return bundle.url(forResource: baseName, withExtension: "mlmodelc")
     }
 
     public func deploymentDiagnostics() -> CoreMLDeploymentStatus {

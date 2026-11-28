@@ -40,12 +40,10 @@ actor CoreMLInferenceSession {
             let baseName = variant.bundleModelFilename.replacingOccurrences(of: ".mlmodelc", with: "")
             if let bundled = Bundle.main.url(forResource: baseName, withExtension: "mlmodelc") {
                 resolvedURL = bundled
-            } else if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                let candidate = documents
-                    .appendingPathComponent("ZeroModels", isDirectory: true)
-                    .appendingPathComponent(variant.bundleModelFilename, isDirectory: true)
-                resolvedURL = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
             } else {
+                // Documents/ZeroModels is intentionally not a runtime fallback yet.
+                // It becomes eligible only after the trusted-key verifier is wired
+                // into runtime loading and the artifact-bound model contract is complete.
                 resolvedURL = nil
             }
         }

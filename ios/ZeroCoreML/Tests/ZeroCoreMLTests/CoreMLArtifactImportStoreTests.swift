@@ -1,0 +1,135 @@
+import XCTest
+import CryptoKit
+@testable import ZeroCoreML
+
+final class CoreMLArtifactImportStoreTests: XCTestCase {
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("zero-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makePackage(at root: URL, content: Data = Data("model-fixture".utf8)) throws -> (URL, CoreMLArtifactManifest) {
+        let package = root.appendingPathComponent("source.mlmodelc", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let file = package.appendingPathComponent("model.bin")
+        try content.write(to: file)
+        let hash = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
+        let record = CoreMLArtifactManifest.FileRecord(path: "model.bin", size: UInt64(content.count), sha256: hash)
+        let manifest = CoreMLArtifactManifest(
+            modelVariant: Llama32Variant.instruct1B.rawValue,
+            packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [record]),
+            files: [record]
+        )
+        return (package, manifest)
+    }
+
+    private func signedPayload(_ manifest: CoreMLArtifactManifest, key: Curve25519.Signing.PrivateKey) throws -> (Data, Data) {
+        let payload = try JSONEncoder().encode(manifest)
+        return (payload, try key.signature(for: payload))
+    }
+
+    private func assertImportRejected(
+        package: URL,
+        manifest: CoreMLArtifactManifest,
+        key: Curve25519.Signing.PrivateKey,
+        root: URL,
+        variant: Llama32Variant = .instruct1B
+    ) throws {
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: root)
+        XCTAssertThrowsError(try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: variant))
+    }
+
+    func testValidSignedPackageIsVerifiedCopiedAndInstalled() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: root.appendingPathComponent("ZeroModels"))
+        let installed = try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: installed.appendingPathComponent("model.bin").path))
+        XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent("model.bin")), Data("model-fixture".utf8))
+    }
+
+    func testMissingTrustedKeyFailsClosed() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let (payload, signature) = try signedPayload(manifest, key: Curve25519.Signing.PrivateKey())
+        let store = CoreMLArtifactImportStore(trustedPublicKey: nil, installRoot: root.appendingPathComponent("ZeroModels"))
+        XCTAssertThrowsError(try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B)) { error in
+            guard case CoreMLArtifactImportStore.ImportError.trustedKeyMissing = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testInvalidSignatureFailsBeforeInstallation() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let signer = Curve25519.Signing.PrivateKey()
+        let attacker = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: attacker)
+        let store = CoreMLArtifactImportStore(trustedPublicKey: signer.publicKey.rawRepresentation, installRoot: root.appendingPathComponent("ZeroModels"))
+        XCTAssertThrowsError(try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ZeroModels").appendingPathComponent(Llama32Variant.instruct1B.bundleModelFilename).path))
+    }
+
+    func testTamperedFileFailsHashVerification() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        try Data("tampered".utf8).write(to: package.appendingPathComponent("model.bin"))
+        try assertImportRejected(package: package, manifest: manifest, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("ZeroModels"))
+    }
+
+    func testUnexpectedFilesAndSymlinksAreRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        try Data("extra".utf8).write(to: package.appendingPathComponent("unexpected.bin"))
+        try assertImportRejected(package: package, manifest: manifest, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("ZeroModels"))
+    }
+
+    func testTraversalDuplicateAndWrongVariantManifestsAreRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, validManifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let unsafe = CoreMLArtifactManifest.FileRecord(path: "../escape", size: 1, sha256: String(repeating: "a", count: 64))
+        let traversal = CoreMLArtifactManifest(modelVariant: Llama32Variant.instruct1B.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [unsafe]), files: [unsafe])
+        try assertImportRejected(package: package, manifest: traversal, key: key, root: root.appendingPathComponent("Traversal"))
+        let duplicate = validManifest.files[0]
+        let duplicateManifest = CoreMLArtifactManifest(modelVariant: Llama32Variant.instruct1B.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: [duplicate, duplicate]), files: [duplicate, duplicate])
+        try assertImportRejected(package: package, manifest: duplicateManifest, key: key, root: root.appendingPathComponent("Duplicate"))
+        try assertImportRejected(package: package, manifest: validManifest, key: key, root: root.appendingPathComponent("WrongVariant"), variant: .instruct3B)
+    }
+
+    func testExistingInstallationIsNeverOverwritten() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let installRoot = root.appendingPathComponent("ZeroModels")
+        let destination = installRoot.appendingPathComponent(Llama32Variant.instruct1B.bundleModelFilename)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: destination.appendingPathComponent("keep.txt"))
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: installRoot)
+        XCTAssertThrowsError(try store.install(packageAt: package, manifestPayload: payload, signature: signature, for: .instruct1B))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("keep.txt")), Data("keep".utf8))
+    }
+
+    func testSymlinkInsidePackageIsRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (package, manifest) = try makePackage(at: root)
+        let external = root.appendingPathComponent("outside.bin")
+        try Data("outside".utf8).write(to: external)
+        try FileManager.default.createSymbolicLink(at: package.appendingPathComponent("link.bin"), withDestinationURL: external)
+        try assertImportRejected(package: package, manifest: manifest, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("ZeroModels"))
+    }
+}
