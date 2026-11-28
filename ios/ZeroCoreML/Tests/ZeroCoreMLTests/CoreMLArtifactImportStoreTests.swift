@@ -58,6 +58,31 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         XCTAssertThrowsError(try verifier.verifyInstalledPackage(at: installed, for: .instruct1B))
     }
 
+    func testInstalledPackageOutsideConfiguredTrustRootIsRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (sourcePackage, manifest) = try makePackage(at: root)
+        let key = Curve25519.Signing.PrivateKey()
+        let (payload, signature) = try signedPayload(manifest, key: key)
+        let configuredRoot = root.appendingPathComponent("ConfiguredZeroModels")
+        let store = CoreMLArtifactImportStore(trustedPublicKey: key.publicKey.rawRepresentation, installRoot: configuredRoot)
+        let installed = try store.install(packageAt: sourcePackage, manifestPayload: payload, signature: signature, for: .instruct1B)
+
+        let foreignRoot = root.appendingPathComponent("Foreign")
+        let foreignEnvelope = foreignRoot.appendingPathComponent(CoreMLArtifactImportStore.installationDirectoryName(for: .instruct1B))
+        try FileManager.default.createDirectory(at: foreignEnvelope, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: installed.deletingLastPathComponent().appendingPathComponent("model.mlmodelc"),
+                                         to: foreignEnvelope.appendingPathComponent("model.mlmodelc"))
+        try FileManager.default.copyItem(at: installed.deletingLastPathComponent().appendingPathComponent("manifest.json"),
+                                         to: foreignEnvelope.appendingPathComponent("manifest.json"))
+        try FileManager.default.copyItem(at: installed.deletingLastPathComponent().appendingPathComponent("manifest.sig"),
+                                         to: foreignEnvelope.appendingPathComponent("manifest.sig"))
+        XCTAssertThrowsError(try store.verifyInstalledPackage(
+            at: foreignEnvelope.appendingPathComponent("model.mlmodelc"),
+            for: .instruct1B
+        ))
+    }
+
     func testRuntimeVerificationRejectsTamperedSignature() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
