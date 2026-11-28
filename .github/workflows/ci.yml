@@ -130,6 +130,9 @@ jobs:
             --volume "$PWD/piper-worker/test_offline_synthesis.py:/app/test_offline_synthesis.py:ro" \
             --env PIPER_MODEL_DIR=/var/lib/zero-piper \
             zero-piper-arm64:offline python -m unittest -v test_offline_synthesis
+      - name: Test offline Llama source provenance validator (synthetic fixtures only)
+        working-directory: tools/model-build/llama32-coreml
+        run: python3 -m unittest -v
       - name: Validate Piper and GPU worker Python syntax
         run: python3 -m py_compile piper-worker/app.py piper-worker/voice_assets.py gpu-worker/app.py
       - name: Run PostgreSQL revision and concurrency integration tests
