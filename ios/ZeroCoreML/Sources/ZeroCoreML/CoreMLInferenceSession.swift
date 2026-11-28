@@ -35,18 +35,13 @@ actor CoreMLInferenceSession {
             resolvedURL = modelURL
             isInstalledArtifact = modelURL.lastPathComponent == "model.mlmodelc"
         } else {
-            let baseName = variant.bundleModelFilename.replacingOccurrences(of: ".mlmodelc", with: "")
-            if let bundled = Bundle.main.url(forResource: baseName, withExtension: "mlmodelc") {
-                resolvedURL = bundled
-            } else {
-                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-                    ?? FileManager.default.temporaryDirectory
-                let envelope = documents.appendingPathComponent("ZeroModels", isDirectory: true)
-                    .appendingPathComponent(CoreMLArtifactImportStore.installationDirectoryName(for: variant), isDirectory: true)
-                let installed = envelope.appendingPathComponent("model.mlmodelc", isDirectory: true)
-                isInstalledArtifact = FileManager.default.fileExists(atPath: installed.path)
-                resolvedURL = isInstalledArtifact ? installed : nil
-            }
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            let envelope = documents.appendingPathComponent("ZeroModels", isDirectory: true)
+                .appendingPathComponent(CoreMLArtifactImportStore.installationDirectoryName(for: variant), isDirectory: true)
+            let installed = envelope.appendingPathComponent("model.mlmodelc", isDirectory: true)
+            isInstalledArtifact = FileManager.default.fileExists(atPath: installed.path)
+            resolvedURL = isInstalledArtifact ? installed : nil
         }
         guard let resolvedURL,
               FileManager.default.fileExists(atPath: resolvedURL.path) else {
@@ -58,6 +53,12 @@ actor CoreMLInferenceSession {
             throw CoreMLAdapterError.modelBundleMissing(variant.bundleModelFilename)
         }
 
+        if !permitsSyntheticFixture && !isInstalledArtifact {
+            throw CoreMLAdapterError.modelContractUnverified(
+                variant.rawValue,
+                "Produktive Modelle dürfen ausschließlich aus dem festgelegten, signaturgeprüften Installations-Trust-Root geladen werden."
+            )
+        }
         if isInstalledArtifact && !permitsSyntheticFixture {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
