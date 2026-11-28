@@ -200,7 +200,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         let manifest: CoreMLArtifactManifest
         do { manifest = try JSONDecoder().decode(CoreMLArtifactManifest.self, from: manifestPayload) }
         catch { throw ImportError.invalidManifest("JSON kann nicht gelesen werden.") }
-        try validateManifest(manifest, for: variant)
+        try validateManifest(manifest, for: variant, trustedPublicKey: trustedPublicKey)
         let provenanceURL = envelope.appendingPathComponent("provenance.json")
         let provenanceValues = try provenanceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard provenanceValues.isRegularFile == true, provenanceValues.isSymbolicLink != true,
