@@ -9,27 +9,28 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         return url
     }
 
-    private func syntheticProvenance(_ variant: Llama32Variant = .instruct1B, revision: String = String(repeating: "a", count: 40), tokenizerRevision: String? = nil) throws -> Data {
+    private func syntheticProvenance(_ variant: Llama32Variant = .instruct1B, revision: String = String(repeating: "a", count: 40), tokenizerRevision: String? = nil, outputs: [[String: Any]]? = nil) throws -> Data {
         let hash = String(repeating: "b", count: 64)
         let file = [["path": "fixture.bin", "size": 1, "sha256": hash] as [String: Any]]
+        let packageOutputs = outputs ?? file
         let object: [String: Any] = [
             "schema_version": 1,
             "model": ["publisher": "Meta", "model_id": variant == .instruct1B ? "meta-llama/Llama-3.2-1B-Instruct" : "meta-llama/Llama-3.2-3B-Instruct", "variant": variant.rawValue, "source_revision": revision],
-            "license": ["license_id": "SYNTHETIC-TEST-ONLY", "files": file],
+            "license": ["license_id": "SYNTHETIC-TEST-ONLY", "accepted": true, "acceptance_record": "SYNTHETIC-TEST-ONLY-REFERENCE", "files": file],
             "tokenizer": ["source_revision": tokenizerRevision ?? revision, "files": file],
-            "toolchain": ["runner_image": "SYNTHETIC-TEST-ONLY", "xcode_build": "SYNTHETIC-TEST-ONLY", "python": "3.12.test", "pytorch": "SYNTHETIC-TEST-ONLY", "coremltools": "8.3.0.test", "lock_sha256": hash, "converter_revision": revision],
-            "conversion": ["profile": "SYNTHETIC-TEST-ONLY"],
-            "inputs": file, "outputs": file,
-            "coreml_evidence": ["extracted_from_artifact": true, "inputs": file, "outputs": file, "states": file],
-            "validation": ["cpu_only": true, "tests": [["name": "synthetic", "passed": true]]],
-            "reproducibility": ["build_id": "SYNTHETIC-TEST-ONLY"],
-            "signing": ["algorithm": "Ed25519", "key_id": "SYNTHETIC-TEST-ONLY"]
+            "toolchain": ["runner_image": "SYNTHETIC-TEST-ONLY", "os_build": "SYNTHETIC-TEST-ONLY", "architecture": "SYNTHETIC-TEST-ONLY", "xcode_build": "SYNTHETIC-TEST-ONLY", "sdk": "SYNTHETIC-TEST-ONLY", "swift": "SYNTHETIC-TEST-ONLY", "python": "3.12.test", "pytorch": "SYNTHETIC-TEST-ONLY", "coremltools": "8.3.0.test", "lock_sha256": hash, "converter_revision": revision],
+            "conversion": ["command": "SYNTHETIC-TEST-ONLY", "profile": "SYNTHETIC-TEST-ONLY", "graph_capture_method": "SYNTHETIC-TEST-ONLY", "deployment_target": "SYNTHETIC-TEST-ONLY", "precision_profile": "SYNTHETIC-TEST-ONLY", "pass_pipeline": "SYNTHETIC-TEST-ONLY", "options": [:]],
+            "inputs": file, "outputs": packageOutputs,
+            "coreml_evidence": ["extracted_from_artifact": true, "extraction_tool_version": "SYNTHETIC-TEST-ONLY", "inputs": file, "outputs": file, "states": [["name": "state", "data_type": "SYNTHETIC-TEST-ONLY", "shape": [1]]]],
+            "validation": ["cpu_only": true, "tests": [["name": "synthetic", "passed": true, "report_sha256": hash]]],
+            "reproducibility": ["build_id": "SYNTHETIC-BUILD-A", "independent_rebuild": ["status": "identical", "build_id": "SYNTHETIC-BUILD-B", "primary_package_sha256": hash, "comparison_package_sha256": hash, "canonical_inventory_sha256": hash, "report_sha256": hash]],
+            "signing": ["algorithm": "Ed25519", "key_id": "SYNTHETIC-TEST-ONLY", "signature_file": "SYNTHETIC-TEST-ONLY.sig", "signer_provenance": "SYNTHETIC-TEST-ONLY"]
         ]
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     private func makeManifest(_ records: [CoreMLArtifactManifest.FileRecord], variant: Llama32Variant = .instruct1B, provenance: Data? = nil, revision: String? = nil) throws -> CoreMLArtifactManifest {
-        let data = try provenance ?? syntheticProvenance(variant, revision: revision ?? String(repeating: "a", count: 40))
+        let outputRecords = records.map { ["path": $0.path, "size": $0.size, "sha256": $0.sha256] as [String: Any] }\n        let data = try provenance ?? syntheticProvenance(variant, revision: revision ?? String(repeating: "a", count: 40), outputs: outputRecords)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return CoreMLArtifactManifest(modelVariant: variant.rawValue, packageSHA256: CoreMLArtifactImportStore.packageDigest(for: records), files: records, provenanceJSON: data, provenanceSHA256: digest)
     }
@@ -236,6 +237,75 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         let badData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         let bad = try makeManifest(valid.files, provenance: badData)
         try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("IncompleteToolchain"))
+    }
+
+    func testModelIDMustMatchTheSelectedOfficialVariant() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var model = try XCTUnwrap(object["model"] as? [String: Any])
+        model["model_id"] = "meta-llama/Llama-3.2-3B-Instruct"
+        object["model"] = model
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("WrongModelID"))
+    }
+
+    func testLicenseAcceptanceRequiresSeparateReference() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var license = try XCTUnwrap(object["license"] as? [String: Any])
+        license.removeValue(forKey: "acceptance_record")
+        object["license"] = license
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MissingAcceptanceReference"))
+    }
+
+    func testCoreMLStateMetadataIsRequired() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var evidence = try XCTUnwrap(object["coreml_evidence"] as? [String: Any])
+        evidence["states"] = []
+        object["coreml_evidence"] = evidence
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MissingStateEvidence"))
+    }
+
+    func testConversionEvidenceRequiresDeclaredMethodAndOptions() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var conversion = try XCTUnwrap(object["conversion"] as? [String: Any])
+        conversion.removeValue(forKey: "graph_capture_method")
+        object["conversion"] = conversion
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("IncompleteConversion"))
+    }
+
+    func testIndependentRebuildEvidenceIsRequiredAndConsistent() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(valid.provenanceJSON)) as? [String: Any])
+        var reproducibility = try XCTUnwrap(object["reproducibility"] as? [String: Any])
+        reproducibility.removeValue(forKey: "independent_rebuild")
+        object["reproducibility"] = reproducibility
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = try makeManifest(valid.files, provenance: data)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MissingIndependentRebuild"))
+    }
+
+    func testProvenanceOutputsMustMatchSignedPackageInventory() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (package, valid) = try makePackage(at: root)
+        let wrongOutput = [["path": "different.bin", "size": 1, "sha256": String(repeating: "b", count: 64)] as [String: Any]]
+        let wrong = try syntheticProvenance(outputs: wrongOutput)
+        let bad = try makeManifest(valid.files, provenance: wrong)
+        try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("MismatchedOutputInventory"))
     }
 
     func testInstalledProvenanceTamperingIsRejectedAtRuntime() throws {
