@@ -10,6 +10,7 @@ actor CoreMLInferenceSession {
     private let modelURL: URL?
     private let permitsSyntheticFixture: Bool
     private var model: MLModel?
+    private var runtimeSnapshotRoot: URL?
     private var states: [UUID: MLState] = [:]
 
     init(
@@ -59,19 +60,16 @@ actor CoreMLInferenceSession {
                 "Produktive Modelle dürfen ausschließlich aus dem festgelegten, signaturgeprüften Installations-Trust-Root geladen werden."
             )
         }
+        var modelURLToLoad = resolvedURL
         if isInstalledArtifact && !permitsSyntheticFixture {
-            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-                ?? FileManager.default.temporaryDirectory
-            let verifier = CoreMLArtifactImportStore(
-                trustedPublicKey: CoreMLArtifactTrust.pinnedPublicKey(),
-                installRoot: documents.appendingPathComponent("ZeroModels", isDirectory: true)
-            )
             do {
-                try verifier.verifyInstalledPackage(at: resolvedURL, for: variant)
+                let snapshot = try makeVerifiedRuntimeSnapshot(from: resolvedURL)
+                modelURLToLoad = snapshot.packageURL
+                runtimeSnapshotRoot = snapshot.rootURL
             } catch {
                 throw CoreMLAdapterError.modelContractUnverified(
                     variant.rawValue,
-                    "Installiertes Artefakt konnte vor dem Laden nicht kryptografisch verifiziert werden: \(error.localizedDescription)"
+                    "Installiertes Artefakt konnte nicht in einen isolierten, erneut verifizierten Runtime-Snapshot übernommen werden: \(error.localizedDescription)"
                 )
             }
         }
@@ -82,7 +80,51 @@ actor CoreMLInferenceSession {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = computeUnits
         configuration.allowLowPrecisionAccumulationOnGPU = true
-        model = try MLModel(contentsOf: resolvedURL, configuration: configuration)
+        do {
+            model = try MLModel(contentsOf: modelURLToLoad, configuration: configuration)
+        } catch {
+            if let runtimeSnapshotRoot {
+                try? FileManager.default.removeItem(at: runtimeSnapshotRoot)
+                self.runtimeSnapshotRoot = nil
+            }
+            throw error
+        }
+    }
+
+    private func makeVerifiedRuntimeSnapshot(from installedPackageURL: URL) throws -> (rootURL: URL, packageURL: URL) {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let installRoot = documents.appendingPathComponent("ZeroModels", isDirectory: true)
+        let trust = CoreMLArtifactTrust.pinnedPublicKey()
+        let sourceVerifier = CoreMLArtifactImportStore(trustedPublicKey: trust, installRoot: installRoot)
+        try sourceVerifier.verifyInstalledPackage(at: installedPackageURL, for: variant)
+
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let runtimeBase = caches.appendingPathComponent("ZeroCoreMLRuntime", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeBase, withIntermediateDirectories: true)
+        let snapshotRoot = runtimeBase.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotEnvelope = snapshotRoot.appendingPathComponent(
+            CoreMLArtifactImportStore.installationDirectoryName(for: variant),
+            isDirectory: true
+        )
+        do {
+            try FileManager.default.createDirectory(at: snapshotRoot, withIntermediateDirectories: false)
+            try FileManager.default.copyItem(
+                at: installedPackageURL.deletingLastPathComponent(),
+                to: snapshotEnvelope
+            )
+            let snapshotVerifier = CoreMLArtifactImportStore(
+                trustedPublicKey: trust,
+                installRoot: snapshotRoot
+            )
+            let snapshotPackage = snapshotEnvelope.appendingPathComponent("model.mlmodelc", isDirectory: true)
+            try snapshotVerifier.verifyInstalledPackage(at: snapshotPackage, for: variant)
+            return (snapshotRoot, snapshotPackage)
+        } catch {
+            try? FileManager.default.removeItem(at: snapshotRoot)
+            throw error
+        }
     }
 
     func makeState() throws -> UUID {
@@ -179,6 +221,10 @@ actor CoreMLInferenceSession {
     func unloadModel() {
         states.removeAll()
         model = nil
+        if let runtimeSnapshotRoot {
+            try? FileManager.default.removeItem(at: runtimeSnapshotRoot)
+            self.runtimeSnapshotRoot = nil
+        }
     }
 
     func activeStateCount() -> Int {
