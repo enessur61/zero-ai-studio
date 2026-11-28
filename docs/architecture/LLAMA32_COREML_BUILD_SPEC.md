@@ -351,3 +351,20 @@ The report always sets `production_approval=false`, `publisher_signature_verifie
 `test_validate_source_provenance.py` creates a temporary synthetic Git repository with a synthetic commit, synthetic model-byte fixture, synthetic LFS pointer, and synthetic license/AUP text. These are not Meta files, not model weights, not actual legal documents, and not provenance evidence. Tests cover local commit existence, origin binding, commit-tree byte equality, Git LFS pointer digest/size binding, license content markers, tokenizer revision mismatch, tampering, undeclared files, path traversal, license rejection, symlinks, wrong repository, case collisions, malformed tokenizer paths, and 1B/3B identity.
 
 Run from the validator directory with `python3 -m unittest -v`. The suite uses only Python's standard library and local Git. The existing general CI `verify` job runs these tests immediately after checkout, before dependency installation or any network-dependent CI steps. The validator test step itself has no provider credentials, GPU reservation, model download, conversion operation, or network access.
+
+
+## 17. Implemented signed provenance envelope (Batch 46)
+
+The importer now requires provenance evidence inside the exact Ed25519-signed import-manifest payload:
+
+- provenanceJSON carries the complete UTF-8 provenance document as bytes.
+- provenanceSHA256 is a lowercase SHA-256 digest of those exact bytes.
+- Both fields are covered by the detached signature because they are part of the signed import-manifest JSON.
+- Import rejects absent provenance, absent/invalid digest, digest mismatch, missing required sections, wrong model variant, malformed source revision, tokenizer/source revision mismatch, missing license/tokenizer/input/output inventories, incomplete toolchain evidence, missing lock hash, missing Core ML input/output evidence, missing CPU-only validation evidence, or missing Ed25519 signing identity.
+- The installer writes the exact verified provenance bytes as provenance.json in the same atomic installation envelope.
+- Runtime verification rechecks the signed import manifest, validates its provenance document and digest, and compares the installed provenance.json byte-for-byte with the signed embedded bytes before package verification. Runtime snapshots repeat the same verification after copying.
+- The import contract does not infer a real Meta signature, legal acceptance, actual tensor specifications, or production readiness. Synthetic fixtures explicitly label their model/toolchain/license values as test-only and cannot populate LlamaCoreMLModelContract.
+
+The Swift regression suite adds cases for missing provenance, an incorrect provenance digest, model/tokenizer revision disagreement, incomplete toolchain evidence, and post-install provenance-file tampering. The source-revision format check only validates a 40-character hexadecimal revision; publisher authenticity remains a separate evidence gate and is not established by synthetic tests.
+
+Important boundary: The present schema validator checks the required provenance sections and core consistency fields. It is not a full RFC 8785/JCS implementation and does not claim legal sufficiency, upstream publisher authentication, real model metadata, or reproducible conversion. Those gates remain closed until genuine evidence is supplied and independently reviewed.
