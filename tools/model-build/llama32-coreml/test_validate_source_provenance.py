@@ -138,6 +138,12 @@ class ProvenanceValidatorTests(unittest.TestCase):
         self.assertFalse(result["signature_verified"])
         self.assertFalse(result["coreml_artifact_verified"])
 
+    def test_acceptance_reference_is_not_reported_as_verified_consent(self):
+        result = validate(self.root, self.manifest_path, self.git_repo)
+        self.assertTrue(result["license_acceptance_claimed"])
+        self.assertTrue(result["license_acceptance_reference_present"])
+        self.assertFalse(result["license_acceptance_verified"])
+
     def test_source_tokenizer_revision_mismatch_fails(self):
         self.manifest["tokenizer"]["revision"] = "b" * 40
         self.write_manifest()

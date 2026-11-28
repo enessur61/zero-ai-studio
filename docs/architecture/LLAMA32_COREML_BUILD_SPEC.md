@@ -332,7 +332,7 @@ The manifest must explicitly identify `license.license_document` and `license.au
 - Llama Community License: `llama 3.2`, `community license`, and `meta platforms`;
 - Acceptable Use Policy: `acceptable use policy` and `meta`.
 
-Both documents must also be present in the exact source commit tree and match the local bytes. These markers catch obvious wrong or placeholder documents but are not proof of official authenticity, completeness, legal sufficiency, or user acceptance. The `license.acceptance_record` remains a recorded reference, not a verified consent receipt. Missing/mismatched content fails closed.
+Both documents must also be present in the exact source commit tree and match the local bytes. These markers catch obvious wrong or placeholder documents but are not proof of official authenticity, completeness, legal sufficiency, or user acceptance. The `license.acceptance_record` remains a recorded reference, not a verified consent receipt. The JSON report exposes `license_acceptance_claimed` and `license_acceptance_reference_present` as manifest declarations only, and always sets `license_acceptance_verified=false`; it does not inspect an authoritative consent receipt. Missing/mismatched content fails closed.
 
 ### Explicit limitations
 
