@@ -142,8 +142,9 @@ class ProvenanceValidatorTests(unittest.TestCase):
         self.manifest["source"]["repository"] = "meta-llama/Llama-3.2-3B-Instruct"
         self.manifest["tokenizer"]["repository"] = "meta-llama/Llama-3.2-3B-Instruct"
         self.write_manifest()
-        with self.assertRaisesRegex(ValidationError, "official Meta repository"):
-            validate(self.root, self.manifest_path)
+        result = validate(self.root, self.manifest_path)
+        self.assertEqual(result["variant"], "3B")
+        self.assertEqual(result["model_id"], "meta-llama/Llama-3.2-3B-Instruct")
 
 
 if __name__ == "__main__":
