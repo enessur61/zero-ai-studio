@@ -9,14 +9,14 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
         return url
     }
 
-    private func syntheticProvenance(_ variant: Llama32Variant = .instruct1B, revision: String = String(repeating: "a", count: 40)) throws -> Data {
+    private func syntheticProvenance(_ variant: Llama32Variant = .instruct1B, revision: String = String(repeating: "a", count: 40), tokenizerRevision: String? = nil) throws -> Data {
         let hash = String(repeating: "b", count: 64)
         let file = [["path": "fixture.bin", "size": 1, "sha256": hash] as [String: Any]]
         let object: [String: Any] = [
             "schema_version": 1,
             "model": ["publisher": "Meta", "model_id": variant == .instruct1B ? "meta-llama/Llama-3.2-1B-Instruct" : "meta-llama/Llama-3.2-3B-Instruct", "variant": variant.rawValue, "source_revision": revision],
             "license": ["license_id": "SYNTHETIC-TEST-ONLY", "files": file],
-            "tokenizer": ["source_revision": revision, "files": file],
+            "tokenizer": ["source_revision": tokenizerRevision ?? revision, "files": file],
             "toolchain": ["runner_image": "SYNTHETIC-TEST-ONLY", "xcode_build": "SYNTHETIC-TEST-ONLY", "python": "3.12.test", "pytorch": "SYNTHETIC-TEST-ONLY", "coremltools": "8.3.0.test", "lock_sha256": hash, "converter_revision": revision],
             "conversion": ["profile": "SYNTHETIC-TEST-ONLY"],
             "inputs": file, "outputs": file,
@@ -223,7 +223,7 @@ final class CoreMLArtifactImportStoreTests: XCTestCase {
     func testWrongModelRevisionInProvenanceIsRejected() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let (package, valid) = try makePackage(at: root)
-        let wrong = try syntheticProvenance(.instruct1B, revision: String(repeating: "c", count: 40))
+        let wrong = try syntheticProvenance(.instruct1B, revision: String(repeating: "c", count: 40), tokenizerRevision: String(repeating: "d", count: 40))
         let bad = try makeManifest(valid.files, provenance: wrong)
         try assertImportRejected(package: package, manifest: bad, key: Curve25519.Signing.PrivateKey(), root: root.appendingPathComponent("WrongRevision"))
     }
