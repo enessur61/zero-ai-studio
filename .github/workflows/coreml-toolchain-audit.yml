@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: coreml-toolchain-audit-\${{ github.ref }}
+  group: coreml-toolchain-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,14 +28,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "ImageOS=\${ImageOS:-unknown}"
-          echo "ImageVersion=\${ImageVersion:-unknown}"
+          echo "ImageOS=${ImageOS:-unknown}"
+          echo "ImageVersion=${ImageVersion:-unknown}"
           echo "architecture=$(uname -m)"
           test "$(uname -m)" = "arm64"
-          test "\${ImageVersion:-}" = "20261123.0558.1"
+          test "${ImageVersion:-}" = "20261123.0558.1"
           XCODE_OUTPUT="$(xcodebuild -version)"
-          printf '%s\\n' "$XCODE_OUTPUT"
-          grep -q '^Xcode 16\\.4$' <<< "$XCODE_OUTPUT"
+          printf '%s\n' "$XCODE_OUTPUT"
+          grep -q '^Xcode 16\.4$' <<< "$XCODE_OUTPUT"
           grep -q '^Build version 16F6$' <<< "$XCODE_OUTPUT"
           SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
           SDK_BUILD="$(xcrun --sdk iphoneos --show-sdk-build-version)"
@@ -76,6 +76,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: zero-coreml-toolchain-audit
-          path: \${{ runner.temp }}/zero-coreml-toolchain-audit/
+          path: ${{ runner.temp }}/zero-coreml-toolchain-audit/
           if-no-files-found: error
           retention-days: 14
