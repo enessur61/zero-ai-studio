@@ -62,7 +62,7 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
     root = root.resolve(strict=True)
     manifest = _read_manifest(manifest_path)
 
-    _require(manifest.get("schema_version") == 1, "Unsupported schema_version.")
+    _require(type(manifest.get("schema_version")) is int and manifest.get("schema_version") == 1, "Unsupported schema_version.")
     model = manifest.get("model")
     source = manifest.get("source")
     tokenizer = manifest.get("tokenizer")
@@ -74,7 +74,7 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
     _require(isinstance(files, list) and files, "files must be a non-empty array.")
 
     variant = model.get("variant")
-    _require(variant in MODEL_REPOSITORIES, "model.variant must be 1B or 3B.")
+    _require(isinstance(variant, str) and variant in MODEL_REPOSITORIES, "model.variant must be 1B or 3B.")
     expected_repo = MODEL_REPOSITORIES[variant]
     _require(model.get("publisher") == "Meta", "Only Meta is accepted as publisher.")
     _require(model.get("model_id") == expected_repo,
@@ -111,7 +111,7 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
         folded[key] = rel
         _require(rel not in declared, f"Duplicate file entry: {rel}")
         role = entry.get("role")
-        _require(role in REQUIRED_ROLES, f"Unsupported file role for {rel!r}.")
+        _require(isinstance(role, str) and role in REQUIRED_ROLES, f"Unsupported file role for {rel!r}.")
         size = entry.get("size_bytes")
         _require(isinstance(size, int) and not isinstance(size, bool) and size >= 0,
                  f"Invalid size_bytes for {rel!r}.")
