@@ -402,3 +402,93 @@ No toolchain pin was changed because no verified immutable replacement evidence 
 The native iOS workflow's CoreMLTools installation and synthetic stateful fixture generation are test infrastructure, not a Llama conversion pipeline. Do not resolve these gates by guessing package versions, hashes, Xcode builds or tensor specifications. A future toolchain-lock batch must obtain exact package artifacts and hashes from authoritative package metadata, verify them, and test the complete locked environment before committing pins.
 
 The signed import schema is stricter after this batch, but it remains an evidence-shape and consistency gate. It does not create missing upstream signatures, legal consent receipts, model files, actual tensor metadata, immutable build infrastructure or independent conversion results.
+
+
+## 19. Batch 48 observed toolchain evidence (2026-11-28)
+
+This section records only facts observed in the completed CI logs and authoritative package metadata. It is an audit snapshot, not an approved Llama conversion lock.
+
+### 19.1 Native CI execution snapshot
+
+Source: Native iOS workflow run `46166896060`, job `141046320077`, PR head `45a8c89db6a27d32cffc13a067e4ea40a4f8ffde`.
+
+| Component | Exact observed evidence | Gate assessment |
+|---|---|---|
+| Runner label | Workflow requests `macos-15`; actual image reported `macos-15-arm64` | Mutable label; not a future immutable pin |
+| Runner image | `20261123.0558.1`; image release `macos-15-arm64/20261123.0558` | Exact for this run only; image version is logged, not selected in workflow |
+| OS | Runner image release reports macOS `15.8.2 (24H232)` | Snapshot only |
+| Architecture | Native `arm64` | Observed |
+| Python | CPython `3.12.10`, arm64 | Exact resolved version in this run; workflow still asks for `3.12`, so next run can resolve differently |
+| Xcode | CI paths identify `/Applications/Xcode_16.4.app`; version family `16.4` | Exact Xcode build identifier and SDK build were not emitted by this job; not a complete pin |
+| Swift | `swift-driver 1.120.5` | Driver version observed; full `swift --version` output/build identity not emitted |
+| XcodeGen | `2.46.0`; source commit `8445e778451c7e44237b90281bde622d764b0084` | Source revision and reported version pinned; executable SHA-256 not emitted |
+| XcodeGen cache | This run restored a cache hit for the source-commit/toolchain-derived cache key | Cache hit does not independently prove cached binary bytes were built from the stated source revision |
+| CoreMLTools | `8.3.0`; wheel tag `cp312-none-macosx_11_0_arm64` | Exact package artifact observed for this run; not yet installed through a hash-enforced lock |
+
+The runner image release record is published at https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20261123.0558. It identifies image version `20261123.0558.1` and macOS `15.8.2 (24H232)`. The workflow still uses the mutable `macos-15` label.
+
+The Xcode 16.4 identification comes from the actual Xcode application path in the build log, not from an explicit `xcodebuild -version` record. The exact Xcode build number, iOS SDK build number and SDK package digest therefore remain unverified. The workflow currently computes a short cache-key prefix from `xcodebuild -version` and `swift --version`, but does not print or retain those full outputs as build provenance.
+
+### 19.2 CoreMLTools wheel evidence
+
+The actual install log records the macOS ARM64 CPython 3.12 wheel:
+
+- Filename: `coremltools-8.3.0-cp312-none-macosx_11_0_arm64.whl`
+- Package version: `8.3.0`
+- Official PyPI SHA-256: `e8a70ca3b34676cbcb61f70e1192593062eb85a9a64e29e03268d6f280b2c86e`
+- Official release file metadata: https://pypi.org/project/coremltools/8.3.0/
+
+This hash is a verified package-file checksum from the PyPI release metadata. It is recorded as candidate artifact evidence only; it is **not** yet a committed lock entry and does not establish that CoreMLTools 8.3.0 is compatible with a real Llama conversion graph. The native fixture CI did successfully install and execute this package for the synthetic stateful fixture.
+
+### 19.3 Resolved packages observed in the fixture environment
+
+The completed job log records the following exact resolved versions for the CoreMLTools fixture environment:
+
+| Package | Observed version | Wheel SHA-256 in committed lock |
+|---|---:|---|
+| coremltools | 8.3.0 | No committed lock; candidate wheel checksum recorded above |
+| numpy | 2.5.5 | Missing |
+| protobuf | 7.36.2 | Missing |
+| sympy | 1.14.0 | Missing |
+| tqdm | 4.70.1 | Missing |
+| packaging | 26.4 | Missing |
+| attrs | 26.1.0 | Missing |
+| cattrs | 26.2.1 | Missing |
+| pyaml | 26.7.0 | Missing |
+| PyYAML | 6.0.4 | Missing |
+| mpmath | 1.3.0 | Missing |
+| typing-extensions | 4.16.0 | Missing |
+
+These are observed resolver results from one run, not approved compatibility pins. The workflow installs CoreMLTools with an unconstrained transitive resolver and does not use `pip --require-hashes`. No dependency wheel hashes are committed.
+
+### 19.4 Llama conversion dependencies not established
+
+The inspected native workflow does not install or exercise PyTorch, Transformers, safetensors or the Hugging Face `tokenizers` package for Llama conversion. The synthetic fixture uses CoreMLTools MIL builders directly and is not evidence of a PyTorch-to-Core-ML Llama conversion path.
+
+Accordingly, no exact PyTorch, Transformers, safetensors or tokenizers version is selected in this audit. No wheel SHA-256 for those packages is accepted as a ZERO pin. Picking a currently available PyPI release without validating the complete converter graph, Python ABI, Apple Silicon wheel availability and transitive constraints would be guesswork and is explicitly rejected.
+
+### 19.5 XcodeGen binary provenance gap
+
+The workflow pins XcodeGen source commit `8445e778451c7e44237b90281bde622d764b0084`, builds from that revision on a cache miss, and checks that the executable reports version `2.46.0`. The current run restored a pre-existing cache hit, and the workflow does not calculate, emit, compare or retain the executable's SHA-256. Thus:
+
+- source revision is pinned;
+- reported version is checked;
+- executable content identity is **not** independently verified;
+- cache provenance is not cryptographically attested.
+
+Do not convert the Git source commit into an assumed binary hash. A future fix must either build from the pinned source on every clean toolchain image or validate a reviewed, independently produced binary digest and emit the actual digest in CI.
+
+### 19.6 Batch 48 disposition
+
+No package versions or hashes were added to the production conversion lock because a complete, tested dependency set does not yet exist. The only newly verified wheel checksum is the CoreMLTools 8.3.0 ARM64 wheel checksum above. Remaining hard blockers:
+
+1. Select and test a compatible exact PyTorch release and its actual macOS ARM64 wheel.
+2. Select and test exact Transformers, safetensors and tokenizer dependencies against that PyTorch/CoreMLTools combination.
+3. Resolve every transitive package and record hashes for every accepted wheel/sdist; enforce `pip --require-hashes`.
+4. Pin CPython 3.12.10 (or a separately validated exact patch) and attest the interpreter distribution/build; the current workflow still requests only `3.12`.
+5. Record and enforce the exact Xcode build and iOS SDK build, not only the `Xcode_16.4.app` path.
+6. Make runner image selection immutable or document and approve the exact image version for each release build.
+7. Emit and verify XcodeGen executable SHA-256 and close the cache-origin ambiguity.
+8. Build and compare real Llama 1B and 3B conversion outputs in two independent clean builds before claiming artifact reproducibility.
+
+No model weights were downloaded, no Llama conversion was run, no model artifacts or tensor contracts were created, and no signing key was introduced in Batch 48. The existing fail-closed production posture remains mandatory.
