@@ -151,10 +151,21 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
     /// Re-verifies the detached signature and every package file at the point of use.
     public func verifyInstalledPackage(at packageURL: URL, for variant: Llama32Variant) throws {
         guard let trustedPublicKey else { throw ImportError.trustedKeyMissing }
-        let envelope = packageURL.deletingLastPathComponent()
+        let normalizedPackageURL = packageURL.standardizedFileURL
+        let envelope = normalizedPackageURL.deletingLastPathComponent()
+        let normalizedInstallRoot = installRoot.standardizedFileURL
+        guard envelope.deletingLastPathComponent().standardizedFileURL == normalizedInstallRoot,
+              normalizedPackageURL.lastPathComponent == "model.mlmodelc",
+              envelope.lastPathComponent == Self.installationDirectoryName(for: variant) else {
+            throw ImportError.invalidPackage("Installationspaket liegt außerhalb des festgelegten Trust-Roots oder hat einen unerwarteten Pfad.")
+        }
+        let rootValues = try normalizedInstallRoot.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let envelopeValues = try envelope.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
+            throw ImportError.invalidPackage("Installations-Trust-Root ist kein reguläres Verzeichnis.")
+        }
         let manifestURL = envelope.appendingPathComponent("manifest.json")
         let signatureURL = envelope.appendingPathComponent("manifest.sig")
-        let envelopeValues = try envelope.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         let manifestValues = try manifestURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         let signatureValues = try signatureURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard envelopeValues.isDirectory == true, envelopeValues.isSymbolicLink != true,
@@ -182,11 +193,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
         do { manifest = try JSONDecoder().decode(CoreMLArtifactManifest.self, from: manifestPayload) }
         catch { throw ImportError.invalidManifest("JSON kann nicht gelesen werden.") }
         try validateManifest(manifest, for: variant)
-        guard packageURL.lastPathComponent == "model.mlmodelc",
-              envelope.lastPathComponent == Self.installationDirectoryName(for: variant) else {
-            throw ImportError.invalidPackage("Installationspfad passt nicht zur Modellvariante.")
-        }
-        try verifyPackage(at: packageURL, manifest: manifest)
+        try verifyPackage(at: normalizedPackageURL, manifest: manifest)
     }
 
     public static func packageDigest(for records: [CoreMLArtifactManifest.FileRecord]) -> String {
