@@ -100,6 +100,8 @@ def main() -> int:
     report_path = output / "toolchain-audit.json"
 
     pip_version = run([sys.executable, "-m", "pip", "--version"]).strip()
+    if not pip_version.startswith("pip 25.0.1 "):
+        raise RuntimeError(f"Expected bootstrap pip 25.0.1, got {pip_version}")
     run([
         sys.executable, "-m", "pip", "download",
         "--disable-pip-version-check", "--no-cache-dir",
@@ -165,7 +167,7 @@ import tokenizers
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 assert coremltools.__version__ == "9.0", coremltools.__version__
-assert torch.__version__.split("+")[0] == "2.7.1", torch.__version__
+assert torch.__version__.split("+")[0] == "2.7.0", torch.__version__
 assert transformers.__version__ == "5.24.1", transformers.__version__
 assert safetensors.__version__ == "0.8.0", safetensors.__version__
 assert tokenizers.__version__ == "0.23.3", tokenizers.__version__

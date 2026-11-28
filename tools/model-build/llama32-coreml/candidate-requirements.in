@@ -1,5 +1,6 @@
+pip==25.0.1
 coremltools==9.0
-torch==2.7.1
+torch==2.7.0
 transformers==5.24.1
 safetensors==0.8.0
 tokenizers==0.23.3
