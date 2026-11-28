@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Offline, read-only validator for locally supplied Llama 3.2 source provenance.
+"""Offline, read-only validator for local Llama 3.2 source provenance.
 
-This tool never downloads, installs, converts, copies, or modifies model files.
-It hashes files in place and writes its JSON report only to stdout.
+No network access, downloads, installation, conversion, signing, or file writes.
+Git inspection is restricted to an already-local repository and existing objects.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 MODEL_REPOSITORIES = {
     "1B": "meta-llama/Llama-3.2-1B-Instruct",
@@ -21,7 +24,14 @@ MODEL_REPOSITORIES = {
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+LFS_POINTER_RE = re.compile(
+    rb"\Aversion https://git-lfs\.github\.com/spec/v1\n"
+    rb"oid sha256:([0-9a-f]{64})\n"
+    rb"size ([0-9]+)\n?\Z"
+)
 REQUIRED_ROLES = {"model_weights", "model_config", "tokenizer", "license", "aup"}
+LICENSE_MARKERS = ("llama 3.2", "community license", "meta platforms")
+AUP_MARKERS = ("acceptable use policy", "meta")
 
 
 class ValidationError(ValueError):
@@ -35,11 +45,15 @@ def _require(condition: bool, message: str) -> None:
 
 def _safe_relative_path(raw: Any) -> str:
     _require(isinstance(raw, str) and raw, "File path must be a non-empty string.")
-    _require("\\" not in raw and "\x00" not in raw, f"Unsafe file path: {raw!r}")
+    _require("\\" not in raw and "\x00" not in raw,
+             f"Unsafe file path: {raw!r}")
+    _require(not any(ord(char) < 32 or ord(char) == 127 for char in raw),
+             f"Control characters are forbidden in paths: {raw!r}")
     path = PurePosixPath(raw)
     _require(not path.is_absolute(), f"Absolute path is forbidden: {raw!r}")
-    _require(all(part not in ("", ".", "..") for part in raw.split("/")),
-             f"Path traversal or non-canonical path: {raw!r}")
+    parts = raw.split("/")
+    _require(all(part not in ("", ".", "..", ".git") for part in parts),
+             f"Path traversal or reserved path component: {raw!r}")
     _require(str(path) == raw, f"Non-canonical path: {raw!r}")
     return raw
 
@@ -55,14 +69,148 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     return value
 
 
-def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
-    """Validate metadata and exact local inventory without changing the filesystem."""
+def _git(repo: Path, *args: str) -> bytes:
+    """Run a local Git object/config inspection; never fetch or contact a remote."""
+    env = os.environ.copy()
+    env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    })
+    command = ["git", "--no-replace-objects", "-C", str(repo), *args]
+    try:
+        result = subprocess.run(
+            command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValidationError(f"Local Git inspection failed: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValidationError(f"Local Git command failed ({' '.join(args[:2])}): {detail}")
+    return result.stdout
+
+
+def _expected_remote_url(repository: str) -> str:
+    return f"https://huggingface.co/{repository}"
+
+
+def _verify_local_git_revision(
+    git_repo: Path, revision: str, expected_repository: str
+) -> tuple[dict[str, tuple[str, str]], str]:
+    _require(git_repo.exists() and git_repo.is_dir() and not git_repo.is_symlink(),
+             "git_repo must be an existing local directory, not a symlink.")
+    git_repo = git_repo.resolve(strict=True)
+
+    remote_raw = _git(git_repo, "config", "--local", "--get", "remote.origin.url")
+    try:
+        remote = remote_raw.decode("utf-8").strip()
+    except UnicodeError as exc:
+        raise ValidationError("Local origin URL is not UTF-8.") from exc
+
+    expected = _expected_remote_url(expected_repository)
+    _require(remote.rstrip("/") in {expected, expected + ".git"},
+             f"Local origin URL must be {expected!r}; got {remote!r}.")
+    parsed = urlsplit(remote)
+    _require(parsed.scheme == "https" and parsed.netloc == "huggingface.co"
+             and parsed.username is None and parsed.password is None,
+             "Only the canonical HTTPS Hugging Face origin is accepted.")
+
+    resolved = _git(git_repo, "rev-parse", "--verify", f"{revision}^{{commit}}")
+    resolved_revision = resolved.decode("ascii").strip()
+    _require(resolved_revision == revision,
+             "Requested source revision did not resolve to the exact commit object.")
+    object_type = _git(git_repo, "cat-file", "-t", revision).decode("ascii").strip()
+    _require(object_type == "commit", "Source revision does not identify a Git commit.")
+
+    tree_sha = _git(git_repo, "rev-parse", "--verify", f"{revision}^{{tree}}")
+    tree_id = tree_sha.decode("ascii").strip()
+    tree_entries_raw = _git(git_repo, "ls-tree", "-r", "-z", "--full-tree", revision)
+    tree_entries: dict[str, tuple[str, str]] = {}
+    for raw_entry in tree_entries_raw.split(b"\x00"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, kind, object_id = metadata.decode("ascii").split(" ", 2)
+            path = raw_path.decode("utf-8")
+        except (ValueError, UnicodeError) as exc:
+            raise ValidationError("Git tree contains an unsupported or non-UTF-8 path.") from exc
+        _require(path not in tree_entries, f"Duplicate path in Git tree: {path!r}")
+        tree_entries[path] = (mode, kind)
+        # Keep the object ID separately encoded in the temporary key below.
+        tree_entries[path + "\x00" + object_id] = (mode, kind)
+
+    return tree_entries, tree_id
+
+
+def _tree_blob(tree_entries: dict[str, tuple[str, str]], path: str) -> str:
+    matches = [key for key in tree_entries if key.startswith(path + "\x00")]
+    _require(len(matches) == 1, f"File is absent or ambiguous in source commit tree: {path}")
+    object_id = matches[0].split("\x00", 1)[1]
+    mode, kind = tree_entries[matches[0]]
+    _require(kind == "blob" and mode in {"100644", "100755"},
+             f"Git source path is not a regular file: {path}")
+    return object_id
+
+
+def _check_git_blob_against_local(
+    git_repo: Path,
+    tree_entries: dict[str, tuple[str, str]],
+    revision: str,
+    rel: str,
+    local_path: Path,
+    local_size: int,
+    local_sha256: str,
+) -> str:
+    object_id = _tree_blob(tree_entries, rel)
+    blob = _git(git_repo, "cat-file", "blob", object_id)
+    lfs = LFS_POINTER_RE.fullmatch(blob)
+    if lfs:
+        pointer_sha = lfs.group(1).decode("ascii")
+        pointer_size = int(lfs.group(2))
+        _require(pointer_sha == local_sha256 and pointer_size == local_size,
+                 f"Materialized Git LFS file does not match its committed pointer: {rel}")
+        return "git-lfs-content-digest-matched"
+    git_blob_sha = hashlib.sha256(blob).hexdigest()
+    _require(len(blob) == local_size and git_blob_sha == local_sha256,
+             f"Local file bytes do not match the source commit blob: {rel}")
+    return "git-blob-bytes-matched"
+
+
+def _verify_license_text(root: Path, license_data: dict[str, Any],
+                         declared: dict[str, dict[str, Any]]) -> None:
+    license_path = _safe_relative_path(license_data.get("license_document"))
+    aup_path = _safe_relative_path(license_data.get("aup_document"))
+    _require(license_path in declared and declared[license_path]["role"] == "license",
+             "license.license_document must reference an inventory file with role=license.")
+    _require(aup_path in declared and declared[aup_path]["role"] == "aup",
+             "license.aup_document must reference an inventory file with role=aup.")
+    for label, rel, markers in (
+        ("Llama Community License", license_path, LICENSE_MARKERS),
+        ("Acceptable Use Policy", aup_path, AUP_MARKERS),
+    ):
+        try:
+            text = (root / rel).read_text(encoding="utf-8").casefold()
+        except (OSError, UnicodeError) as exc:
+            raise ValidationError(f"{label} must be readable UTF-8 text: {rel}") from exc
+        _require(all(marker in text for marker in markers),
+                 f"{label} content does not contain all required identity markers: {rel}")
+        _require(not any(marker in text for marker in ("synthetic fixture", "placeholder document")),
+                 f"{label} contains a known placeholder marker: {rel}")
+
+
+def validate(root: Path, manifest_path: Path, git_repo: Path) -> dict[str, Any]:
+    """Validate local metadata, source commit tree, exact bytes and license documents."""
     _require(root.exists() and root.is_dir() and not root.is_symlink(),
              "Source root must be an existing directory and not a symlink.")
     root = root.resolve(strict=True)
     manifest = _read_manifest(manifest_path)
 
-    _require(type(manifest.get("schema_version")) is int and manifest.get("schema_version") == 1, "Unsupported schema_version.")
+    _require(type(manifest.get("schema_version")) is int and manifest.get("schema_version") == 1,
+             "Unsupported schema_version.")
     model = manifest.get("model")
     source = manifest.get("source")
     tokenizer = manifest.get("tokenizer")
@@ -74,7 +222,8 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
     _require(isinstance(files, list) and files, "files must be a non-empty array.")
 
     variant = model.get("variant")
-    _require(isinstance(variant, str) and variant in MODEL_REPOSITORIES, "model.variant must be 1B or 3B.")
+    _require(isinstance(variant, str) and variant in MODEL_REPOSITORIES,
+             "model.variant must be 1B or 3B.")
     expected_repo = MODEL_REPOSITORIES[variant]
     _require(model.get("publisher") == "Meta", "Only Meta is accepted as publisher.")
     _require(model.get("model_id") == expected_repo,
@@ -107,11 +256,13 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
         _require(isinstance(entry, dict), "Every files entry must be an object.")
         rel = _safe_relative_path(entry.get("path"))
         key = unicodedata.normalize("NFC", rel).casefold()
-        _require(key not in folded, f"Case/Unicode path collision: {rel!r} and {folded.get(key)!r}")
+        _require(key not in folded,
+                 f"Case/Unicode path collision: {rel!r} and {folded.get(key)!r}")
         folded[key] = rel
         _require(rel not in declared, f"Duplicate file entry: {rel}")
         role = entry.get("role")
-        _require(isinstance(role, str) and role in REQUIRED_ROLES, f"Unsupported file role for {rel!r}.")
+        _require(isinstance(role, str) and role in REQUIRED_ROLES,
+                 f"Unsupported file role for {rel!r}.")
         size = entry.get("size_bytes")
         _require(isinstance(size, int) and not isinstance(size, bool) and size >= 0,
                  f"Invalid size_bytes for {rel!r}.")
@@ -133,16 +284,15 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
              "Duplicate tokenizer file path.")
     _require(len(normalized_license) == len(set(normalized_license)),
              "Duplicate license file path.")
-    declared_tokenizer = set(normalized_tokenizer)
-    actual_tokenizer = {p for p, entry in declared.items() if entry["role"] == "tokenizer"}
-    _require(declared_tokenizer == actual_tokenizer,
+    _require(set(normalized_tokenizer) ==
+             {p for p, entry in declared.items() if entry["role"] == "tokenizer"},
              "tokenizer.files must exactly match files with role=tokenizer.")
-    declared_license = set(normalized_license)
-    actual_license = {p for p, entry in declared.items()
-                      if entry["role"] in {"license", "aup"}}
-    _require(declared_license == actual_license,
+    _require(set(normalized_license) ==
+             {p for p, entry in declared.items() if entry["role"] in {"license", "aup"}},
              "license.files must exactly match license and AUP inventory entries.")
 
+    tree_entries, tree_id = _verify_local_git_revision(git_repo, revision, expected_repo)
+    git_checks: dict[str, str] = {}
     for rel, entry in declared.items():
         candidate = root.joinpath(*PurePosixPath(rel).parts)
         current = root
@@ -159,8 +309,11 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
         with candidate.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
-        _require(digest.hexdigest() == entry["sha256"],
-                 f"SHA-256 mismatch for {rel}")
+        actual_sha = digest.hexdigest()
+        _require(actual_sha == entry["sha256"], f"SHA-256 mismatch for {rel}")
+        git_checks[rel] = _check_git_blob_against_local(
+            git_repo, tree_entries, revision, rel, candidate, stat_size, actual_sha
+        )
 
     actual: set[str] = set()
     for path in root.rglob("*"):
@@ -171,16 +324,25 @@ def validate(root: Path, manifest_path: Path) -> dict[str, Any]:
              f"Source inventory mismatch; undeclared={sorted(actual - set(declared))}, "
              f"missing={sorted(set(declared) - actual)}")
 
+    _verify_license_text(root, license_data, declared)
+
     return {
         "valid": True,
         "mode": "offline-read-only",
         "model_id": expected_repo,
         "variant": variant,
         "source_revision": revision,
+        "git_commit_object_verified": True,
+        "git_tree_id": tree_id,
+        "git_origin_matches_official_repository": True,
+        "git_file_content_checks": git_checks,
         "files_checked": len(declared),
         "roles_checked": sorted(roles),
         "tokenizer_revision_matches_source": True,
+        "license_document_markers_verified": True,
+        "aup_document_markers_verified": True,
         "license_acceptance_recorded": True,
+        "publisher_signature_verified": False,
         "production_approval": False,
         "signature_verified": False,
         "coreml_artifact_verified": False,
@@ -193,9 +355,11 @@ def main() -> int:
                         help="Existing local directory containing only declared source files.")
     parser.add_argument("--manifest", required=True, type=Path,
                         help="Local JSON provenance manifest; never fetched from a URL.")
+    parser.add_argument("--git-repo", required=True, type=Path,
+                        help="Existing local Git clone with source commit objects; never fetched.")
     args = parser.parse_args()
     try:
-        report = validate(args.root, args.manifest)
+        report = validate(args.root, args.manifest, args.git_repo)
     except (ValidationError, OSError) as exc:
         print(json.dumps({"valid": False, "error": str(exc),
                           "production_approval": False}, sort_keys=True))
