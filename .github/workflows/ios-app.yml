@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           ARCH="$(uname -m)"
-          printf 'Native runner architecture: %s\\n' "$ARCH"
+          printf 'Native runner architecture: %s\n' "$ARCH"
           [[ "$ARCH" == "arm64" ]]
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Determine Apple toolchain cache key
@@ -84,7 +84,7 @@ jobs:
           test -x "$RUNNER_TEMP/xcodegen/bin/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
           VERSION_OUTPUT="$("$RUNNER_TEMP/xcodegen/bin/xcodegen" --version)"
-          printf '%s\\n' "$VERSION_OUTPUT"
+          printf '%s\n' "$VERSION_OUTPUT"
           [[ "$VERSION_OUTPUT" == *"2.46.0"* ]]
       - name: Set up supported Python for Core ML Tools
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -143,7 +143,7 @@ jobs:
           EXPECTED_APP_VERSION="$(awk -F'"' '/"version"[[:space:]]*:/ { print $4; exit }' package.json)"
           [[ -n "$EXPECTED_APP_VERSION" && "$APP_VERSION" == "$EXPECTED_APP_VERSION" ]]
           [[ "$APP_BUILD" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]
-          printf 'Verified ZERO_APP_URL and app version %s (%s).\\n' "$APP_VERSION" "$APP_BUILD"
+          printf 'Verified ZERO_APP_URL and app version %s (%s).\n' "$APP_VERSION" "$APP_BUILD"
       - name: Package unsigned IPA for AltStore signing
         run: |
           APP_PATH="$RUNNER_TEMP/ZEROAIStudioDerived/Build/Products/Release-iphoneos/ZERO AI STUDIO.app"
@@ -179,8 +179,8 @@ jobs:
           test "$(uname -m)" = "arm64"
           test "${ImageVersion:-}" = "20261123.0558.1"
           XCODE_OUTPUT="$(xcodebuild -version)"
-          printf '%s\\n' "$XCODE_OUTPUT"
-          grep -q '^Xcode 16\\.4$' <<< "$XCODE_OUTPUT"
+          printf '%s\n' "$XCODE_OUTPUT"
+          grep -q '^Xcode 16\.4$' <<< "$XCODE_OUTPUT"
           grep -q '^Build version 16F6$' <<< "$XCODE_OUTPUT"
           SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
           SDK_BUILD="$(xcrun --sdk iphoneos --show-sdk-build-version)"
