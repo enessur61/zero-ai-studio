@@ -288,7 +288,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               (model["variant"] as? String) == expectedVariant.rawValue,
               (model["model_id"] as? String) == expectedModelID,
               let revision = model["source_revision"] as? String,
-              revision.count == 40, revision.allSatisfy({ $0.isHexDigit }),
+              revision.count == 40, revision == revision.lowercased(), revision.allSatisfy({ $0.isHexDigit }),
               let license = root["license"] as? [String: Any],
               let licenseID = license["license_id"] as? String, !licenseID.isEmpty,
               (license["accepted"] as? Bool) == true,
@@ -309,7 +309,7 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
               let runner = toolchain["runner_image"] as? String, !runner.isEmpty,
               let lockHash = toolchain["lock_sha256"] as? String, isSHA256(lockHash),
               let converterRevision = toolchain["converter_revision"] as? String,
-              converterRevision.count == 40, converterRevision.allSatisfy({ $0.isHexDigit }),
+              converterRevision.count == 40, converterRevision == converterRevision.lowercased(), converterRevision.allSatisfy({ $0.isHexDigit }),
               let conversion = root["conversion"] as? [String: Any],
               let command = conversion["command"] as? String, !command.isEmpty,
               let profile = conversion["profile"] as? String, !profile.isEmpty,
@@ -386,11 +386,13 @@ public final class CoreMLArtifactImportStore: @unchecked Sendable {
             throw ImportError.invalidManifest("Provenienz-Output-Inventar stimmt nicht exakt mit dem signierten Paketmanifest überein.")
         }
 
-        for state in coremlStates {
-            guard let name = state["name"] as? String, !name.isEmpty,
-                  let dataType = state["data_type"] as? String, !dataType.isEmpty,
-                  let shape = state["shape"] as? [Any], !shape.isEmpty else {
-                throw ImportError.invalidManifest("Core-ML-State-Metadaten sind unvollständig.")
+        for (label, records) in [("Input", coremlInputs), ("Output", coremlOutputs), ("State", coremlStates)] {
+            for record in records {
+                guard let name = record["name"] as? String, !name.isEmpty,
+                      let dataType = record["data_type"] as? String, !dataType.isEmpty,
+                      let shape = record["shape"] as? [Any], !shape.isEmpty else {
+                    throw ImportError.invalidManifest("Core-ML-\\(label)-Metadaten sind unvollständig.")
+                }
             }
         }
         for test in validationTests {
